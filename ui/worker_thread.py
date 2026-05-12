@@ -89,12 +89,20 @@ class _DownloadPool(QThread):
         host_cap: int,
         stop_flag: threading.Event,
         workers: int,
+        orphan_guids: list | None = None,
     ):
         super().__init__()
         self._ctx = ctx
         self._show_by_slug = show_by_slug  # slug -> Show
         self._ep_num_map = ep_num_map  # guid -> "0042" / "0000"
         self._scope_slugs = list(scope_slugs)  # which shows this pass touches
+        # Snapshot of orphan ('downloaded' status at run-start) guids. Without
+        # this scoping the orphan-claim path would race with the in-pass
+        # staging usage of 'downloaded' (set by download_phase before the
+        # transcribe worker drains the queue): a second download worker
+        # could re-claim a just-downloaded row as an orphan and push a
+        # duplicate outcome, inflating done_idx past total.
+        self._orphan_guids = list(orphan_guids or [])
         self._pctx_for = pctx_for  # callable(show) -> PipelineContext
         self._out_q = out_q
         self._host_counter = host_counter
@@ -156,15 +164,26 @@ class _DownloadPool(QThread):
             ).fetchone()
             if row is not None:
                 return dict(row), "pending"
+            # Orphan branch: only claim rows that were ALREADY 'downloaded'
+            # at run-start (the snapshot in _orphan_guids). Without this
+            # filter the branch races with the in-pass staging usage of
+            # 'downloaded' (set by download_phase between download and the
+            # transcribe-worker dequeue) — a second download worker would
+            # see those rows and re-push a synthetic outcome, double-emitting
+            # episode_done past `total`.
+            if not self._orphan_guids:
+                return None
+            orphan_phs = ",".join("?" for _ in self._orphan_guids)
             row = c.execute(
                 "UPDATE episodes SET status='transcribing' "
                 "WHERE guid = ("
                 "  SELECT guid FROM episodes "
                 f"  WHERE status='downloaded' AND show_slug IN ({placeholders}) "
+                f"    AND guid IN ({orphan_phs}) "
                 "  ORDER BY priority DESC, pub_date ASC LIMIT 1"
                 ") "
                 "RETURNING *",
-                tuple(self._scope_slugs),
+                tuple(self._scope_slugs) + tuple(self._orphan_guids),
             ).fetchone()
             if row is not None:
                 return dict(row), "downloaded"
@@ -643,16 +662,17 @@ class CheckAllThread(QThread):
         # orphan-recovery path. Without counting them here, total=0 +
         # we'd skip the pipeline entirely for the recovery case.
         scope_target_slugs = [s.slug for s in fetch_targets]
-        orphan_count = 0
+        orphan_guids: list[str] = []
         if scope_target_slugs:
             placeholders = ",".join("?" for _ in scope_target_slugs)
             with self.ctx.state._conn() as c:
-                row = c.execute(
-                    f"SELECT COUNT(*) AS n FROM episodes "
+                rows = c.execute(
+                    f"SELECT guid FROM episodes "
                     f"WHERE status='downloaded' AND show_slug IN ({placeholders})",
                     tuple(scope_target_slugs),
-                ).fetchone()
-                orphan_count = int(row["n"] or 0) if row else 0
+                ).fetchall()
+                orphan_guids = [r["guid"] for r in rows]
+        orphan_count = len(orphan_guids)
 
         total = len(all_pending) + orphan_count
         self.queue_sized.emit(total)
@@ -699,6 +719,7 @@ class CheckAllThread(QThread):
             host_cap=host_cap,
             stop_flag=self._stop_event,
             workers=dl_conc,
+            orphan_guids=orphan_guids,
         )
         # Spawn `parallel_transcribe` transcribe workers (default 1).
         # Pre-2026-04-23 only one was created regardless of the setting,
