@@ -9,8 +9,9 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from core.http import get_client
+
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
-USER_AGENT = "paragraphos/0.2"
 
 
 @dataclass(frozen=True)
@@ -25,10 +26,9 @@ class PodcastMatch:
 def search_itunes(
     term: str, *, limit: int = 50, country: str = "de", timeout: float = 10.0
 ) -> List[PodcastMatch]:
-    r = httpx.get(
+    r = get_client().get(
         ITUNES_SEARCH_URL,
         params={"media": "podcast", "term": term, "limit": limit, "country": country},
-        headers={"User-Agent": USER_AGENT},
         timeout=timeout,
     )
     r.raise_for_status()
@@ -57,7 +57,7 @@ def _is_rss_content_type(ct: str) -> bool:
 
 def find_rss_from_url(url: str, *, timeout: float = 10.0) -> Optional[str]:
     """Given a landing-page or direct-RSS URL, return the canonical RSS URL."""
-    r = httpx.get(url, headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=timeout)
+    r = get_client().get(url, follow_redirects=True, timeout=timeout)
     r.raise_for_status()
     ct = r.headers.get("content-type", "")
     if _is_rss_content_type(ct):

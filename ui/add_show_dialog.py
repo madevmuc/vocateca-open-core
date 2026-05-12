@@ -155,9 +155,9 @@ class _CoverWorker(QRunnable):
 
     def run(self) -> None:
         try:
-            import httpx
+            from core.http import get_client
 
-            r = httpx.get(self._url, timeout=6.0, follow_redirects=True)
+            r = get_client().get(self._url, timeout=6.0, follow_redirects=True)
             r.raise_for_status()
         except Exception:
             return
