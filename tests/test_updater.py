@@ -89,3 +89,15 @@ def test_should_notify_tag_only_on_change():
     assert should_notify_tag("", "v1.4.0") is True
     assert should_notify_tag("v1.3.0", "v1.4.0") is True
     assert should_notify_tag("v1.4.0", "v1.4.0") is False
+
+
+def test_recheck_on_naive_timestamp():
+    # A tz-less stored timestamp must degrade to a defensive re-check,
+    # not raise TypeError out of the activation slot.
+    assert should_recheck_update("2026-05-17T00:00:00", _NOW) is True
+
+
+def test_respects_non_default_interval():
+    last = (_NOW - timedelta(hours=2)).isoformat()
+    assert should_recheck_update(last, _NOW, min_interval_h=1.0) is True
+    assert should_recheck_update(last, _NOW, min_interval_h=5.0) is False

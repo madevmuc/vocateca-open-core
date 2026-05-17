@@ -89,15 +89,16 @@ def should_recheck_update(
     last_iso: Optional[str], now: datetime, min_interval_h: float = 24.0
 ) -> bool:
     """True when a periodic re-check is due: never checked, an unparseable
-    stored timestamp (defensively re-check), or at least ``min_interval_h``
-    hours since the last check."""
+    or naive stored timestamp (defensively re-check), or at least
+    ``min_interval_h`` hours since the last check."""
     if not last_iso:
         return True
     try:
         last = datetime.fromisoformat(last_iso)
-    except ValueError:
+        due = (now - last) >= timedelta(hours=min_interval_h)
+    except (ValueError, TypeError):
         return True
-    return (now - last) >= timedelta(hours=min_interval_h)
+    return due
 
 
 def should_notify_tag(notified_tag: str, tag: str) -> bool:
