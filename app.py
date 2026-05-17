@@ -350,6 +350,7 @@ class ParagraphosApp(QObject):
         _qapp = QApplication.instance()
         if _qapp is not None:
             _qapp.applicationStateChanged.connect(self._on_app_activated)
+            _qapp.applicationStateChanged.connect(self._on_activation_update_check)
 
         if self.ctx.settings.catch_up_missed and should_catch_up(
             self.ctx.state.get_meta("last_successful_check"),
@@ -524,6 +525,28 @@ class ParagraphosApp(QObject):
         QTimer.singleShot(
             self._auto_start_delay_ms,
             lambda: (setattr(self, "_catch_up_pending", False), self._run_check()),
+        )
+
+    def _on_activation_update_check(self, state: Qt.ApplicationState) -> None:
+        """Re-check GitHub releases when the app is foregrounded, gated to
+        once per 24h via ``last_update_check`` meta. Fully decoupled from
+        the catch-up slot — a user with catch_up_missed off (or no missed
+        daily check) must still get update checks. ``check_for_update``
+        spawns its own daemon thread, so this returns immediately."""
+        from core.updater import check_for_update, should_recheck_update
+
+        if state != Qt.ApplicationState.ApplicationActive:
+            return
+        if not self.ctx.settings.update_check_enabled:
+            return
+        now = datetime.now(timezone.utc)
+        if not should_recheck_update(self.ctx.state.get_meta("last_update_check"), now):
+            return
+        self.ctx.state.set_meta("last_update_check", now.isoformat())
+        check_for_update(
+            local_version=_LOCAL_VERSION,
+            on_update_available=lambda tag, url: self.update_available.emit(tag, url),
+            repo=self.ctx.settings.github_repo,
         )
 
     def _on_episode_done(
