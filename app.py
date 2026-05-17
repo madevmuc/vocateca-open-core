@@ -273,11 +273,12 @@ class ParagraphosApp(QObject):
         from core.updater import check_for_update
 
         self.update_available.connect(self._on_update_available)
-        check_for_update(
-            local_version=_LOCAL_VERSION,
-            on_update_available=lambda tag, url: self.update_available.emit(tag, url),
-            repo=self.ctx.settings.github_repo,
-        )
+        if self.ctx.settings.update_check_enabled:
+            check_for_update(
+                local_version=_LOCAL_VERSION,
+                on_update_available=lambda tag, url: self.update_available.emit(tag, url),
+                repo=self.ctx.settings.github_repo,
+            )
 
         if not QSystemTrayIcon.isSystemTrayAvailable():
             print("ERROR: system tray not available on this system.", flush=True)

@@ -61,6 +61,10 @@ class Settings(BaseModel):
     output_root: str = "~/Desktop/Paragraphos/transcripts"
     daily_check_time: str = "09:00"
     catch_up_missed: bool = True
+    # Master switch for the GitHub-release update check — gates BOTH the
+    # once-at-startup check and the on-activation re-check. Off → zero
+    # GitHub requests (honours the "no telemetry" stance).
+    update_check_enabled: bool = True
     # Auto-start queue when the app launches. On by default so opening
     # Paragraphos begins work immediately; turn off if you prefer the
     # queue to sit idle until you click Start.
