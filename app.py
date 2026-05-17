@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
 from core.logger import setup_logging  # noqa: E402
 from core.models import backfill_setup_completed  # noqa: E402
 from core.paths import migrate_from_legacy, user_data_dir  # noqa: E402
-from core.scheduler import should_catch_up  # noqa: E402
+from core.scheduler import check_counts_as_success, should_catch_up  # noqa: E402
 from core.version import VERSION as _LOCAL_VERSION  # noqa: E402
 from ui.app_context import AppContext  # noqa: E402
 from ui.first_run_wizard import show_wizard_if_needed  # noqa: E402
@@ -583,10 +583,15 @@ class ParagraphosApp(QObject):
         return (row[0] or 0) > 0
 
     def _on_check_done(self) -> None:
-        self.ctx.state.set_meta(
-            "last_successful_check",
-            datetime.now(timezone.utc).isoformat(),
-        )
+        from core.connectivity import is_online
+
+        stopped = bool(getattr(self._thread, "_stop", False)) if self._thread else False
+        paused = self.ctx.state.get_meta("queue_paused") == "1"
+        if check_counts_as_success(stopped=stopped, paused=paused, online=is_online()):
+            self.ctx.state.set_meta(
+                "last_successful_check",
+                datetime.now(timezone.utc).isoformat(),
+            )
         # Daily-summary notification: single consolidated message after a
         # run instead of one-per-episode. Useful for overnight catch-ups.
         if self.ctx.settings.notify_mode == "daily_summary":
