@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from core.scheduler import build_scheduler, should_catch_up
+from core.scheduler import build_scheduler, check_counts_as_success, should_catch_up
 
 
 def test_catch_up_needed_if_no_last_check():
@@ -32,3 +32,19 @@ def test_build_scheduler_registers_job():
     calls = []
     sched = build_scheduler("09:00", lambda: calls.append(1))
     assert sched.get_job("daily_check") is not None
+
+
+def test_success_when_clean_run_online():
+    assert check_counts_as_success(stopped=False, paused=False, online=True) is True
+
+
+def test_not_success_when_stopped():
+    assert check_counts_as_success(stopped=True, paused=False, online=True) is False
+
+
+def test_not_success_when_paused():
+    assert check_counts_as_success(stopped=False, paused=True, online=True) is False
+
+
+def test_not_success_when_offline():
+    assert check_counts_as_success(stopped=False, paused=False, online=False) is False

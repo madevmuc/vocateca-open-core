@@ -36,3 +36,12 @@ def build_scheduler(daily_time_hhmm: str, job: Callable[[], None]) -> Background
         job, CronTrigger(hour=int(hh), minute=int(mm)), id="daily_check", replace_existing=True
     )
     return sched
+
+
+def check_counts_as_success(*, stopped: bool, paused: bool, online: bool) -> bool:
+    """A daily check only advances ``last_successful_check`` when it ran
+    cleanly: not user-stopped / offline-paused, queue not paused, and the
+    network was up. Individual feed errors still count as success — they
+    have their own 1/3/7-day backoff, so one broken feed must not trigger
+    an endless catch-up loop."""
+    return not stopped and not paused and online
