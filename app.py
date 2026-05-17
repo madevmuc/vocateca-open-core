@@ -401,16 +401,26 @@ class ParagraphosApp(QObject):
     def _on_update_available(self, tag: str, url: str) -> None:
         """GUI-thread receiver for the updater's async callback. Stores
         the (tag, url) on AppContext so any later-opened MainWindow can
-        still find it, surfaces an in-window banner with a Download button,
-        and fires a one-shot tray notification."""
+        still find it, refreshes the in-window banner with a Download
+        button, and fires the tray notification once per release tag
+        (deduped via QSettings ``updater/notified_tag`` so re-checks and
+        relaunches don't re-nag for an already-announced version)."""
+        from PyQt6.QtCore import QSettings
+
+        from core.updater import should_notify_tag
+
         self.ctx.update_available_tag = tag
         self.ctx.update_available_url = url
         if self._window is not None:
             self._window.show_update_banner(tag, url)
-        self.tray.showMessage(
-            "Paragraphos update available",
-            f"{tag} is out — you have v{_LOCAL_VERSION}. Click the Download button in the window.",
-        )
+        s = QSettings("madevmuc", "Paragraphos")
+        if should_notify_tag(s.value("updater/notified_tag", "", type=str), tag):
+            self.tray.showMessage(
+                "Paragraphos update available",
+                f"{tag} is out — you have v{_LOCAL_VERSION}. "
+                "Click the Download button in the window.",
+            )
+            s.setValue("updater/notified_tag", tag)
 
     def _on_theme_changed(self, _mode: str) -> None:
         """Re-render the tray icon so its glyph color flips with the
