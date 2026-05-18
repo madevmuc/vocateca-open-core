@@ -66,7 +66,7 @@ later.
   full-context error messages with humanised exit codes (`exit -9
   (killed (SIGKILL — Stop button))`), live queue ETA, rotating log
   files, macOS notifications.
-- 🤖 **Headless / LLM-controllable** — 23-command CLI with `--json`
+- 🤖 **Headless / LLM-controllable** — a full-parity CLI with `--json`
   inspection (`status`, `episodes`, `failed`, `feed-health`, `set`,
   `priority`, `retranscribe`, `retry-failed`, …) so an agent can drive
   the whole app without touching the GUI. See **CLI** below.
