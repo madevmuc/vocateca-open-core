@@ -46,10 +46,19 @@ jobs:
           name: Paragraphos-dmg-${{ github.ref_name }}
           path: dist/*.dmg
 
+      # Curated highlights lead the release body (project rule: never ship
+      # only the auto-generated full commit list). awk prints from the
+      # first `## ` heading up to (not including) the next `## ` — i.e.
+      # exactly the newest CHANGELOG section, which is the tag being built.
+      - name: Extract changelog section for release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: awk '/^## /{c++} c==1' CHANGELOG.md > RELEASE_NOTES.md
+
       - name: Attach DMG to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.dmg
           draft: true
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true

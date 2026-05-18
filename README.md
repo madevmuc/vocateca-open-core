@@ -22,7 +22,7 @@ later.
 ![Status](https://img.shields.io/badge/status-v1.4.0-green)
 ![Platform](https://img.shields.io/badge/platform-macOS_Apple_Silicon-lightgrey)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
-![Tests](https://img.shields.io/badge/tests-429_passing-success)
+![Tests](https://img.shields.io/badge/tests-472_passing-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ---
