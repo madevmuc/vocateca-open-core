@@ -1,5 +1,40 @@
 # Paragraphos Changelog
 
+## v1.4.0 — 2026-05-18 (App-activation catch-up & update check)
+
+### Added
+- **Missed daily check now caught up on app activation.** Paragraphos
+  runs continuously in the tray, but the daily feed check only fired at
+  the scheduled time and was lost if the Mac was asleep/off, the app was
+  busy, or the check failed (offline). It is now re-run the next time the
+  app is brought to the foreground — gated to once per missed slot via
+  the existing `should_catch_up` logic, with a re-entrancy latch so a
+  rapid refocus during the start delay can't double-fire or emit a
+  spurious "already running" toast. A failed/offline/stopped check no
+  longer falsely marks the slot done, so it is genuinely retried.
+- **Periodic update check on app activation.** The GitHub-release update
+  check previously ran only once at startup, so a long-lived tray session
+  never noticed a new release. It now also re-checks when the app is
+  foregrounded, gated to at most once per 24 h, fully decoupled from the
+  catch-up path. A new **Settings → "Check for updates"** toggle (on by
+  default) governs both the startup and activation checks; off means zero
+  GitHub requests.
+- **Update notification deduped per release.** The tray "update
+  available" message now fires once per release tag instead of on every
+  launch / every check while an update is pending; the in-window banner
+  remains the persistent reminder.
+
+### Fixed
+- **Discovery routed through the shared httpx client.** iTunes podcast
+  search and cover-art fetching now use the same pooled `httpx` client
+  as the rest of the app instead of ad-hoc requests — consistent
+  timeouts, headers, and connection reuse.
+- **Worker orphan-claim scoped to the run-start snapshot.** The queue
+  worker could reclaim episodes added after a run began, pushing the
+  progress counter past the total (`done_idx > total`). Orphan-claim is
+  now bounded to the snapshot taken at run start, so `done_idx ≤ total`
+  always holds.
+
 ## v1.3.3 — 2026-05-04 (Library auto-refresh, install loop, log dates, Gatekeeper docs)
 
 ### Fixed

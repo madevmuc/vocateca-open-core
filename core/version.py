@@ -5,4 +5,4 @@ reads from here (or is grep'd against this value by the test suite).
 Bumping a release is a one-line change.
 """
 
-VERSION = "1.3.3"
+VERSION = "1.4.0"
