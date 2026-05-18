@@ -52,7 +52,9 @@ jobs:
       # exactly the newest CHANGELOG section, which is the tag being built.
       - name: Extract changelog section for release notes
         if: startsWith(github.ref, 'refs/tags/v')
-        run: awk '/^## /{c++} c==1' CHANGELOG.md > RELEASE_NOTES.md
+        run: |
+          awk '/^## /{c++} c==1' CHANGELOG.md > RELEASE_NOTES.md
+          test -s RELEASE_NOTES.md || { echo "::error::RELEASE_NOTES.md empty — CHANGELOG top section not matched by /^## /"; exit 1; }
 
       - name: Attach DMG to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')

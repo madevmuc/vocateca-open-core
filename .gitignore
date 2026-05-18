@@ -11,6 +11,9 @@ data/*
 build/
 dist/
 
+# generated during CI release-notes extraction (also when previewed locally)
+RELEASE_NOTES.md
+
 # python artefacts
 **/__pycache__/
 .pytest_cache/
