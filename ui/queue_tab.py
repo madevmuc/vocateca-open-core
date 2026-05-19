@@ -335,14 +335,25 @@ class QueueTab(QWidget):
         )
 
     def _update_btns(self):
+        from core.queue_status import queue_ui_state
+
         running = self.ctx.queue.running
         paused = self.ctx.state.get_meta("queue_paused") == "1"
-        self.start_btn.setEnabled(not running)
-        self.start_btn.setText("Resume" if paused else "Start")
-        self.pause_btn.setEnabled(running and not paused)
-        # Stop button enabled only while running. Reset its dual-stage
-        # state when the run actually ends (not just on graceful click).
-        self.stop_btn.setEnabled(running)
+        state = queue_ui_state(queue_paused=paused, running=running)
+
+        # idle: Start | running: Pause/Stop | pausing: drain in progress |
+        # paused: Resume (drained, halted).
+        self.start_btn.setEnabled(state in ("idle", "paused"))
+        self.start_btn.setText("Resume" if state == "paused" else "Start")
+        if state == "pausing":
+            self.pause_btn.setText("Pausing…")
+            self.pause_btn.setEnabled(False)
+        else:
+            self.pause_btn.setText("Pause")
+            self.pause_btn.setEnabled(state == "running")
+        # Stop stays available while the worker runs (incl. pausing) so
+        # the user can still force-abort the in-flight episode.
+        self.stop_btn.setEnabled(state in ("running", "pausing"))
         if not running and self._stop_pressed_once:
             self._stop_pressed_once = False
             self.stop_btn.setText("Stop")
