@@ -53,8 +53,10 @@ finishes / worker exits)--> `paused` --Resume--> `running`.
   `pausing: bool`).
 - When `pausing`: `Pill("Pausing", kind="pausing")`; replace the
   queue-fraction subtitle with "Finishing current episode…"; keep the
-  current-title line and the in-flight ETA (that ETA is now the
-  meaningful number — time until the drain completes).
+  current-title line. (**Superseded:** the design originally kept an
+  "in-flight ETA", but the only ETA available is a whole-queue estimate
+  that contradicts "pausing" — the implementation suppresses ETA
+  (`eta_sec=None`). See the plan's scope note + `_on_pause_state_changed`.)
 - Add a `kind="pausing"` (amber/orange) to the `Pill` class, mirroring
   the existing kind→colour map. Verify the exact `Pill` API during
   implementation.

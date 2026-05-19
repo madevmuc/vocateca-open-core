@@ -711,6 +711,7 @@ class ParagraphosApp(QObject):
                     " · ".join(parts) + "\n" + f"First: {t.get('_first_ep_title') or '—'}",
                 )
         self._run_tally = {}
+        self._last_tick = (0, 0, "")
         # Revert tray context menu to the idle shape.
         self._rebuild_tray_menu(running=False)
         # Briefly show ✓ on the tray, then revert to idle 'P'.
