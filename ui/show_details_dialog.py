@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.stats import compute_show_stats
+from core.watchlist_io import save_watchlist
 from ui.prioritize import (
     PRIORITY_RUN_NEXT,
     PRIORITY_RUN_NOW,
@@ -351,7 +352,7 @@ class ShowDetailsDialog(QDialog):
         # hit Save first. Best-effort — if ctx.data_dir isn't present we
         # fall through and the user can still click Save manually.
         try:
-            self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+            save_watchlist(self.ctx)
             parent = self.parent()
             while parent is not None:
                 shows_tab = getattr(parent, "shows_tab", None)
@@ -942,7 +943,7 @@ class ShowDetailsDialog(QDialog):
         self.show_.whisper_prompt = self._whisper_prompt_edit.toPlainText().strip()
         if self.transcript_pref_combo is not None:
             self.show_.youtube_transcript_pref = self.transcript_pref_combo.currentData() or ""
-        self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
         self.accept()
 
     def _mark_stale(self):
@@ -971,5 +972,5 @@ class ShowDetailsDialog(QDialog):
         if resp != QMessageBox.StandardButton.Yes:
             return
         self.ctx.watchlist.shows = [s for s in self.ctx.watchlist.shows if s.slug != self.slug]
-        self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
         self.accept()

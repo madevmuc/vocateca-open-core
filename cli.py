@@ -118,40 +118,65 @@ def _coerce_value(default: Any, raw: str) -> Any:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
+    from core.backlog import BacklogError, apply_backlog, parse_backlog
+    from core.stats import _parse_duration as _pd
+    from core.watchlist_guard import mark_decided
+
+    # Parse the backlog mode FIRST — before any network/IO — so a bad
+    # --backlog value fails fast without touching feeds or state.
+    try:
+        mode = parse_backlog(args.backlog)
+    except BacklogError as e:
+        print(e, file=sys.stderr)
+        return 2
+
     inp = args.name_or_url.strip()
     if inp.startswith("http"):
         rss = find_rss_from_url(inp) or inp
     else:
         matches = search_itunes(inp)
         if not matches:
-            print("no matches")
+            print("no matches", file=sys.stderr)
             return 2
-        for i, m in enumerate(matches[:5]):
-            print(f"[{i}] {m.title} — {m.author}  ({m.feed_url})")
-        choice = input("pick index: ").strip()
-        rss = matches[int(choice)].feed_url
+        if args.yes:
+            rss = matches[0].feed_url
+        else:
+            for i, m in enumerate(matches[:5]):
+                print(f"[{i}] {m.title} — {m.author}  ({m.feed_url})")
+            choice = input("pick index: ").strip()
+            rss = matches[int(choice)].feed_url
 
     meta = feed_metadata(rss)
     manifest = build_manifest(rss)
-    slug_default = slugify(meta["title"])
-    slug = input(f"slug [{slug_default}]: ").strip() or slug_default
+    slug = args.slug or slugify(meta["title"])
+    if not args.yes:
+        slug = input(f"slug [{slug}]: ").strip() or slug
 
     prompt = suggest_whisper_prompt(
         title=meta["title"],
         author=meta["author"],
         episodes=[{"title": e["title"], "description": e["description"]} for e in manifest[-20:]],
     )
-    print(f"suggested prompt:\n  {prompt}")
-    custom = input("override prompt (enter to keep): ").strip()
-    if custom:
-        prompt = custom
+    if not args.yes:
+        print(f"suggested prompt:\n  {prompt}")
+        custom = input("override prompt (enter to keep): ").strip()
+        if custom:
+            prompt = custom
 
     wl = _watchlist()
     if any(s.slug == slug for s in wl.shows):
-        print(f"show {slug!r} already in watchlist")
+        print(f"show {slug!r} already in watchlist", file=sys.stderr)
         return 3
-    wl.shows.append(Show(slug=slug, title=meta["title"], rss=rss, whisper_prompt=prompt))
-    wl.save(DATA / "watchlist.yaml")
+    wl.shows.append(
+        Show(
+            slug=slug,
+            title=meta["title"],
+            rss=rss,
+            whisper_prompt=prompt,
+            language=(args.lang or "de"),
+        )
+    )
+    wl.save_atomic(DATA / "watchlist.yaml")
 
     state = _state()
     for ep in manifest:
@@ -161,8 +186,11 @@ def cmd_add(args: argparse.Namespace) -> int:
             title=ep["title"],
             pub_date=ep["pubDate"],
             mp3_url=ep["mp3_url"],
+            duration_sec=_pd(ep.get("duration", "")),
         )
-    print(f"added '{slug}' with {len(manifest)} episodes")
+    apply_backlog(state, slug, mode, manifest)
+    mark_decided(state, slug)
+    print(f"added '{slug}' ({len(manifest)} episodes, backlog={args.backlog})")
     return 0
 
 
@@ -1030,6 +1058,14 @@ def main() -> int:
     # — existing
     a = sub.add_parser("add", help="add a show by name / RSS / YouTube URL (interactive)")
     a.add_argument("name_or_url")
+    a.add_argument("--backlog", required=True, help="all | recent | last:N | since:YYYY-MM-DD")
+    a.add_argument("--slug", default=None, help="override the derived slug")
+    a.add_argument("--lang", default=None, help="whisper language code (default de)")
+    a.add_argument(
+        "--yes",
+        action="store_true",
+        help="non-interactive: accept the first iTunes match / derived slug",
+    )
     a.set_defaults(fn=cmd_add)
 
     s_shows = sub.add_parser("shows", help="list all shows in the watchlist")

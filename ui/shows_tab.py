@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.watchlist_io import save_watchlist
 from ui.app_context import AppContext
 from ui.widgets import FilterPopover, Pill
 
@@ -678,7 +679,7 @@ class ShowsTab(QWidget):
         for show in self.ctx.watchlist.shows:
             if show.slug == slug:
                 show.enabled = not show.enabled
-        self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
         self.refresh()
 
     # ----- bulk actions on multi-selected rows --------------------------
@@ -705,7 +706,7 @@ class ShowsTab(QWidget):
             s = self._find_show(slug)
             if s:
                 s.enabled = False
-        self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
         self.refresh()
 
     def _do_bulk_enable(self) -> None:
@@ -713,7 +714,7 @@ class ShowsTab(QWidget):
             s = self._find_show(slug)
             if s:
                 s.enabled = True
-        self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
         self.refresh()
 
     def _do_bulk_stale(self) -> None:
@@ -739,5 +740,5 @@ class ShowsTab(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         self.ctx.watchlist.shows = [s for s in self.ctx.watchlist.shows if s.slug not in slugs]
-        self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
         self.refresh()

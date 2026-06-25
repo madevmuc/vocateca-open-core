@@ -39,6 +39,7 @@ from core.prompt_gen import suggest_whisper_prompt
 from core.rss import FeedHealth, build_manifest_with_url, feed_metadata
 from core.sanitize import slugify
 from core.sources import youtube_enabled
+from core.watchlist_io import save_watchlist
 from core.youtube import (
     YoutubeUrlError,
     parse_youtube_url,
@@ -1337,7 +1338,7 @@ class AddShowDialog(QDialog):
             model_kwargs["language"] = _lang
         model = Show(**model_kwargs)
         self.updated_watchlist.shows.append(model)
-        self.updated_watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
 
         # Seed episodes in state; handle backlog strategy.
         manifest = show.get("manifest") or []
@@ -1418,5 +1419,13 @@ class AddShowDialog(QDialog):
                         f"WHERE show_slug=? AND guid IN ({placeholders})",
                         (slug, *stale_guids),
                     )
+
+        # A GUI add IS a backlog decision (we seeded episodes + applied the
+        # strategy above), so mark the show decided — otherwise the worker's
+        # per-show gate would wrongly skip it. Mirrors the blessed CLI
+        # `paragraphos add`, which sets the same marker.
+        from core.watchlist_guard import mark_decided
+
+        mark_decided(self.ctx.state, slug)
 
         self.accept()

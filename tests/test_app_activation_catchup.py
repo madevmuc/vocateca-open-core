@@ -31,7 +31,30 @@ class _FakeApp:
     """Carries exactly the attributes ``_on_app_activated`` touches."""
 
     def __init__(self, state: StateStore, settings: Settings, *, busy: bool = False):
-        self.ctx = types.SimpleNamespace(state=state, settings=settings)
+        from pathlib import Path
+
+        from core.models import Watchlist
+
+        # Extend ctx with the attributes the new _maybe_reload_watchlist
+        # checkpoint touches. With _watchlist_hash="" (empty baseline),
+        # is_external_change returns False, so the reload is a safe no-op and
+        # never reads the (nonexistent) data_dir/watchlist.yaml path.
+        self.ctx = types.SimpleNamespace(
+            state=state,
+            settings=settings,
+            data_dir=Path("/nonexistent"),
+            watchlist=Watchlist(),
+            _watchlist_hash="",
+        )
+        # Exercise the REAL checkpoint; the empty baseline above makes it a
+        # safe no-op (no file read), so the catch-up assertions are unaffected.
+        self._maybe_reload_watchlist = lambda: app_module.ParagraphosApp._maybe_reload_watchlist(
+            self
+        )
+        # _on_app_activated now also runs the 24h auto-accept sweep. With an
+        # EMPTY watchlist, undecided_slugs returns [] → safe no-op, so the
+        # catch-up assertions below are unaffected.
+        self._auto_accept_overdue = lambda: app_module.ParagraphosApp._auto_accept_overdue(self)
         self._is_queue_busy = lambda: busy
         self._catch_up_pending = False
         self._auto_start_delay_ms = 5000

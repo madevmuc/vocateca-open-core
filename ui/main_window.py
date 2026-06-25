@@ -106,12 +106,13 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         # Banner is a QWidget (not a bare QLabel) so it can host an action
         # button (Download) and a dismiss button alongside the message.
-        # Three logical states:
+        # Four logical states:
         #   "compile" — transcripts newer than last wiki compile
         #   "update"  — new Paragraphos release available
         #   "offline" — network is down, queue paused, will auto-resume
+        #   "newshow" — externally-added shows awaiting a backlog decision
         self.banner = QWidget()
-        self._banner_state: str = ""  # "", "compile", "update", or "offline"
+        self._banner_state: str = ""  # "", "compile", "update", "offline", or "newshow"
         self._update_tag: str = ""
         self._update_url: str = ""
         bl = QHBoxLayout(self.banner)
@@ -408,10 +409,11 @@ class MainWindow(QMainWindow):
             btn_bg = t["accent"]
             btn_fg = "#ffffff"
         else:
-            # compile / offline / default — warn family (amber). Offline
-            # piggy-backs on the same palette: it's a transient pause-state,
-            # not an error, so the warn hue (rather than danger red) reads
-            # right.
+            # compile / offline / newshow / default — warn family (amber).
+            # Offline piggy-backs on the same palette: it's a transient
+            # pause-state, not an error, so the warn hue (rather than danger
+            # red) reads right. newshow joins it: a "needs a decision" prompt,
+            # not an error.
             warn = t["warn"]
             if dark:
                 # Translucent warn wash — matches the pill_fail_bg pattern
@@ -551,6 +553,29 @@ class MainWindow(QMainWindow):
         # compile reminder + update banner are noise until reconnect.
         if self._banner_state == "offline":
             return
+        # New-show detection sits just below offline: an externally-added show
+        # awaiting a backlog decision needs the user's input, so it outranks
+        # the (informational) update + compile banners. It is gated below
+        # offline so it can never hide the queue-paused notice.
+        from core.watchlist_guard import undecided_slugs
+
+        undecided = undecided_slugs(self.ctx.watchlist, self.ctx.state)
+        if undecided:
+            self._banner_state = "newshow"
+            self.banner_label.setText(
+                f"{len(undecided)} new show(s) detected — choose how much history "
+                f"(full archive auto-applied in 24h)"
+            )
+            self.banner_action_btn.setText("Choose…")
+            self.banner_action_btn.setVisible(True)
+            self._apply_banner_style()
+            self.banner.setVisible(True)
+            return
+        if self._banner_state == "newshow":
+            # Everything is now decided — clear the stale new-show banner.
+            self._banner_state = ""
+            self.banner.setVisible(False)
+
         # Update-available takes priority over the wiki-compile reminder —
         # a new release is a one-click action the user cares about more.
         tag = getattr(self.ctx, "update_available_tag", "") or self._update_tag
@@ -632,6 +657,20 @@ class MainWindow(QMainWindow):
     def _on_banner_action(self) -> None:
         if self._banner_state == "update" and self._update_url:
             QDesktopServices.openUrl(QUrl(self._update_url))
+        elif self._banner_state == "newshow":
+            self._open_reconcile_dialog()
+
+    def _open_reconcile_dialog(self) -> None:
+        """Open the backlog-reconcile dialog for externally-added shows, then
+        refresh the Shows tab + banner to reflect any decisions made."""
+        from ui.reconcile_dialog import ReconcileDialog
+
+        ReconcileDialog(self.ctx, self).exec()
+        try:
+            self.shows_tab.refresh()
+        except Exception:
+            pass
+        self._refresh_banner()
 
     def _dismiss_banner(self) -> None:
         if self._banner_state == "update" and self._update_tag:

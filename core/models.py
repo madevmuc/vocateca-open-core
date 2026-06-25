@@ -56,6 +56,23 @@ class Watchlist(BaseModel):
             encoding="utf-8",
         )
 
+    def save_atomic(self, path: Path) -> None:
+        """Crash-safe write: serialize to a temp file in the same dir, then
+        os.replace() (atomic on POSIX) so a reader never sees a half file."""
+        import os
+        import tempfile
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = yaml.safe_dump(self.model_dump(), allow_unicode=True, sort_keys=False)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
 
 class Settings(BaseModel):
     output_root: str = "~/Desktop/Paragraphos/transcripts"

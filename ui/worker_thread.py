@@ -42,9 +42,20 @@ from core.pipeline import (
 )
 from core.rss import build_manifest_with_url
 from core.state import EpisodeStatus
+from core.watchlist_io import save_watchlist
 
 # Sentinel pushed onto the queue to tell the transcribe worker "no more work".
 _SHUTDOWN = object()
+
+
+def show_is_gated(state, slug: str) -> bool:
+    """A show is skipped this pass if it is per-show paused OR has no backlog
+    decision yet (an externally-added show awaiting the reconcile choice)."""
+    from core.watchlist_guard import is_decided
+
+    if state.get_meta(f"show_paused:{slug}") == "1":
+        return True
+    return not is_decided(state, slug)
 
 
 class _DownloadPool(QThread):
@@ -558,8 +569,8 @@ class CheckAllThread(QThread):
             if not self.force and backoff.in_backoff(self.ctx.state, show.slug):
                 self.progress.emit(f"skip {show.slug} (in backoff after repeated feed failures)")
                 continue
-            if self.ctx.state.get_meta(f"show_paused:{show.slug}") == "1":
-                self.progress.emit(f"skip {show.slug} (paused per-show)")
+            if show_is_gated(self.ctx.state, show.slug):
+                self.progress.emit(f"skip {show.slug} (paused or backlog undecided)")
                 continue
             fetch_targets.append(show)
 
@@ -620,7 +631,7 @@ class CheckAllThread(QThread):
             if canonical and canonical != show.rss:
                 self.progress.emit(f"feed moved: {show.rss} → {canonical} — updating watchlist")
                 show.rss = canonical
-                self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+                save_watchlist(self.ctx)
             # manifest is None on a 304 — skip the upsert pass (nothing new
             # to add) but still collect existing pending episodes below.
             if manifest is not None:

@@ -109,7 +109,7 @@ def test_all_expected_subcommands_registered():
         ["retry-all-feeds"],
         ["set-setting", "parallel_transcribe", "4"],
         ["check", "--show", "ted", "--limit", "3"],
-        ["add", "https://example.com/feed.rss"],
+        ["add", "https://example.com/feed.rss", "--backlog", "all"],
         ["import-feeds"],
         ["list", "--json"],
     ],
@@ -158,3 +158,17 @@ def test_show_settable_keys_are_real_show_fields():
     show_fields = set(Show.model_fields.keys())
     leftover = set(cli._SHOW_SETTABLE) - show_fields
     assert not leftover, f"_SHOW_SETTABLE keys not on Show: {sorted(leftover)}"
+
+
+def test_add_requires_backlog():
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["add", "Some Podcast"])  # missing --backlog → error
+
+
+def test_add_accepts_backlog_and_flags():
+    parser = _build_parser()
+    ns = parser.parse_args(
+        ["add", "http://h/rss", "--backlog", "last:5", "--slug", "x", "--lang", "de", "--yes"]
+    )
+    assert ns.backlog == "last:5" and ns.slug == "x" and ns.yes is True

@@ -7,12 +7,21 @@ from PyQt6.QtWidgets import QApplication, QWidget
 
 
 @pytest.fixture(autouse=True)
-def _stub_heavy_panes(monkeypatch):
+def _stub_heavy_panes(tmp_path, monkeypatch):
     """Stub SettingsPane + AboutPane to keep MainWindow construction
     hermetic — avoids SettingsPane's (potentially in-progress) attribute
     wiring and AboutPane's background network thread hitting GitHub.
+
+    Also redirect ``DATA_DIR`` to a per-test tmp dir so that constructing
+    MainWindow() (which does ``AppContext.load(DATA_DIR)`` and now runs
+    grandfather_existing, writing meta to state.sqlite) never touches the
+    user's real ~/Library/.../Paragraphos. The conftest autouse fixture
+    guards ``core.paths.user_data_dir``, but MainWindow uses the import-time
+    ``DATA_DIR`` capture, so it must be patched here.
     """
     import ui.main_window as mw
+
+    monkeypatch.setattr(mw, "DATA_DIR", tmp_path, raising=True)
 
     class _StubPane(QWidget):
         def __init__(self, *a, **kw):

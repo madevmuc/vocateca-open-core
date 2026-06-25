@@ -1,5 +1,27 @@
 # Paragraphos Changelog
 
+## Unreleased — AI-operator guardrails
+
+### Added
+- **Blessed `add` CLI with a required `--backlog` choice.** `cli.py add …
+  --backlog <all|recent|last:N|since:DATE>` is the supported way for scripts
+  and AIs to add a show: it seeds episode state, applies the history-vs-future
+  strategy, sets the show "decided", and writes `watchlist.yaml` atomically.
+  The flag is **mandatory**, so an automated add can no longer silently
+  transcribe a show's entire back-catalogue.
+- **The running app no longer clobbers external `watchlist.yaml` edits.** It
+  records a content hash on load and detects external changes (watchdog +
+  checkpoints before every run and on app activation), then **union-merges**
+  instead of overwriting — so an edit made while the app is running sticks
+  rather than vanishing on the next save.
+- **"New show detected" reconcile flow.** A show that appears outside the
+  blessed paths is gated (its episodes aren't queued) and surfaced by a
+  Shows-tab banner; "Choose…" opens a per-show backlog picker. Left
+  unanswered, the full-history default is auto-applied after 24h so the app
+  keeps running unattended.
+- **`AGENTS.md`** at the repo root documenting the above for AIs operating
+  Paragraphos headlessly.
+
 ## v1.4.0 — 2026-05-18 (App-activation catch-up & update check)
 
 ### Added

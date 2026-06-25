@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
 )
 
+from core.watchlist_io import save_watchlist
 from ui.widgets.pill import Pill
 
 
@@ -302,7 +303,7 @@ def _import_opml(window) -> None:
                     mp3_url=ep["mp3_url"],
                 )
             added += 1
-        window.ctx.watchlist.save(window.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(window.ctx)
         window.shows_tab.refresh()
         dlg.setValue(total)
         dlg.close()
