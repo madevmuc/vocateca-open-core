@@ -48,3 +48,27 @@ def test_maybe_reload_adopts_and_stamps_external_addition(tmp_path):
     assert "new" in slugs  # adopted (no clobber)
     assert is_decided(ctx.state, "new") is False  # still undecided
     assert ctx.state.get_meta(DETECTED_AT("new")) is not None  # first-seen stamped
+
+
+def test_auto_accept_overdue_method_decides_overdue_show(tmp_path):
+    """The REAL ParagraphosApp._auto_accept_overdue, driven against a stand-in
+    self with a real ctx: an undecided show first-seen >24h ago becomes decided
+    after the sweep (no Qt loop)."""
+    from datetime import datetime, timedelta, timezone
+
+    from core.watchlist_guard import mark_detected_now
+
+    wl = Watchlist(shows=[Show(slug="ext", title="ext", rss="http://h/ext")])
+    state = StateStore(tmp_path / "state.sqlite")
+    state.init_schema()
+    # Stamp first-seen well over 24h ago so the sweep (which uses now=utcnow)
+    # finds it overdue.
+    mark_detected_now(state, "ext", now=datetime.now(timezone.utc) - timedelta(hours=25))
+    assert is_decided(state, "ext") is False
+
+    ctx = types.SimpleNamespace(watchlist=wl, state=state)
+    self = types.SimpleNamespace(ctx=ctx)
+
+    app_module.ParagraphosApp._auto_accept_overdue(self)
+
+    assert is_decided(state, "ext") is True

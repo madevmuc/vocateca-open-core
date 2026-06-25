@@ -73,6 +73,18 @@ def auto_accept_due(state, slug: str, *, now: datetime) -> bool:
     return now.astimezone(timezone.utc) - detected >= timedelta(hours=AUTO_ACCEPT_HOURS)
 
 
+def auto_accept_overdue(watchlist, state, *, now) -> List[str]:
+    """Auto-accept the default (full history) for any undecided show whose
+    24h window has elapsed: mark it decided (no seeding — the next worker
+    fetch upserts the full feed as pending). Returns the slugs auto-accepted."""
+    accepted = []
+    for slug in undecided_slugs(watchlist, state):
+        if auto_accept_due(state, slug, now=now):
+            mark_decided(state, slug)
+            accepted.append(slug)
+    return accepted
+
+
 def grandfather_existing(watchlist, state) -> bool:
     """One-time: mark every show currently in the watchlist as decided so the
     new gate doesn't ambush pre-existing shows. Returns True if it ran."""

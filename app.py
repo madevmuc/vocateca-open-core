@@ -509,6 +509,15 @@ class ParagraphosApp(QObject):
 
         detect_external_and_stamp(self.ctx, now=datetime.now(timezone.utc))
 
+    def _auto_accept_overdue(self) -> None:
+        """Checkpoint: auto-accept the full-history default for any externally-
+        added show left undecided past 24h, so the app keeps running unattended."""
+        from datetime import datetime, timezone
+
+        from core.watchlist_guard import auto_accept_overdue
+
+        auto_accept_overdue(self.ctx.watchlist, self.ctx.state, now=datetime.now(timezone.utc))
+
     def _run_check(self, *, force: bool = False) -> None:
         # If the window exists, delegate to ShowsTab.start_check() — that path
         # wires the Stop button correctly. Otherwise fall back to owning the
@@ -519,6 +528,7 @@ class ParagraphosApp(QObject):
         # points (tray "Check now"). Scheduler / startup catch-up call this
         # with the default False so feed backoff is respected.
         self._maybe_reload_watchlist()
+        self._auto_accept_overdue()
         if self._window is not None:
             started = self._window.shows_tab.start_check(force=force)
             if not started:
@@ -548,6 +558,7 @@ class ParagraphosApp(QObject):
         if state != Qt.ApplicationState.ApplicationActive:
             return
         self._maybe_reload_watchlist()
+        self._auto_accept_overdue()
         if self._catch_up_pending:
             return
         if not self.ctx.settings.catch_up_missed:

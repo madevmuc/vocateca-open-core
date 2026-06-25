@@ -51,6 +51,10 @@ class _FakeApp:
         self._maybe_reload_watchlist = lambda: app_module.ParagraphosApp._maybe_reload_watchlist(
             self
         )
+        # _on_app_activated now also runs the 24h auto-accept sweep. With an
+        # EMPTY watchlist, undecided_slugs returns [] → safe no-op, so the
+        # catch-up assertions below are unaffected.
+        self._auto_accept_overdue = lambda: app_module.ParagraphosApp._auto_accept_overdue(self)
         self._is_queue_busy = lambda: busy
         self._catch_up_pending = False
         self._auto_start_delay_ms = 5000

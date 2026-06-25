@@ -86,3 +86,31 @@ def test_auto_accept_boundary_and_naive(tmp_path):
     # a naive timestamp in the store must not raise; treated as UTC → 25h → due
     st.set_meta(DETECTED_AT("naive"), "2026-06-24T11:00:00")
     assert auto_accept_due(st, "naive", now=now) is True
+
+
+def test_auto_accept_overdue_marks_only_overdue(tmp_path):
+    from datetime import datetime, timezone
+
+    from core.watchlist_guard import auto_accept_overdue, is_decided
+
+    st = _state(tmp_path)
+    wl = _wl("old", "new")
+    now = datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc)
+    mark_detected_now(st, "old", now=datetime(2026, 6, 24, 6, 0, tzinfo=timezone.utc))  # >24h
+    mark_detected_now(st, "new", now=datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc))  # <24h
+    accepted = auto_accept_overdue(wl, st, now=now)
+    assert accepted == ["old"]
+    assert is_decided(st, "old") is True
+    assert is_decided(st, "new") is False
+
+
+def test_auto_accept_overdue_skips_already_decided(tmp_path):
+    from datetime import datetime, timezone
+
+    from core.watchlist_guard import auto_accept_overdue, mark_decided
+
+    st = _state(tmp_path)
+    wl = _wl("a")
+    mark_decided(st, "a")  # already decided → never in undecided_slugs
+    now = datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc)
+    assert auto_accept_overdue(wl, st, now=now) == []
