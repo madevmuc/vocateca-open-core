@@ -14,6 +14,7 @@ from unittest.mock import patch
 def test_progress_cb_fires_from_stdout_log(tmp_path: Path):
     from core.transcriber import transcribe_episode
 
+    (tmp_path / "fake.mp3").write_bytes(b"\x00" * 1024)
     calls: list[int] = []
 
     def cb(sec: int) -> None:
@@ -71,6 +72,8 @@ def test_progress_cb_none_uses_classic_path(tmp_path: Path):
     """When progress_cb is None we stay on plain subprocess.run — existing
     tests rely on this (they only mock subprocess.run)."""
     from core.transcriber import transcribe_episode
+
+    (tmp_path / "fake.mp3").write_bytes(b"\x00" * 1024)
 
     def fake_run(cmd, *a, **kw):
         stem = None

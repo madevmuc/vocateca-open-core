@@ -82,17 +82,20 @@ def _find_existing_audio(audio_dir: Path, pub_date: str, title: str) -> Path | N
     catches it.
 
     Match is conservative: same `YYYY-MM-DD` prefix AND the file's
-    stem must contain the first 20 chars of the sanitised title (so
-    two episodes from the same date with different titles don't get
-    crossed). Falls back to ``None`` if 0 or 2+ candidates remain
-    after the title check.
+    stem must contain the FULL sanitised title (matching build_slug's
+    120-byte cap). An earlier 20-char prefix match was too loose — it
+    crossed '(1/2)' and '(2/2)' parts (identical first 20 chars), handing
+    part 2 part 1's audio. The full title still tolerates episode_number
+    drift (only the number between date and title differs) while keeping
+    distinct episodes apart. Falls back to ``None`` if 0 or 2+ candidates
+    remain after the title check.
     """
     if not audio_dir.is_dir():
         return None
     date_prefix = (pub_date or "")[:10]
     if not date_prefix:
         return None
-    title_part = sanitize_filename(title or "", max_bytes=120)[:20]
+    title_part = sanitize_filename(title or "", max_bytes=120)
     candidates = sorted(audio_dir.glob(f"{date_prefix}_*"))
     candidates = [
         p
@@ -144,9 +147,16 @@ def download_phase(
     if ep is None:
         raise ValueError(f"unknown guid {guid}")
 
-    slug = build_slug(ep["pub_date"], ep["title"], episode_number)
+    base_slug = build_slug(ep["pub_date"], ep["title"], episode_number)
+    # Reserve a unique-per-guid slug up front. build_slug is NOT unique —
+    # feed re-uploads and '(1/2)'/'(2/2)' parts collapse to the same slug,
+    # so without this two episodes share one <slug>.mp3 + <slug>.md (→ a
+    # retention unlink races into `whisper-cli exit 2`, or silent transcript
+    # overwrite). See StateStore.reserve_slug.
+    slug = ctx.state.reserve_slug(guid, base_slug)
 
-    # 1) Dedup
+    # 1) Dedup — key on the reserved slug so a re-run finds its OWN
+    # transcript, never a same-titled sibling's.
     dup = ctx.library.check_dedup(guid=guid, filename_key=slug)
     if dup.matched:
         ctx.state.set_status(guid, EpisodeStatus.DONE)
@@ -177,7 +187,13 @@ def download_phase(
     #     Glob for any `<YYYY-MM-DD>_*.mp3` in the audio dir whose
     #     stem ends in the same sanitized title; if found, skip the
     #     network round-trip and use it.
-    existing = _find_existing_audio(audio_dir, ep["pub_date"], ep["title"])
+    # Only the guid that owns the *clean* slug may adopt a drift-recovered
+    # file by globbing date+title. A disambiguated claimant (slug !=
+    # base_slug) must use its own reserved path — otherwise it would
+    # re-adopt the very sibling file reservation just steered it away from.
+    existing = (
+        _find_existing_audio(audio_dir, ep["pub_date"], ep["title"]) if slug == base_slug else None
+    )
     if existing is not None:
         # Persist + return so transcribe_phase reads from the real file,
         # not the slug-rebuilt guess.
@@ -331,8 +347,10 @@ def transcribe_phase(outcome: DownloadOutcome, ctx: PipelineContext) -> Pipeline
         # Never let fingerprint bookkeeping break a successful transcribe.
         pass
 
-    # Retention
-    if ctx.delete_mp3_after:
+    # Retention — but never unlink a file another episode still needs.
+    # Unique slugs make sharing impossible going forward; this also
+    # protects legacy rows written before reservation existed.
+    if ctx.delete_mp3_after and not ctx.state.other_active_uses_mp3_path(guid, str(mp3_path)):
         try:
             mp3_path.unlink()
         except OSError:
@@ -375,7 +393,7 @@ def _process_local_episode(
     if ep is None:
         raise ValueError(f"unknown guid {guid}")
 
-    slug = build_slug(ep["pub_date"], ep["title"], episode_number)
+    slug = ctx.state.reserve_slug(guid, build_slug(ep["pub_date"], ep["title"], episode_number))
 
     dup = ctx.library.check_dedup(guid=guid, filename_key=slug)
     if dup.matched:
@@ -458,7 +476,7 @@ def _process_youtube_episode(
     if ep is None:
         raise ValueError(f"unknown guid {guid}")
 
-    slug = build_slug(ep["pub_date"], ep["title"], episode_number)
+    slug = ctx.state.reserve_slug(guid, build_slug(ep["pub_date"], ep["title"], episode_number))
 
     # Dedup — same key as podcast path.
     dup = ctx.library.check_dedup(guid=guid, filename_key=slug)
@@ -550,7 +568,7 @@ def _process_youtube_episode(
         srt_path = wresult.srt_path
         transcript_source = "whisper"
 
-        if ctx.delete_mp3_after:
+        if ctx.delete_mp3_after and not ctx.state.other_active_uses_mp3_path(guid, str(mp3_path)):
             try:
                 mp3_path.unlink()
             except OSError:

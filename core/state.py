@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -52,6 +53,17 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- Per-guid claim on a filesystem slug. The slug IS an episode's on-disk
+-- identity (`<slug>.mp3` / `<slug>.md`), but build_slug (date + ep-num +
+-- title) is NOT unique: feed re-uploads and '(1/2)'/'(2/2)' parts collapse
+-- to the same slug, so two episodes would share one audio file and one
+-- transcript. The PRIMARY KEY on slug serialises concurrent claims; the
+-- UNIQUE on guid keeps reservation idempotent. See StateStore.reserve_slug.
+CREATE TABLE IF NOT EXISTS slug_reservations (
+    slug TEXT PRIMARY KEY,
+    guid TEXT NOT NULL UNIQUE
 );
 """
 
@@ -187,6 +199,65 @@ class StateStore:
         real file (saved with the genuine episode number)."""
         with self._conn() as c:
             c.execute("UPDATE episodes SET mp3_path=? WHERE guid=?", (mp3_path, guid))
+
+    def reserve_slug(self, guid: str, base_slug: str) -> str:
+        """Return a slug for ``guid`` that is unique across all episodes.
+
+        An episode's on-disk identity (its ``<slug>.mp3`` and ``<slug>.md``)
+        is the slug, but :func:`core.pipeline.build_slug` is not unique —
+        two episodes with the same publish date + title (feed re-uploads,
+        or ``(1/2)`` vs ``(2/2)`` parts) collapse to one slug and would
+        share one audio file and one transcript. Under parallel
+        transcription the first to finish unlinks the shared mp3
+        (retention) and the second fails whisper-cli with ``exit 2`` ("no
+        input files"); pairs that both "succeed" silently overwrite each
+        other's transcript.
+
+        This claims ``base_slug`` via the slug PRIMARY KEY. If another guid
+        already owns it, a short deterministic guid fingerprint is appended
+        (``<base>-<hash8>``) so the slug stays human-readable and stable
+        across runs. Idempotent: a guid that already holds a reservation
+        keeps it.
+        """
+        digest = hashlib.sha1(guid.encode("utf-8")).hexdigest()
+        with self._conn() as c:
+            row = c.execute("SELECT slug FROM slug_reservations WHERE guid=?", (guid,)).fetchone()
+            if row is not None:
+                return row["slug"]
+            # Try the clean slug, then a short-hash-suffixed one. A failed
+            # INSERT (slug already owned by another guid) is a statement-
+            # level error in SQLite — the transaction stays usable, so we
+            # just move to the next candidate.
+            for cand in (base_slug, f"{base_slug}-{digest[:8]}"):
+                try:
+                    c.execute(
+                        "INSERT INTO slug_reservations (slug, guid) VALUES (?, ?)",
+                        (cand, guid),
+                    )
+                    return cand
+                except sqlite3.IntegrityError:
+                    continue
+            # Both taken by other guids (would need a sha1-prefix collision).
+            # Fall back to the full digest to guarantee uniqueness.
+            cand = f"{base_slug}-{digest}"
+            c.execute("INSERT INTO slug_reservations (slug, guid) VALUES (?, ?)", (cand, guid))
+            return cand
+
+    def other_active_uses_mp3_path(self, guid: str, mp3_path: str) -> bool:
+        """True if some OTHER episode still needs this exact audio file
+        (status not yet done/failed). Guards the post-transcribe retention
+        unlink so a finishing episode never deletes a file a concurrent
+        duplicate still points at. With unique slugs this is belt-and-
+        suspenders, but it also protects legacy rows written before
+        reservation existed."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM episodes WHERE mp3_path=? AND guid!=? "
+                "AND status IN ('pending','downloading','downloaded','transcribing') "
+                "LIMIT 1",
+                (mp3_path, guid),
+            ).fetchone()
+            return row is not None
 
     def set_status(
         self, guid: str, status: EpisodeStatus, *, error_text: Optional[str] = None

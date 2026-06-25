@@ -233,6 +233,8 @@ def _explain_exit(rc: int) -> str:
         return "aborted (SIGABRT — whisper-cli internal assertion)"
     if rc == -11 or rc == 139:
         return "segfault (SIGSEGV — whisper-cli crash; report with stderr)"
+    if rc == 2:
+        return "no input file (the audio path handed to whisper-cli did not exist)"
     if rc == 124:
         return "timeout (per-MP3 deadline exceeded)"
     if rc == 127:
@@ -308,6 +310,27 @@ def transcribe_episode(
     -ac 0, --no-fallback) at slight quality cost. `processors` enables
     whisper-cli's `-p N` audio-split parallelism for long episodes.
     """
+    # Pre-flight: a missing input file is the ONE condition whisper-cli
+    # signals only as `exit 2` + a full usage dump — the actual
+    # "error: input file not found '<path>'" line scrolls off the top of
+    # stderr, so the `stderr[-400:]` snippet below would keep just the
+    # VAD-options tail. Catch it here with a precise message instead.
+    # A vanished mp3 at this point almost always means another episode
+    # collapsed to the same slug and its retention sweep unlinked the
+    # shared file first — see core.state.reserve_slug for the fix that
+    # keeps slugs unique per guid.
+    try:
+        input_missing = not mp3_path.exists()
+    except OSError:
+        input_missing = True
+    if input_missing:
+        raise TranscriptionError(
+            f"audio file no longer on disk: {mp3_path}\n"
+            f"  slug={slug!r}\n"
+            f"  (likely deleted by mp3 retention while a duplicate-slug "
+            f"episode shared this path)"
+        )
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Capture engine fingerprint BEFORE spawning whisper — (1) so tests that
@@ -450,11 +473,19 @@ def transcribe_episode(
             except OSError:
                 pass
         if result.returncode != 0:
+            stderr_text = result.stderr or ""
+            # whisper-cli prints its real diagnostic ('error: input file
+            # not found', 'error: unknown argument', …) at the TOP of
+            # stderr, then a ~6 KB usage screen. The `stderr[-400:]`
+            # snippet alone keeps only the usage tail (the VAD block),
+            # hiding the cause — so lift the leading `error:` lines out.
+            err_lines = [ln for ln in stderr_text.splitlines() if ln.lower().startswith("error:")]
+            diagnostic = ("\n  whisper said: " + " | ".join(err_lines[:4])) if err_lines else ""
             raise TranscriptionError(
                 f"whisper-cli exit {result.returncode} ({_explain_exit(result.returncode)})  "
                 f"mp3={mp3_path.name}  model={model_path.name}  "
-                f"slug={slug!r}\n"
-                f"  stderr (last 400): {(result.stderr or '')[-400:]!r}\n"
+                f"slug={slug!r}{diagnostic}\n"
+                f"  stderr (last 400): {stderr_text[-400:]!r}\n"
                 f"  stdout (last 200): {(result.stdout or '')[-200:]!r}"
             )
 

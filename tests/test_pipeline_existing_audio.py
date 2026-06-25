@@ -94,6 +94,7 @@ def test_download_phase_short_circuits_on_existing_file(tmp_path, monkeypatch):
     # Stub the state + library + downloader. We assert download_mp3 is
     # NOT called — that's the point of the shortcut.
     state = MagicMock()
+    state.reserve_slug.side_effect = lambda guid, base_slug: base_slug
     state.get_episode.return_value = {
         "guid": "g",
         "show_slug": "limmo",
@@ -135,6 +136,7 @@ def test_download_phase_uses_local_path_meta_for_file_uri(tmp_path, monkeypatch)
     src.write_bytes(b"\x00" * 1024)
 
     state = MagicMock()
+    state.reserve_slug.side_effect = lambda guid, base_slug: base_slug
     state.get_episode.return_value = {
         "guid": "sha256:abc",
         "show_slug": "files",
@@ -172,6 +174,7 @@ def test_download_phase_file_uri_with_missing_local_path_fails_clearly(tmp_path,
     transcribe), surface a readable LocalFileMissing error rather than
     the opaque safe_url 'refused scheme file' rejection."""
     state = MagicMock()
+    state.reserve_slug.side_effect = lambda guid, base_slug: base_slug
     state.get_episode.return_value = {
         "guid": "sha256:dead",
         "show_slug": "files",
