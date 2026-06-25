@@ -114,19 +114,6 @@ class QueueTab(QWidget):
         self.header.setTextFormat(Qt.TextFormat.RichText)
         v.addWidget(self.header)
 
-        # Subtle advisory banner — shown only when parallel_transcribe or
-        # whisper_multiproc diverge from the HW-based recommendation. Lets
-        # the user know they're leaving performance on the table without
-        # being nagged with a modal dialog.
-        self._tuning_hint = QLabel()
-        self._tuning_hint.setWordWrap(True)
-        self._tuning_hint.setTextFormat(Qt.TextFormat.RichText)
-        self._tuning_hint.setOpenExternalLinks(False)
-        self._tuning_hint.setStyleSheet("padding:6px 10px; font-size:11px; color:#b8864a;")
-        self._tuning_hint.hide()
-        v.addWidget(self._tuning_hint)
-        self._refresh_tuning_hint()
-
         # Table of pending episodes
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
@@ -186,19 +173,14 @@ class QueueTab(QWidget):
         self.refresh()
 
     def _tick(self):
-        # Header + buttons are cheap (no SQL). Tuning hint is throttled
-        # to 60 s. Table refresh moved to a slower 3 s tick to stop the
-        # 1 Hz full-rebuild-of-400+-rows from dominating the event loop.
+        # Header + buttons are cheap (no SQL). Table refresh moved to a
+        # slower 3 s tick to stop the 1 Hz full-rebuild-of-400+-rows from
+        # dominating the event loop.
         self._tick_header()
         self._update_btns()
-        # Throttle tuning-hint to once a minute — it calls into core.hw
-        # which probes sysctl on every call. Pointless to do it 60×/min.
         import time as _t
 
         now = _t.monotonic()
-        if now - getattr(self, "_tuning_hint_at", 0.0) > 60:
-            self._refresh_tuning_hint()
-            self._tuning_hint_at = now
         # Table refresh: only if 3 s have passed since the last one. The
         # previous code fired refresh() every second and relied on the
         # internal coalesce; that still queried + rebuilt 400+ rows
@@ -206,41 +188,6 @@ class QueueTab(QWidget):
         # window is the actual win.
         if now - getattr(self, "_last_table_refresh", 0.0) > 3.0:
             self.refresh()
-
-    def _refresh_tuning_hint(self) -> None:
-        """Show a muted 'nicht-empfohlen'-hinweis when parallel_transcribe
-        or whisper_multiproc diverge from the HW recommendation. Subtle —
-        amber text on the tab background, no border/bg. Hidden when in
-        line with the recommendation or when detect fails."""
-        try:
-            from core.hw import (
-                detect,
-                recommended_multiproc_split,
-                recommended_parallel_workers,
-            )
-        except Exception:
-            self._tuning_hint.hide()
-            return
-        _, ncpu = detect()
-        if ncpu is None:
-            self._tuning_hint.hide()
-            return
-        rec_par = recommended_parallel_workers()
-        rec_mp = recommended_multiproc_split()
-        cur_par = int(self.ctx.settings.parallel_transcribe or 1)
-        cur_mp = int(self.ctx.settings.whisper_multiproc or 1)
-        mismatches = []
-        if cur_par != rec_par:
-            mismatches.append(f"parallel workers: {cur_par} → {rec_par}")
-        if cur_mp != rec_mp:
-            mismatches.append(f"multi-processor split: {cur_mp} → {rec_mp}")
-        if not mismatches:
-            self._tuning_hint.hide()
-            return
-        self._tuning_hint.setText(
-            "ⓘ Tip: " + " · ".join(mismatches) + " — adjust in Settings for best performance."
-        )
-        self._tuning_hint.show()
 
     # ── public hooks wired from ShowsTab/worker ───────────────
 
