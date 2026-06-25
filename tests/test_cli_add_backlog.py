@@ -52,3 +52,24 @@ def test_add_all_seeds_everything_pending(tmp_path, monkeypatch):
     rc = _run_add(tmp_path, monkeypatch, "all")
     assert rc == 0
     assert _pending(tmp_path) == 10
+
+
+def test_add_bad_backlog_returns_2(tmp_path, monkeypatch):
+    # parse_backlog runs before any IO, so a bad value fails fast with exit 2.
+    rc = _run_add(tmp_path, monkeypatch, "bogus")
+    assert rc == 2
+
+
+def test_add_no_itunes_match_returns_2(tmp_path, monkeypatch):
+    monkeypatch.setattr(core.paths, "user_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli, "DATA", tmp_path, raising=False)
+    monkeypatch.setattr(cli, "search_itunes", lambda term: [])
+    ns = argparse.Namespace(name_or_url="Some Name", backlog="all", slug=None, lang="de", yes=True)
+    assert cli.cmd_add(ns) == 2
+
+
+def test_add_duplicate_slug_returns_3(tmp_path, monkeypatch):
+    assert _run_add(tmp_path, monkeypatch, "all") == 0
+    # second add with the same derived slug (pod-x) must be rejected
+    rc = _run_add(tmp_path, monkeypatch, "all")
+    assert rc == 3

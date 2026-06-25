@@ -127,7 +127,7 @@ def cmd_add(args: argparse.Namespace) -> int:
     try:
         mode = parse_backlog(args.backlog)
     except BacklogError as e:
-        print(e)
+        print(e, file=sys.stderr)
         return 2
 
     inp = args.name_or_url.strip()
@@ -136,7 +136,7 @@ def cmd_add(args: argparse.Namespace) -> int:
     else:
         matches = search_itunes(inp)
         if not matches:
-            print("no matches")
+            print("no matches", file=sys.stderr)
             return 2
         if args.yes:
             rss = matches[0].feed_url
@@ -165,7 +165,7 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     wl = _watchlist()
     if any(s.slug == slug for s in wl.shows):
-        print(f"show {slug!r} already in watchlist")
+        print(f"show {slug!r} already in watchlist", file=sys.stderr)
         return 3
     wl.shows.append(
         Show(
