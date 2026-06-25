@@ -10,6 +10,7 @@ from typing import Optional
 from core.library import LibraryIndex, start_watching
 from core.models import Settings, Watchlist
 from core.state import StateStore
+from core.watchlist_guard import file_digest, grandfather_existing
 
 
 @dataclass
@@ -60,6 +61,9 @@ class AppContext:
     # "update available" banner with a Download button.
     update_available_tag: str = ""
     update_available_url: str = ""
+    # Content-hash baseline of watchlist.yaml at load time, so later code can
+    # detect external edits to the file (see core.watchlist_guard).
+    _watchlist_hash: str = ""
 
     @classmethod
     def load(cls, data_dir: Path) -> "AppContext":
@@ -68,12 +72,24 @@ class AppContext:
         state = StateStore(data_dir / "state.sqlite")
         state.init_schema()
         state.recover_in_flight()
+        # One-time grandfathering of pre-existing shows + baseline content-hash
+        # so the new backlog gate never ambushes shows that predate it and we
+        # can later detect external edits to watchlist.yaml.
+        grandfather_existing(watchlist, state)
+        _wl_hash = file_digest(data_dir / "watchlist.yaml")
         cache_path = data_dir / "library_cache.json" if settings.library_scan_cache else None
         library = LibraryIndex(Path(settings.output_root).expanduser(), cache_path=cache_path)
         library.scan()
         observer = start_watching(library)
         return cls(
-            data_dir, settings, watchlist, state, library, queue=QueueRunState(), _observer=observer
+            data_dir,
+            settings,
+            watchlist,
+            state,
+            library,
+            queue=QueueRunState(),
+            _observer=observer,
+            _watchlist_hash=_wl_hash,
         )
 
     def reload_library(self) -> None:
