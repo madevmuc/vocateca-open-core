@@ -35,6 +35,8 @@ class PipelineContext:
     model_name: str = "large-v3-turbo"
     fast_mode: bool = False
     processors: int = 1
+    threads: int = 6
+    launch_prefix: tuple[str, ...] = ()
     save_srt: bool = True
     # YouTube-source dispatch (Theme A). When ``source == "youtube"`` the
     # pipeline routes the episode through the captions-first / whisper-
@@ -312,6 +314,8 @@ def transcribe_phase(outcome: DownloadOutcome, ctx: PipelineContext) -> Pipeline
             model_path=model_path,
             fast_mode=ctx.fast_mode,
             processors=ctx.processors,
+            threads=ctx.threads,
+            launch_prefix=ctx.launch_prefix,
             save_srt=ctx.save_srt,
             progress_cb=_write_progress,
         )
@@ -559,6 +563,8 @@ def _process_youtube_episode(
                 model_path=model_path,
                 fast_mode=ctx.fast_mode,
                 processors=ctx.processors,
+                threads=ctx.threads,
+                launch_prefix=ctx.launch_prefix,
                 save_srt=True,  # always need SRT for YouTube re-render
             )
         except TranscriptionError as e:
