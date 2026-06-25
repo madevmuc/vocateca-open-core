@@ -1,8 +1,14 @@
 # Paragraphos Changelog
 
-## Unreleased — AI-operator guardrails
+## v1.5.0 — 2026-06-25 (AI-operator guardrails & background-load levels)
 
 ### Added
+- **Background-load levels replace the raw parallelism knobs.** A single
+  `load_level` (quiet / balanced / full, with a `background_priority`) now
+  drives transcription worker count, whisper-cli threads, and process QoS —
+  one dial instead of `parallel_transcribe` + `whisper_multiproc`. The
+  Settings pane shows a Hintergrundlast level group; existing settings
+  migrate automatically off the legacy knobs.
 - **Blessed `add` CLI with a required `--backlog` choice.** `cli.py add …
   --backlog <all|recent|last:N|since:DATE>` is the supported way for scripts
   and AIs to add a show: it seeds episode state, applies the history-vs-future
