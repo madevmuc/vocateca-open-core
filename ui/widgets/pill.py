@@ -1,4 +1,4 @@
-"""Styled badge — `Pill(text, kind='ok'|'running'|'fail'|'idle')`.
+"""Styled badge — `Pill(text, kind='ok'|'running'|'fail'|'idle'|'pausing')`.
 
 Object-name / property-based QSS so the shared `app.qss.tmpl` stylesheet
 picks the variant. Size, radius, and text-styling come from the
@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QLabel
 
 
 class Pill(QLabel):
-    ALLOWED_KINDS = ("ok", "fail", "running", "idle")
+    ALLOWED_KINDS = ("ok", "fail", "running", "idle", "pausing")
 
     def __init__(self, text: str = "", kind: str = "idle", parent=None):
         super().__init__(text, parent)

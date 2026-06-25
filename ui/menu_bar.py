@@ -507,7 +507,9 @@ def _fmt_eta(sec: int | None) -> str:
     return f"{hrs}h {rem}m" if rem else f"{hrs}h"
 
 
-def _build_status_block(done: int, total: int, current_title: str, eta_sec: int | None) -> QWidget:
+def _build_status_block(
+    done: int, total: int, current_title: str, eta_sec: int | None, pausing: bool = False
+) -> QWidget:
     w = QWidget()
     w.setFixedWidth(280)
     v = QVBoxLayout(w)
@@ -517,8 +519,12 @@ def _build_status_block(done: int, total: int, current_title: str, eta_sec: int 
     # Row 1: pill · fraction · stretch · ETA
     h1 = QHBoxLayout()
     h1.setSpacing(6)
-    h1.addWidget(Pill("running", kind="running"))
-    frac_lbl = QLabel(f"{done}/{total}")
+    if pausing:
+        h1.addWidget(Pill("Pausing", kind="pausing"))
+        frac_lbl = QLabel("Finishing current episode…")
+    else:
+        h1.addWidget(Pill("running", kind="running"))
+        frac_lbl = QLabel(f"{done}/{total}")
     frac_lbl.setStyleSheet("font-weight: 600;")
     h1.addWidget(frac_lbl)
     h1.addStretch()
@@ -554,6 +560,7 @@ def build_tray_menu(
     total: int = 0,
     current_title: str = "",
     eta_sec: int | None = None,
+    pausing: bool = False,
     on_open=None,
     on_check_now=None,
     on_import_opml=None,
@@ -570,7 +577,9 @@ def build_tray_menu(
     menu = QMenu()
     if running and total > 0:
         wa = QWidgetAction(menu)
-        wa.setDefaultWidget(_build_status_block(done, total, current_title, eta_sec))
+        wa.setDefaultWidget(
+            _build_status_block(done, total, current_title, eta_sec, pausing=pausing)
+        )
         menu.addAction(wa)
         menu.addSeparator()
 

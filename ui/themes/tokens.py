@@ -44,6 +44,8 @@ LIGHT: dict[str, str] = {
     "pill_running_fg": "#ffffff",
     "pill_fail_bg": "rgba(194, 74, 61, 0.15)",
     "pill_fail_fg": "#c24a3d",
+    "pill_pausing_bg": "rgba(184, 134, 74, 0.15)",
+    "pill_pausing_fg": "#b8864a",
     "pill_idle_bg": "#f4f2ee",
     "pill_idle_fg": "#777777",
     # Always-dark panels (log viewer, first-run terminal strip). Same in
@@ -86,6 +88,8 @@ DARK: dict[str, str] = {
     "pill_running_fg": "#ffffff",
     "pill_fail_bg": "rgba(255, 106, 90, 0.18)",
     "pill_fail_fg": "#ff6a5a",
+    "pill_pausing_bg": "rgba(240, 185, 85, 0.18)",
+    "pill_pausing_fg": "#f0b955",
     "pill_idle_bg": "#242424",
     "pill_idle_fg": "#8a8a8a",
     # Always-dark panels — same values as light mode.

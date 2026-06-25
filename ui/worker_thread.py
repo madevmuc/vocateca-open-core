@@ -473,6 +473,7 @@ class CheckAllThread(QThread):
     episode_done = pyqtSignal(str, str, str, int, int, str, str)
     queue_sized = pyqtSignal(int)
     finished_all = pyqtSignal()
+    pause_state_changed = pyqtSignal()  # Pause pressed mid-run (drain begins)
 
     def __init__(
         self,

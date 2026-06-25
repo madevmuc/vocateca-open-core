@@ -568,7 +568,11 @@ class ShowsTab(QWidget):
         self.ctx.state.set_meta("queue_paused", "1")
         if self._thread and self._thread.isRunning():
             self._thread.request_stop()
-        self._log("queue paused — Resume to continue (survives restart).")
+            self._thread.pause_state_changed.emit()
+        self._log(
+            "pausing — current episode will finish, then the queue halts "
+            "(Resume to continue; survives restart)."
+        )
 
     def _resume(self):
         self.ctx.state.set_meta("queue_paused", "0")
