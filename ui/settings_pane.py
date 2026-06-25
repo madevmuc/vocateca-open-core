@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QObject, Qt, QTime, QTimer
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -535,19 +537,50 @@ class SettingsPane(QWidget):
         )
         self._update_model_status()
 
-        rec_n = self._hw_recommendation_value()
-        self.parallel = QSpinBox()
-        self.parallel.setRange(1, 4)
-        # Seed from settings if set; otherwise use the hardware recommendation.
-        self.parallel.setValue(self.ctx.settings.parallel_transcribe or rec_n)
-        self.parallel.valueChanged.connect(self._schedule_save)
+        # Hintergrundlast — named levels; each derives whisper parallelism +
+        # threads + macOS scheduling tier (core/load.py). Replaces the old
+        # Parallel-workers / Multi-processor-split spinboxes.
+        self.load_quiet = QRadioButton("Leise — nimmt nur wenig, bleibt unsichtbar")
+        self.load_balanced = QRadioButton(
+            "Ausgewogen — nutzt freie Kerne, weicht beim Arbeiten zurück"
+        )
+        self.load_full = QRadioButton("Volle Leistung — so schnell wie möglich")
+        self._load_buttons = {
+            "quiet": self.load_quiet,
+            "balanced": self.load_balanced,
+            "full": self.load_full,
+        }
+        self._load_group = QButtonGroup(self)
+        for lvl, rb in self._load_buttons.items():
+            rb.setProperty("level", lvl)
+            self._load_group.addButton(rb)
+        # Set the initial state BEFORE wiring signals so construction doesn't
+        # fire a spurious save (mirrors the other fields in this pane).
+        self._load_buttons.get(self.ctx.settings.load_level, self.load_balanced).setChecked(True)
+        for rb in self._load_buttons.values():
+            rb.toggled.connect(self._on_load_level_changed)
+
+        self.background_priority = QCheckBox("Mit Hintergrund-Priorität laufen (immer)")
+        self.background_priority.setChecked(self.ctx.settings.background_priority)
+        self.background_priority.stateChanged.connect(self._on_load_level_changed)
+
+        self._load_readout = QLabel()
+        self._load_readout.setStyleSheet(f"color: {_theme_tokens()['ink_3']}; font-style: italic;")
+
+        load_box = QVBoxLayout()
+        for rb in self._load_buttons.values():
+            load_box.addWidget(rb)
+        load_box.addWidget(self.background_priority)
+        load_box.addWidget(self._load_readout)
         self._add_field(
             f4,
-            "Parallel workers",
-            self.parallel,
-            hint=f"recommended: {self._hw_recommendation_hint()}",
-            hint_kind="good",
+            "Hintergrundlast",
+            self._row_widget(load_box),
+            hint="Wie sehr darf die Transkription den Mac auslasten? Höhere Stufen "
+            "nutzen mehr Kerne; der Rechner bleibt responsiv.",
+            hint_kind="info",
         )
+        self._repaint_load_readout()  # paint without triggering a save
 
         self.bw = QSpinBox()
         self.bw.setRange(0, 1000)
@@ -565,22 +598,6 @@ class SettingsPane(QWidget):
         self.fast_mode.setChecked(self.ctx.settings.whisper_fast_mode)
         self.fast_mode.stateChanged.connect(self._schedule_save)
         self._add_field(f4, "Whisper speed", self.fast_mode)
-
-        self.multiproc = QSpinBox()
-        self.multiproc.setRange(1, 8)
-        # Seed from settings; fall back to the HW-derived recommendation
-        # for fresh installs (same pattern as Parallel workers).
-        self.multiproc.setValue(
-            self.ctx.settings.whisper_multiproc or self._multiproc_recommendation_value()
-        )
-        self.multiproc.valueChanged.connect(self._schedule_save)
-        self._add_field(
-            f4,
-            "Multi-processor split",
-            self.multiproc,
-            hint=f"recommended: {self._multiproc_recommendation_hint()}",
-            hint_kind="good",
-        )
 
         # Engine/model drift row — compares the fingerprint of the current
         # whisper-cli + pinned model against the one recorded on the most
@@ -1049,14 +1066,14 @@ class SettingsPane(QWidget):
         s.mp3_retention_days = self.retention.value()
         s.delete_mp3_after_transcribe = self.del_mp3.isChecked()
         s.bandwidth_limit_mbps = self.bw.value()
-        s.parallel_transcribe = self.parallel.value()
+        s.load_level = self._current_load_level()
+        s.background_priority = self.background_priority.isChecked()
         s.obsidian_vault_path = self.obsidian_path.text()
         s.obsidian_vault_name = self.obsidian_name.text()
         s.knowledge_hub_root = self.kb_root.text()
         s.export_root = self.export_root.text()
         s.whisper_model = self.model.currentText()
         s.whisper_fast_mode = self.fast_mode.isChecked()
-        s.whisper_multiproc = self.multiproc.value()
         s.notify_mode = self.notify_mode.currentData() or "per_episode"
         s.log_retention_days = self.log_retention.value()
         s.save_srt = self.save_srt_cb.isChecked()
@@ -1137,47 +1154,33 @@ class SettingsPane(QWidget):
             return (f"detected at {expanded}", "good")
         return ("path does not exist — transcripts will not be mirrored there", "info")
 
-    # ── hint text ─────────────────────────────────────────────
+    # ── load-management level ─────────────────────────────────
 
-    def _hw_detect(self):
-        """Return (mem_gb, perf_cores) — delegates to core.hw."""
+    def _current_load_level(self) -> str:
+        """The checked radio's level slug (quiet/balanced/full)."""
+        btn = self._load_group.checkedButton()
+        return btn.property("level") if btn else "balanced"
+
+    def _repaint_load_readout(self) -> None:
+        """Paint the 'Diese Stufe: …' read-out from the current selection.
+        No save — safe to call during construction."""
+        import os
+
         from core.hw import detect
+        from core.load import describe_profile, resolve_load_profile
 
-        return detect()
-
-    def _hw_recommendation_value(self) -> int:
-        """Numeric worker count to seed the spinner (1-N)."""
-        from core.hw import recommended_parallel_workers
-
-        return recommended_parallel_workers()
-
-    def _hw_recommendation_hint(self) -> str:
-        """Full hint string: '2 (16 GB RAM, 8 perf cores detected)'."""
-        rec = self._hw_recommendation_value()
-        mem_gb, ncpu = self._hw_detect()
-        if mem_gb is None or ncpu is None:
-            return f"{rec} (auto-detect failed — set conservatively)"
-        return f"{rec} ({mem_gb:.0f} GB RAM, {ncpu} perf cores detected)"
-
-    def _hw_recommendation(self) -> str:
-        """Back-compat shim: original full-label form."""
-        return f"  recommended: {self._hw_recommendation_hint()}"
-
-    def _multiproc_recommendation_value(self) -> int:
-        """Numeric whisper-cli -p N recommendation — delegates to core.hw."""
-        from core.hw import recommended_multiproc_split
-
-        return recommended_multiproc_split()
-
-    def _multiproc_recommendation_hint(self) -> str:
-        rec = self._multiproc_recommendation_value()
-        _, ncpu = self._hw_detect()
-        if ncpu is None:
-            return f"{rec} (auto-detect failed — set conservatively)"
-        return (
-            f"{rec} — whisper-cli -p N splits audio across N cores "
-            f"({ncpu} perf cores detected; diminishing returns past 4)"
+        _mem, perf = detect()
+        profile = resolve_load_profile(
+            self._current_load_level(),
+            perf_cores=perf or (os.cpu_count() or 4),
+            background_priority=self.background_priority.isChecked(),
         )
+        self._load_readout.setText(f"Diese Stufe: {describe_profile(profile)}")
+
+    def _on_load_level_changed(self, *_args) -> None:
+        """Signal slot: repaint the read-out, then persist."""
+        self._repaint_load_readout()
+        self._schedule_save()
 
     def _terminal_help_html(self) -> str:
         return (
@@ -1360,7 +1363,7 @@ class SettingsPane(QWidget):
             "Top-level settings:\n"
             "  set-setting <key> <value>            Type-coerced from the\n"
             "                                       Settings model. Examples:\n"
-            "                                         set-setting parallel_transcribe 4\n"
+            "                                         set-setting load_level full\n"
             "                                         set-setting save_srt false\n"
             "                                         set-setting youtube_default_transcript_source whisper\n"
             "\n"
@@ -1374,7 +1377,7 @@ class SettingsPane(QWidget):
             "  sources_podcasts / sources_youtube              source toggles\n"
             "  youtube_default_transcript_source               captions | whisper | auto-captions\n"
             "  youtube_default_language                        de | en | …\n"
-            "  parallel_transcribe / whisper_multiproc         tuning (HW-recommended)\n"
+            "  load_level / background_priority               quiet | balanced | full\n"
             "  whisper_fast_mode                               beam=1/best=1, ~2-3× faster\n"
             "  save_srt / mp3_retention_days                   output / cleanup\n"
             "  auto_start_queue / auto_start_delay_seconds     launch behaviour\n"
@@ -1408,8 +1411,8 @@ class SettingsPane(QWidget):
             "     run-next on the latest 3 episodes.'\n"
             "  · 'For show <slug>, switch to always-whisper mode, then\n"
             "     retranscribe the 5 newest episodes.'\n"
-            "  · 'Check whether parallel_transcribe matches the hardware\n"
-            "     recommendation; if not, run set-setting to apply it.'\n"
+            "  · 'Set the background load to quiet while I work, then\n"
+            "     set-setting load_level full to run flat-out overnight.'\n"
             "  · 'Batch-ingest every .wav under ~/Recordings/Zoom/2026-04\n"
             "     via `ingest folder --show zoom`, then tail `status\n"
             "     --json` until the queue drains.'\n"
