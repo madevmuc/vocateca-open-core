@@ -1030,6 +1030,14 @@ def main() -> int:
     # — existing
     a = sub.add_parser("add", help="add a show by name / RSS / YouTube URL (interactive)")
     a.add_argument("name_or_url")
+    a.add_argument("--backlog", required=True, help="all | recent | last:N | since:YYYY-MM-DD")
+    a.add_argument("--slug", default=None, help="override the derived slug")
+    a.add_argument("--lang", default=None, help="whisper language code (default de)")
+    a.add_argument(
+        "--yes",
+        action="store_true",
+        help="non-interactive: accept the first iTunes match / derived slug",
+    )
     a.set_defaults(fn=cmd_add)
 
     s_shows = sub.add_parser("shows", help="list all shows in the watchlist")
