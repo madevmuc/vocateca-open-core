@@ -39,6 +39,7 @@ from core.prompt_gen import suggest_whisper_prompt
 from core.rss import FeedHealth, build_manifest_with_url, feed_metadata
 from core.sanitize import slugify
 from core.sources import youtube_enabled
+from core.watchlist_io import save_watchlist
 from core.youtube import (
     YoutubeUrlError,
     parse_youtube_url,
@@ -1337,7 +1338,7 @@ class AddShowDialog(QDialog):
             model_kwargs["language"] = _lang
         model = Show(**model_kwargs)
         self.updated_watchlist.shows.append(model)
-        self.updated_watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
 
         # Seed episodes in state; handle backlog strategy.
         manifest = show.get("manifest") or []

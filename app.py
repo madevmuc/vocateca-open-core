@@ -36,6 +36,7 @@ from core.models import backfill_setup_completed  # noqa: E402
 from core.paths import migrate_from_legacy, user_data_dir  # noqa: E402
 from core.scheduler import check_counts_as_success, should_catch_up  # noqa: E402
 from core.version import VERSION as _LOCAL_VERSION  # noqa: E402
+from core.watchlist_io import save_watchlist  # noqa: E402
 from ui.app_context import AppContext  # noqa: E402
 from ui.first_run_wizard import show_wizard_if_needed  # noqa: E402
 from ui.main_window import MainWindow  # noqa: E402
@@ -768,7 +769,7 @@ class ParagraphosApp(QObject):
                     mp3_url=ep["mp3_url"],
                 )
             added += 1
-        self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
         self.tray.showMessage("OPML imported", f"Added {added} show(s) from {path.name}")
         if self._window:
             self._window.shows_tab.refresh()
@@ -819,7 +820,7 @@ class ParagraphosApp(QObject):
                     mp3_url=ep["mp3_url"],
                 )
             added += 1
-        self.ctx.watchlist.save(self.ctx.data_dir / "watchlist.yaml")
+        save_watchlist(self.ctx)
         summary = f"Imported {added} new show(s)."
         if errors:
             summary += "\n\nErrors (first 10):\n" + "\n".join(errors[:10])
