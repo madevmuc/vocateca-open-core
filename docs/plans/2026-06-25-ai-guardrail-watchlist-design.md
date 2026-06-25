@@ -191,3 +191,4 @@ A short, prominent block — this is the "automatically apparent" piece:
 - No new IPC/signal channel (content-hash detection covers both vectors).
 - No rework of `remove`/`enable`/`disable` beyond the free clobber-safety they
   inherit from the save-side gate.
+- Deletion tombstones — the save-side union-merge can resurrect an in-app delete if the same slug was externally re-added since the baseline. Acceptable under single-writer use; revisit with the reconcile work if it ever bites.
