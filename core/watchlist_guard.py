@@ -68,6 +68,8 @@ def auto_accept_due(state, slug: str, *, now: datetime) -> bool:
         detected = datetime.fromisoformat(raw)
     except ValueError:
         return False
+    if detected.tzinfo is None:
+        detected = detected.replace(tzinfo=timezone.utc)
     return now.astimezone(timezone.utc) - detected >= timedelta(hours=AUTO_ACCEPT_HOURS)
 
 
