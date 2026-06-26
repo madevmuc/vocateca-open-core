@@ -923,7 +923,9 @@ class ShowDetailsDialog(QDialog):
         # Shown while the full back-catalogue is being enumerated off-thread, so
         # the user knows more episodes than the DB-seeded ones are on the way.
         self._history_status = QLabel("")
-        self._history_status.setStyleSheet("color: palette(mid); padding-left: 6px;")
+        # Orange so the "still loading more episodes" hint actually stands out
+        # next to the search field (the muted grey was barely legible).
+        self._history_status.setStyleSheet("color: #f5a623; font-weight: 600; padding-left: 6px;")
         self._history_status.hide()
         row.addWidget(self._history_status)
         return bar
