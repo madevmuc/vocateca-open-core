@@ -241,15 +241,21 @@ class _YoutubeEnumerateThread(QThread):
                 window = _rss.build_manifest(rss_url_for_channel_id(self.channel_id))
             except Exception:  # noqa: BLE001
                 window = []
-            deep = manifest_from_videos(
-                _youtube_meta.enumerate_channel_videos(
-                    self.channel_id,
-                    limit=self.limit,
-                    date_after=self.date_after,
-                    include_shorts=self.include_shorts,
-                    full=True,
+            # limit == 0 ("Only new") needs no deep extraction — the RSS window
+            # IS the daily-poll set; skip the (potentially whole-channel) yt-dlp
+            # full extraction entirely.
+            if self.limit == 0:
+                deep = []
+            else:
+                deep = manifest_from_videos(
+                    _youtube_meta.enumerate_channel_videos(
+                        self.channel_id,
+                        limit=self.limit,
+                        date_after=self.date_after,
+                        include_shorts=self.include_shorts,
+                        full=True,
+                    )
                 )
-            )
             manifest = _merge_window_and_deep(window, deep)
         except Exception as e:  # noqa: BLE001
             self.error.emit(str(e))
@@ -1523,14 +1529,17 @@ class AddShowDialog(QDialog):
             mode = ("since", since_iso)
         elif choice.startswith("Last "):
             n = int(choice.split()[1])
-            # max(N, 30) guarantees the ~15-entry feed window is covered so it
-            # can be baselined alongside the chosen depth.
-            limit = max(n, 30)
+            # Deep-extract exactly N. The feed window is always merged in too,
+            # so the daily poll's set is fully seeded and the baseline (keep
+            # newest N pending, rest done) holds even when N < the window.
+            limit = n
             date_after = None
             mode = ("last", n)
-        else:  # "Only new" — mark the whole seeded baseline done so only
-            # genuinely-new uploads (discovered later by the feed poll) run.
-            limit = None
+        else:  # "Only new" — no deep extraction needed: the always-fetched RSS
+            # window IS the daily-poll set; seeding it all done means only
+            # genuinely-new uploads (discovered later by the poll) transcribe.
+            # limit=0 tells the worker to skip the deep enumerate entirely.
+            limit = 0
             date_after = None
             mode = ("only_new", None)
 

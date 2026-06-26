@@ -624,6 +624,12 @@ def test_duration_seeded(tmp_path, monkeypatch):
     dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
     vids = [{"id": "v00", "title": "Ep 0", "upload_date": "20260601", "duration": 615}]
     _resolve(dlg, monkeypatch, title="Has Dur", videos=vids)
+    # Duration comes from the deep full extraction — pick a deep mode ("Last 5"),
+    # not the default "Only new" (which seeds the duration-less RSS window only).
+    for b in dlg._yt_backfill_grp.buttons():
+        if b.text() == "Last 5":
+            b.setChecked(True)
+            break
     dlg._add_from_youtube()
     _wait_for_enumerate(dlg)
     ep = dlg.ctx.state.get_episode("v00")
