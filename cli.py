@@ -187,7 +187,27 @@ def cmd_add(args: argparse.Namespace) -> int:
             rss = matches[int(choice)].feed_url
 
     meta = feed_metadata(rss)
-    manifest = build_manifest(rss)
+    transcript_pref = getattr(args, "youtube_transcript_pref", "") or ""
+    skip_shorts = bool(getattr(args, "skip_shorts", True))
+    # YouTube seeds from a DEEP channel enumeration (honouring --backlog), not
+    # the ~15-entry RSS feed; podcasts keep the RSS manifest path.
+    if yt_source:
+        from core.youtube import channel_id_from_feed_url, manifest_from_videos
+        from core.youtube_meta import enumerate_channel_videos
+
+        cid = channel_id_from_feed_url(rss)
+        kind, arg = mode
+        if kind == "last":
+            videos = enumerate_channel_videos(cid, limit=arg, include_shorts=not skip_shorts)
+        elif kind == "since":
+            videos = enumerate_channel_videos(cid, date_after=arg, include_shorts=not skip_shorts)
+        elif kind == "recent":
+            videos = enumerate_channel_videos(cid, limit=15, include_shorts=not skip_shorts)
+        else:  # "all"
+            videos = enumerate_channel_videos(cid, include_shorts=not skip_shorts)
+        manifest = manifest_from_videos(videos)
+    else:
+        manifest = build_manifest(rss)
     slug = args.slug or slugify(meta["title"])
     if not args.yes:
         slug = input(f"slug [{slug}]: ").strip() or slug
@@ -240,6 +260,8 @@ def cmd_add(args: argparse.Namespace) -> int:
             whisper_prompt=prompt,
             language=(args.lang or "de"),
             source=("youtube" if yt_source else "podcast"),
+            youtube_transcript_pref=transcript_pref,
+            skip_shorts=skip_shorts,
         )
     )
     wl.save_atomic(DATA / "watchlist.yaml")
@@ -1118,7 +1140,35 @@ def main() -> int:
         action="store_true",
         help="non-interactive: accept the first iTunes match / derived slug",
     )
-    a.set_defaults(fn=cmd_add)
+    pref = a.add_mutually_exclusive_group()
+    pref.add_argument(
+        "--captions",
+        dest="youtube_transcript_pref",
+        action="store_const",
+        const="captions",
+        help="(YouTube) import uploader captions, whisper fallback",
+    )
+    pref.add_argument(
+        "--whisper",
+        dest="youtube_transcript_pref",
+        action="store_const",
+        const="whisper",
+        help="(YouTube) always transcribe audio with whisper",
+    )
+    shorts = a.add_mutually_exclusive_group()
+    shorts.add_argument(
+        "--skip-shorts",
+        dest="skip_shorts",
+        action="store_true",
+        help="(YouTube) exclude Shorts (default)",
+    )
+    shorts.add_argument(
+        "--include-shorts",
+        dest="skip_shorts",
+        action="store_false",
+        help="(YouTube) include Shorts",
+    )
+    a.set_defaults(fn=cmd_add, youtube_transcript_pref="", skip_shorts=True)
 
     s_shows = sub.add_parser("shows", help="list all shows in the watchlist")
     s_shows.add_argument("--json", action="store_true")

@@ -74,6 +74,46 @@ def rss_url_for_channel_id(channel_id: str) -> str:
     return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
 
+def manifest_from_videos(videos: list[dict]) -> list[dict]:
+    """Convert ``enumerate_channel_videos`` flat-playlist output into the
+    canonical manifest the upsert/backlog path expects.
+
+    Mirrors the GUI's logic in ``ui/add_show_dialog._on_yt_enumerate_done``:
+    derive the id from ``id`` (falling back to ``url``, skipping entries with
+    neither), and derive ``pubDate`` from the Unix ``timestamp`` (epoch →
+    ``YYYY-MM-DD``) or, failing that, a ``YYYYMMDD`` ``upload_date``. Videos
+    have no MP3 enclosure, so ``mp3_url`` points at the watch URL; the YouTube
+    pipeline branch resolves the actual source (captions or audio) itself.
+    """
+    import time
+
+    manifest: list[dict] = []
+    for v in videos:
+        vid = v.get("id") or v.get("url")
+        if not vid:
+            continue
+        ts = v.get("timestamp") or 0
+        pub = ""
+        if ts:
+            pub = time.strftime("%Y-%m-%d", time.gmtime(int(ts)))
+        elif v.get("upload_date"):
+            ud = str(v["upload_date"])
+            if len(ud) == 8 and ud.isdigit():
+                pub = f"{ud[:4]}-{ud[4:6]}-{ud[6:8]}"
+            else:
+                pub = ud
+        manifest.append(
+            {
+                "guid": vid,
+                "title": v.get("title") or vid,
+                "pubDate": pub,
+                "mp3_url": f"https://www.youtube.com/watch?v={vid}",
+                "description": "",
+            }
+        )
+    return manifest
+
+
 def channel_id_from_feed_url(feed_url: str) -> str:
     """Return the ``channel_id`` query param of a YouTube channel feed URL.
 

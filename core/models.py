@@ -37,6 +37,9 @@ class Show(BaseModel):
     # Per-show YouTube transcript preference. Empty string = inherit from
     # Settings default. Otherwise one of: "captions" | "whisper" | "auto-captions".
     youtube_transcript_pref: str = ""
+    # YouTube: skip Shorts on backfill + as a per-video pipeline safety net.
+    # Default True. include_shorts on enumeration is the inverse.
+    skip_shorts: bool = True
 
 
 class Watchlist(BaseModel):
