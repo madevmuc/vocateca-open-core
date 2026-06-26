@@ -69,6 +69,24 @@ def _extract_mp3_url(entry: Any) -> Optional[str]:
     return None
 
 
+def _youtube_video_id(entry: Any) -> Optional[str]:
+    """Return the 11-char video id of a YouTube channel-feed entry, else None.
+
+    YouTube channel feeds (``/feeds/videos.xml?channel_id=…``) are Atom, not
+    RSS, and carry no audio enclosure — so ``_extract_mp3_url`` returns None
+    for them. feedparser maps ``<yt:videoId>`` to ``entry.yt_videoid``; older
+    entries only expose the id as ``yt:video:<VIDEOID>``. We surface the bare
+    video id so the manifest can synthesise a ``watch?v=`` URL whose guid
+    matches what ``AddShowDialog`` / ``enumerate_channel_videos`` seed.
+    """
+    vid = entry.get("yt_videoid")
+    if not vid:
+        eid = entry.get("id") or ""
+        if eid.startswith("yt:video:"):
+            vid = eid.rsplit(":", 1)[-1]
+    return vid or None
+
+
 def _pub_date_iso(entry: Any) -> str:
     """Return 'YYYY-MM-DDTHH:MM:SS' (no tz) or empty string."""
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
@@ -148,11 +166,20 @@ def build_manifest_with_url(
     episodes: List[Dict[str, Any]] = []
     for entry in parsed.entries:
         mp3 = _extract_mp3_url(entry)
+        guid = entry.get("id") or entry.get("guid") or mp3
+        if not mp3:
+            # YouTube channel feed: no enclosure, but every entry is a video.
+            # Synthesise a watch URL and key the episode by the bare video id
+            # so feed-poll dedup matches the rows the Add dialog already seeded.
+            vid = _youtube_video_id(entry)
+            if vid:
+                mp3 = f"https://www.youtube.com/watch?v={vid}"
+                guid = vid
         if not mp3:
             continue
         episodes.append(
             {
-                "guid": entry.get("id") or entry.get("guid") or mp3,
+                "guid": guid,
                 "title": entry.get("title", ""),
                 "pubDate": _pub_date_iso(entry),
                 "duration": _duration(entry),

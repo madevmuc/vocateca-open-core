@@ -43,6 +43,8 @@ class ShowsTab(QWidget):
         action_row.setContentsMargins(0, 0, 0, 0)
         self.add_btn = QPushButton("Add Podcast / Show…")
         self.add_btn.clicked.connect(self._add)
+        self.add_youtube_btn = QPushButton("Add YouTube Channel…")
+        self.add_youtube_btn.clicked.connect(self._add_youtube)
         self.curated_btn = QPushButton("Add Episodes…")
         self.curated_btn.clicked.connect(self._curated)
         self.check_btn = QPushButton("Start / Check Now")
@@ -69,6 +71,7 @@ class ShowsTab(QWidget):
         )
         for b in (
             self.add_btn,
+            self.add_youtube_btn,
             self.curated_btn,
             self.check_btn,
             self.pause_btn,
@@ -81,6 +84,12 @@ class ShowsTab(QWidget):
             action_row.addWidget(b)
         action_row.addStretch()
         layout.addLayout(action_row)
+
+        # The dedicated YouTube button only makes sense when YouTube ingestion
+        # is enabled — hide it for podcast-only users (matches the Add dialog).
+        from core.sources import youtube_enabled
+
+        self.add_youtube_btn.setVisible(youtube_enabled(self.ctx.settings))
 
         # Bulk-action toolbar — operates on all currently selected rows.
         # Buttons are disabled until the table has a selection.
@@ -445,6 +454,17 @@ class ShowsTab(QWidget):
         from ui.add_show_dialog import AddShowDialog
 
         dlg = AddShowDialog(self.ctx, self)
+        if dlg.exec():
+            self.ctx.watchlist = dlg.updated_watchlist
+            self.refresh()
+
+    def _add_youtube(self):
+        """Open the Add dialog focused on the YouTube-channel flow — a single
+        link field, no podcast tabs (the dedicated 'Add YouTube Channel…'
+        entry point)."""
+        from ui.add_show_dialog import AddShowDialog
+
+        dlg = AddShowDialog(self.ctx, self, initial_mode="youtube")
         if dlg.exec():
             self.ctx.watchlist = dlg.updated_watchlist
             self.refresh()

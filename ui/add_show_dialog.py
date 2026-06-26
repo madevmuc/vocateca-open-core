@@ -10,11 +10,13 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from PyQt6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QDate, QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
     QFormLayout,
     QFrame,
@@ -138,6 +140,28 @@ class _YoutubeResolveThread(QThread):
         self.done.emit(out)
 
 
+class _YtFirstVideoThread(QThread):
+    """Fetch a channel's oldest upload date off-thread.
+
+    yt-dlp has to walk the channel's video listing to find the last (oldest)
+    item, which can take a few seconds — so it runs off the GUI thread and
+    only when the user actually picks the 'since a specific date' option.
+    """
+
+    done = pyqtSignal(str)  # "YYYY-MM-DD" or "" on failure
+
+    def __init__(self, channel_id: str, parent=None):
+        super().__init__(parent)
+        self.channel_id = channel_id
+
+    def run(self) -> None:
+        try:
+            iso = _youtube_meta.fetch_channel_first_video_date(self.channel_id)
+        except Exception:  # noqa: BLE001
+            iso = ""
+        self.done.emit(iso)
+
+
 class _CoverSignals(QObject):
     done = pyqtSignal(int, QPixmap)
 
@@ -181,7 +205,7 @@ def _shorten(url: str, n: int = 48) -> str:
 
 
 class AddShowDialog(QDialog):
-    def __init__(self, ctx, parent=None):
+    def __init__(self, ctx, parent=None, *, initial_mode: Optional[str] = None):
         super().__init__(parent)
         self.ctx = ctx
         self.updated_watchlist = ctx.watchlist
@@ -208,7 +232,12 @@ class AddShowDialog(QDialog):
         root = QVBoxLayout(self)
 
         # --- Segmented mode switcher -------------------------------------- #
-        mode_row = QHBoxLayout()
+        # Wrapped in a container so it can be hidden when the dialog is
+        # launched in a single, focused mode (e.g. the dedicated
+        # "Add YouTube Channel…" button — no podcast tabs to distract).
+        self._mode_switcher = QWidget()
+        mode_row = QHBoxLayout(self._mode_switcher)
+        mode_row.setContentsMargins(0, 0, 0, 0)
         self._mode_buttons = QButtonGroup(self)
         self._mode_buttons.setExclusive(True)
         modes = [
@@ -229,7 +258,7 @@ class AddShowDialog(QDialog):
         mode_row.addStretch(1)
         self._mode_buttons.buttons()[0].setChecked(True)
         self._mode_buttons.buttonToggled.connect(self._on_mode_change)
-        root.addLayout(mode_row)
+        root.addWidget(self._mode_switcher)
 
         # --- Stacked pages ------------------------------------------------- #
         self._pages = QStackedWidget()
@@ -243,6 +272,15 @@ class AddShowDialog(QDialog):
         for p in pages:
             self._pages.addWidget(p)
         root.addWidget(self._pages, 1)
+
+        # Focused launch: jump straight to one mode and drop the switcher so
+        # the dialog reads as a single-purpose popup. Only "youtube" is wired
+        # for now (the dedicated Shows-tab button); unknown modes fall back to
+        # the default multi-tab dialog.
+        if initial_mode == "youtube" and self._yt_enabled:
+            self.setWindowTitle("Add YouTube Channel")
+            self._mode_switcher.setVisible(False)
+            self._activate_youtube_mode()
 
     # ------------------------------------------------------------------ #
     # Mode switching                                                     #
@@ -961,12 +999,18 @@ class AddShowDialog(QDialog):
         self._yt_resolve_step_label: str = ""
         self._yt_resolve_step_idx: tuple = (0, 2)
 
-        # Preview card.
+        # Preview card — channel thumbnail (auto-loaded) on the left,
+        # title + meta on the right.
         self.yt_card = QFrame()
         self.yt_card.setObjectName("YoutubePreviewCard")
         self.yt_card.setFrameShape(QFrame.Shape.StyledPanel)
         self.yt_card.setVisible(False)
-        card_v = QVBoxLayout(self.yt_card)
+        card_h = QHBoxLayout(self.yt_card)
+        self.yt_card_thumb = QLabel("")
+        self.yt_card_thumb.setFixedSize(48, 48)
+        self.yt_card_thumb.setVisible(False)
+        card_h.addWidget(self.yt_card_thumb, 0, Qt.AlignmentFlag.AlignTop)
+        card_v = QVBoxLayout()
         self.yt_card_title = QLabel("")
         f = self.yt_card_title.font()
         f.setPointSize(f.pointSize() + 4)
@@ -977,7 +1021,17 @@ class AddShowDialog(QDialog):
         self.yt_card_meta = QLabel("")
         self.yt_card_meta.setStyleSheet(f"color: {current_tokens()['ink_3']};")
         card_v.addWidget(self.yt_card_meta)
+        card_h.addLayout(card_v, 1)
         v.addWidget(self.yt_card)
+
+        # Slug — editable; defaults to the channel name on resolve. This is
+        # the on-disk show folder + watchlist key, so let the user tidy it.
+        slug_row = QHBoxLayout()
+        slug_row.addWidget(QLabel("Slug:"))
+        self._yt_slug_input = QLineEdit()
+        self._yt_slug_input.setPlaceholderText("auto-filled from the channel name")
+        slug_row.addWidget(self._yt_slug_input, 1)
+        v.addLayout(slug_row)
 
         # Per-show transcript language. Pre-filled from the YouTube
         # default in Settings → YouTube. Used as the lang code passed to
@@ -998,15 +1052,33 @@ class AddShowDialog(QDialog):
         lang_row.addStretch(1)
         v.addLayout(lang_row)
 
-        # Backfill choice (default: Only new).
-        # Two rows: count-based radios + a time-range dropdown. Picking a
-        # time range clears the radios; picking a radio clears the time
-        # range — mutually exclusive on the user's intent.
+        # Caption import. When checked, each video is checked individually
+        # for an uploader-provided (manual) subtitle in the chosen language;
+        # if one exists it's moved straight into the library with no whisper
+        # pass, otherwise that video falls back to whisper transcription.
+        # Auto-generated captions are never used. Maps to the show's
+        # youtube_transcript_pref ("captions" when checked, "whisper" when not).
+        self._yt_captions_chk = QCheckBox(
+            "Use uploader-provided subtitles when available "
+            "(skip transcription; checked per video — auto-generated captions are never used)"
+        )
+        self._yt_captions_chk.setToolTip(
+            "Per video: if the channel uploaded a real subtitle track in the chosen "
+            "language, import it directly into the library. Videos without a manual "
+            "subtitle are transcribed with whisper. Auto-generated captions are ignored."
+        )
+        _seed_src = getattr(self.ctx.settings, "youtube_default_transcript_source", "captions")
+        self._yt_captions_chk.setChecked(_seed_src in ("captions", "auto-captions"))
+        v.addWidget(self._yt_captions_chk)
+
+        # Backfill choice (default: Only new). Count radios OR a specific
+        # "since" date — mutually exclusive. "Only new" seeds the current
+        # feed window as a done baseline so only future uploads transcribe.
         bf_row = QHBoxLayout()
         bf_row.addWidget(QLabel("Backfill:"))
         self._yt_backfill_grp = QButtonGroup(self)
         self._yt_backfill_grp.setExclusive(True)
-        for label in ("All", "Only new", "Most recent", "Last 20", "Last 50"):
+        for label in ("Only new", "Last 5", "Last 20", "Last 100"):
             b = QRadioButton(label)
             if label == "Only new":
                 b.setChecked(True)
@@ -1015,25 +1087,35 @@ class AddShowDialog(QDialog):
         bf_row.addStretch(1)
         v.addLayout(bf_row)
 
-        time_row = QHBoxLayout()
-        time_row.addWidget(QLabel("Or by time:"))
-        self._yt_time_combo = QComboBox()
-        self._yt_time_combo.addItem("— none —", userData=None)
-        for label, days in (
-            ("Last 7 days", 7),
-            ("Last 30 days", 30),
-            ("Last 6 months", 183),
-            ("Last 12 months", 365),
-        ):
-            self._yt_time_combo.addItem(label, userData=days)
-        # Mutual exclusion: picking a time range deselects radios; picking
-        # a radio resets the dropdown to "— none —".
-        self._yt_time_combo.currentIndexChanged.connect(self._on_yt_time_changed)
+        # Or: transcribe everything published on/after a specific date.
+        # The default is the channel's first upload (fetched lazily on enable),
+        # i.e. "the whole channel" unless the user narrows it.
+        self._yt_first_video_date: str = ""  # cached oldest-upload ISO date
+        self._yt_first_video_thread: Optional[QThread] = None
+        date_row = QHBoxLayout()
+        self._yt_since_chk = QCheckBox("Or since a specific date:")
+        date_row.addWidget(self._yt_since_chk)
+        self._yt_since_date = QDateEdit()
+        self._yt_since_date.setCalendarPopup(True)
+        self._yt_since_date.setDisplayFormat("yyyy-MM-dd")
+        self._yt_since_date.setMinimumDate(QDate(2005, 1, 1))  # YouTube's founding
+        self._yt_since_date.setMaximumDate(QDate.currentDate())
+        self._yt_since_date.setDate(QDate.currentDate().addMonths(-3))
+        self._yt_since_date.setEnabled(False)
+        self._yt_since_user_set = False
+        self._yt_since_date.dateChanged.connect(self._on_yt_since_date_changed)
+        date_row.addWidget(self._yt_since_date)
+        self._yt_since_hint = QLabel("defaults to the channel's first video")
+        self._yt_since_hint.setStyleSheet(f"color: {current_tokens()['ink_3']};")
+        date_row.addWidget(self._yt_since_hint)
+        date_row.addStretch(1)
+        v.addLayout(date_row)
+
+        # Mutual exclusion: enabling the date deselects the count radios;
+        # picking a count radio clears the date checkbox.
+        self._yt_since_chk.toggled.connect(self._on_yt_since_toggled)
         for b in self._yt_backfill_grp.buttons():
             b.toggled.connect(self._on_yt_radio_toggled)
-        time_row.addWidget(self._yt_time_combo)
-        time_row.addStretch(1)
-        v.addLayout(time_row)
 
         v.addStretch(1)
 
@@ -1156,44 +1238,106 @@ class AddShowDialog(QDialog):
             return
         preview = out["preview"]
         self._loaded_yt_preview = preview
-        self.yt_card_title.setText(preview.get("title") or "(untitled)")
+        # New channel — drop any cached first-video date from a prior resolve.
+        self._yt_first_video_date = ""
+        if hasattr(self, "_yt_since_hint"):
+            self._yt_since_hint.setText("defaults to the channel's first video")
+        title = preview.get("title") or "(untitled)"
+        self.yt_card_title.setText(title)
+        # Default the slug to the channel name, but never clobber an edit the
+        # user already made by hand.
+        new_slug = slugify(title)
+        cur = self._yt_slug_input.text().strip()
+        if not cur or cur == getattr(self, "_yt_autoslug", ""):
+            self._yt_slug_input.setText(new_slug)
+        self._yt_autoslug = new_slug
         vc = preview.get("video_count") or 0
         suffix = "+ recent" if preview.get("video_count_is_lower_bound") else ""
         self.yt_card_meta.setText(
             f"{vc}{suffix} video(s) · channel id: {preview.get('channel_id', '')}"
         )
+        # Auto-load the channel thumbnail off-thread (silent on failure).
+        self.yt_card_thumb.setVisible(False)
+        art = preview.get("artwork_url") or ""
+        if art:
+            worker = _CoverWorker(-1, art)
+            worker.done.connect(self._on_yt_thumb_loaded)
+            self._search_pool.start(worker)
         self.yt_card.setVisible(True)
         self.yt_status.setText("Ready")
         self.yt_status.set_kind("ok")
         self._yt_add_btn.setEnabled(True)
 
+    def _on_yt_thumb_loaded(self, _row: int, pixmap: QPixmap) -> None:
+        self.yt_card_thumb.setPixmap(pixmap)
+        self.yt_card_thumb.setVisible(True)
+
     def _yt_backfill_choice(self) -> str:
         btn = self._yt_backfill_grp.checkedButton()
         return btn.text() if btn else "Only new"
 
-    def _yt_time_window_days(self) -> int | None:
-        """Return the selected time-window in days, or None if 'none'."""
-        return self._yt_time_combo.currentData()
+    def _yt_since_date_iso(self) -> str | None:
+        """Return the 'since' date as YYYY-MM-DD when active, else None."""
+        if not self._yt_since_chk.isChecked():
+            return None
+        return self._yt_since_date.date().toString("yyyy-MM-dd")
 
-    def _on_yt_time_changed(self, _idx: int) -> None:
-        """Picking a time window deselects the count radios."""
-        if self._yt_time_combo.currentData() is None:
+    def _on_yt_since_toggled(self, checked: bool) -> None:
+        """Enabling the 'since date' picker deselects the count radios and
+        defaults the date to the channel's first upload (fetched lazily)."""
+        self._yt_since_date.setEnabled(checked)
+        if not checked:
             return
-        # Uncheck all radios so _yt_backfill_choice falls back to "Only new"
-        # (its default sentinel) which we ignore when a time window is set.
         self._yt_backfill_grp.setExclusive(False)
         for b in self._yt_backfill_grp.buttons():
             b.setChecked(False)
         self._yt_backfill_grp.setExclusive(True)
+        # Default to the channel's first video. Use the cached date if we
+        # already have it; otherwise fetch it in the background.
+        self._yt_since_user_set = False
+        if self._yt_first_video_date:
+            self._apply_first_video_date(self._yt_first_video_date)
+            return
+        cid = (self._loaded_yt_preview or {}).get("channel_id") or ""
+        if not cid:
+            return
+        if self._yt_first_video_thread is not None and self._yt_first_video_thread.isRunning():
+            return
+        self._yt_since_hint.setText("finding the channel's first video…")
+        self._yt_first_video_thread = _YtFirstVideoThread(cid, self)
+        self._yt_first_video_thread.done.connect(self._on_yt_first_video_date)
+        self._yt_first_video_thread.start()
+
+    def _on_yt_first_video_date(self, iso: str) -> None:
+        self._yt_first_video_date = iso
+        self._yt_since_hint.setText("defaults to the channel's first video")
+        # Only override the field if the user hasn't picked a date themselves.
+        if (
+            iso
+            and self._yt_since_chk.isChecked()
+            and not getattr(self, "_yt_since_user_set", False)
+        ):
+            self._apply_first_video_date(iso)
+
+    def _apply_first_video_date(self, iso: str) -> None:
+        d = QDate.fromString(iso, "yyyy-MM-dd")
+        if d.isValid():
+            self._yt_since_date.blockSignals(True)
+            self._yt_since_date.setDate(d)
+            self._yt_since_date.blockSignals(False)
+
+    def _on_yt_since_date_changed(self, _d) -> None:
+        self._yt_since_user_set = True
 
     def _on_yt_radio_toggled(self, checked: bool) -> None:
-        """Picking a count radio resets the time dropdown to 'none'."""
+        """Picking a count radio clears the 'since date' checkbox."""
         if not checked:
             return
-        if self._yt_time_combo.currentIndex() != 0:
-            self._yt_time_combo.blockSignals(True)
-            self._yt_time_combo.setCurrentIndex(0)
-            self._yt_time_combo.blockSignals(False)
+        if self._yt_since_chk.isChecked():
+            self._yt_since_chk.blockSignals(True)
+            self._yt_since_chk.setChecked(False)
+            self._yt_since_date.setEnabled(False)
+            self._yt_since_chk.blockSignals(False)
 
     def _add_from_youtube(self) -> None:
         preview = self._loaded_yt_preview
@@ -1205,41 +1349,37 @@ class AddShowDialog(QDialog):
         if not cid:
             QMessageBox.warning(self, "Missing", "Could not determine channel id.")
             return
-        slug = slugify(title)
+        slug = self._yt_slug_input.text().strip() or slugify(title)
 
-        # Decide enumeration limit. Time-window selection takes precedence
-        # over the count radios (the two are mutually exclusive in the UI).
-        time_window_days = self._yt_time_window_days()
+        # Decide enumeration depth. A "since" date overrides the count radios
+        # (mutually exclusive in the UI): fetch everything and filter by date.
+        since_iso = self._yt_since_date_iso()
         choice = self._yt_backfill_choice()
 
-        if time_window_days is not None:
-            # Fetch a generous slice (videos come newest-first; we filter
-            # client-side and stop once we hit the cutoff). 500 covers the
-            # vast majority of channels for a 12-month window.
-            limit = 500
-        elif choice == "All":
-            limit = None
+        if since_iso is not None:
+            limit = None  # fetch all; client-side date filter below
+        elif choice == "Last 100":
+            limit = 100
         elif choice == "Last 20":
             limit = 20
-        elif choice == "Last 50":
-            limit = 50
-        elif choice == "Most recent":
-            limit = 1  # actually transcribe this one (vs "Only new" which marks-as-done)
-        else:  # "Only new"
-            limit = 1  # seed the most recent video so future runs see a baseline
+        elif choice == "Last 5":
+            limit = 5
+        else:  # "Only new" — seed the current feed window as a done baseline
+            # so only genuinely new uploads transcribe. The channel Atom feed
+            # returns ~15 entries; 30 covers it with margin.
+            limit = 30
 
+        from PyQt6.QtWidgets import QApplication
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             videos = _youtube_meta.enumerate_channel_videos(cid, limit=limit)
         except Exception as e:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
             QMessageBox.warning(self, "Error", f"Failed to enumerate videos: {e}")
             return
-
-        # Apply time-window filter after enumeration.
-        if time_window_days is not None:
-            import time as _time
-
-            cutoff = _time.time() - time_window_days * 86400
-            videos = [v for v in videos if (v.get("timestamp") or 0) >= cutoff]
+        finally:
+            QApplication.restoreOverrideCursor()
 
         # Build a manifest the existing _do_save funnel understands.
         # Date sourcing: yt-dlp --flat-playlist returns `timestamp`
@@ -1268,26 +1408,32 @@ class AddShowDialog(QDialog):
                     "guid": vid,
                     "title": v.get("title") or vid,
                     "pubDate": pub,
-                    # YouTube videos have no MP3 enclosure — leave blank;
-                    # the YouTube pipeline branch resolves the source itself.
+                    # YouTube videos have no MP3 enclosure — point at the
+                    # watch URL; the YouTube pipeline branch resolves the
+                    # actual source (captions or audio) itself.
                     "mp3_url": f"https://www.youtube.com/watch?v={vid}",
                 }
             )
 
-        # Backlog mode controls whether seeded items get marked done as a
-        # baseline ("Only new") or stay pending ("All", "Most recent",
-        # "Last N", time windows). "Only new" is the only one that should
-        # mark anything as done — the rest are explicit user picks for
-        # what should actually transcribe. Time windows already filtered
-        # the manifest above, so everything left should transcribe.
-        if time_window_days is not None:
+        # A "since" date keeps only videos published on/after the cutoff
+        # (ISO date strings compare lexicographically). Unknown-date videos
+        # are dropped to avoid silently dragging in the whole back-catalogue.
+        if since_iso is not None:
+            manifest = [m for m in manifest if m["pubDate"] and m["pubDate"] >= since_iso]
+
+        # Backlog mode controls which seeded items transcribe. "Only new"
+        # marks the entire seeded baseline done so only future uploads run;
+        # every other choice keeps the seeded videos pending. The "since"
+        # filter already trimmed the manifest, so its remainder stays pending.
+        if choice == "Only new" and since_iso is None:
+            backlog_mode = "Only new"
+        else:
             backlog_mode = "All"
-        elif choice == "All":
-            backlog_mode = "All"
-        elif choice == "Only new":
-            backlog_mode = "Last 5"  # seed + mark-as-done
-        else:  # "Most recent" / "Last 20" / "Last 50"
-            backlog_mode = "All"
+
+        # Caption preference: checked → import uploader subtitles per video
+        # (manual only; whisper fallback). Unchecked → always whisper. Auto-
+        # generated captions are never used by either path.
+        transcript_pref = "captions" if self._yt_captions_chk.isChecked() else "whisper"
 
         show_dict = {
             "slug": slug,
@@ -1298,6 +1444,7 @@ class AddShowDialog(QDialog):
             "backlog": backlog_mode,
             "artwork_url": preview.get("artwork_url", "") or "",
             "source": "youtube",
+            "youtube_transcript_pref": transcript_pref,
             # User-picked from the dropdown above (seeded from the
             # YouTube default language in Settings). Used as lang code
             # for caption fetch + whisper-cli fallback.
@@ -1336,6 +1483,9 @@ class AddShowDialog(QDialog):
         )
         if _lang:
             model_kwargs["language"] = _lang
+        _pref = (show.get("youtube_transcript_pref") or "").strip()
+        if _pref:
+            model_kwargs["youtube_transcript_pref"] = _pref
         model = Show(**model_kwargs)
         self.updated_watchlist.shows.append(model)
         save_watchlist(self.ctx)
@@ -1352,7 +1502,13 @@ class AddShowDialog(QDialog):
             )
 
         mode = show.get("backlog") or "Last 5"
-        if mode == "All":
+        if mode == "Only new":
+            # Baseline mode (YouTube "Only new"): mark every seeded video done
+            # so the back-catalogue is skipped and only future uploads — new
+            # entries the feed poll discovers later — get transcribed.
+            with self.ctx.state._conn() as c:
+                c.execute("UPDATE episodes SET status='done' WHERE show_slug=?", (slug,))
+        elif mode == "All":
             pass  # leave everything pending
         elif mode == "Most recent":
             # Keep only the latest 1 pending; mark older as done.

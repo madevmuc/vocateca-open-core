@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from core.youtube_meta import (
     YoutubeMetaError,
     enumerate_channel_videos,
+    fetch_channel_first_video_date,
     fetch_channel_preview,
     resolve_handle_to_channel_id,
 )
@@ -86,6 +87,40 @@ def test_fetch_channel_preview_uses_rss_fast_path(monkeypatch):
     assert prev["title"] == "Mr Beast"
     assert prev["video_count"] == 2
     assert prev["video_count_is_lower_bound"] is True
+
+
+def test_fetch_channel_preview_surfaces_latest_video_thumbnail(monkeypatch):
+    """The fast path has no avatar, but should expose the latest video's
+    <media:thumbnail> so the Add dialog can show an image without yt-dlp."""
+    rss = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<feed xmlns="http://www.w3.org/2005/Atom" '
+        'xmlns:media="http://search.yahoo.com/mrss/">'
+        "<title>Mr Beast</title>"
+        "<entry><title>vid 1</title><media:group>"
+        '<media:thumbnail url="https://i.ytimg.com/vi/abc/hqdefault.jpg"/>'
+        "</media:group></entry>"
+        "</feed>"
+    )
+    monkeypatch.setattr("core.youtube_meta._http_get_text", lambda url, timeout=10.0: rss)
+    prev = fetch_channel_preview("UCabc")
+    assert prev["artwork_url"] == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
+
+
+def test_fetch_channel_first_video_date_parses_oldest_upload(tmp_path, monkeypatch):
+    """yt-dlp prints the oldest video's YYYYMMDD; we normalise it to ISO."""
+    _setup_fake_ytdlp(tmp_path, monkeypatch)
+    fake_proc = MagicMock(returncode=0, stdout="20120504\n", stderr="")
+    with patch("subprocess.run", return_value=fake_proc):
+        assert fetch_channel_first_video_date("UCabc") == "2012-05-04"
+
+
+def test_fetch_channel_first_video_date_empty_on_failure(tmp_path, monkeypatch):
+    """A yt-dlp error must not raise — the caller falls back to its default."""
+    _setup_fake_ytdlp(tmp_path, monkeypatch)
+    fake_proc = MagicMock(returncode=1, stdout="", stderr="boom")
+    with patch("subprocess.run", return_value=fake_proc):
+        assert fetch_channel_first_video_date("UCabc") == ""
 
 
 def test_fetch_channel_preview_falls_back_to_ytdlp(tmp_path, monkeypatch):

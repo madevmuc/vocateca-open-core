@@ -116,17 +116,28 @@ def fetch_channel_preview(channel_id: str) -> Dict[str, object]:
     try:
         xml = _http_get_text(feed_url, timeout=8.0)
         root = ET.fromstring(xml)
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        ns = {
+            "atom": "http://www.w3.org/2005/Atom",
+            "media": "http://search.yahoo.com/mrss/",
+        }
         title_el = root.find("atom:title", ns)
         title = title_el.text.strip() if title_el is not None and title_el.text else ""
         entries = root.findall("atom:entry", ns)
+        # The channel avatar isn't in the feed, but every entry carries a
+        # per-video <media:thumbnail>. Surface the latest one so the Add
+        # dialog has an image to show immediately without the slow yt-dlp path.
+        artwork = ""
+        if entries:
+            thumb = entries[0].find("media:group/media:thumbnail", ns)
+            if thumb is not None:
+                artwork = thumb.get("url") or ""
         if title:
             return {
                 "channel_id": channel_id,
                 "title": title,
                 "video_count": len(entries),
                 "video_count_is_lower_bound": True,
-                "artwork_url": "",
+                "artwork_url": artwork,
             }
     except Exception:  # noqa: BLE001
         pass
@@ -151,6 +162,38 @@ def fetch_channel_preview(channel_id: str) -> Dict[str, object]:
         "video_count_is_lower_bound": False,
         "artwork_url": artwork,
     }
+
+
+def fetch_channel_first_video_date(channel_id: str) -> str:
+    """Return the channel's oldest video upload date as ``YYYY-MM-DD``, or "".
+
+    The Videos tab is newest-first, so ``--playlist-items -1`` is the oldest
+    upload. yt-dlp walks the (flat) listing to its end but only fully extracts
+    that single video, so this is far cheaper than enumerating the whole
+    channel. Best-effort: any failure (network, no date, huge channel
+    timeout) returns "" so the caller can fall back to its own default.
+    """
+    try:
+        out = _run_ytdlp(
+            [
+                "--skip-download",
+                "--playlist-items",
+                "-1",
+                "--print",
+                "%(upload_date)s",
+                f"https://www.youtube.com/channel/{channel_id}/videos",
+            ],
+            timeout=120,
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+    lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    ud = lines[-1]
+    if len(ud) == 8 and ud.isdigit():
+        return f"{ud[:4]}-{ud[4:6]}-{ud[6:8]}"
+    return ""
 
 
 def enumerate_channel_videos(channel_id: str, *, limit: int | None = None) -> List[Dict]:

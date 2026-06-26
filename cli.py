@@ -131,7 +131,37 @@ def cmd_add(args: argparse.Namespace) -> int:
         return 2
 
     inp = args.name_or_url.strip()
-    if inp.startswith("http"):
+    yt_source = False
+    if inp.startswith("http") and ("youtube.com" in inp or "youtu.be" in inp):
+        # YouTube channel/handle URL — resolve to the canonical channel feed
+        # and tag the show source=youtube, exactly like the GUI's dedicated
+        # "Add YouTube Channel…" flow (captions-first, whisper fallback).
+        from core.youtube import (
+            YoutubeUrlError,
+            parse_youtube_url,
+            rss_url_for_channel_id,
+        )
+
+        try:
+            parsed = parse_youtube_url(inp)
+        except YoutubeUrlError as e:
+            print(f"not a usable YouTube URL: {e}", file=sys.stderr)
+            return 2
+        if parsed.kind == "video":
+            print(
+                "paste a YouTube channel or @handle URL, not a single video",
+                file=sys.stderr,
+            )
+            return 2
+        if parsed.kind == "handle":
+            from core import youtube_meta
+
+            cid = youtube_meta.resolve_handle_to_channel_id(parsed.value)
+        else:  # "channel_id"
+            cid = parsed.value
+        rss = rss_url_for_channel_id(cid)
+        yt_source = True
+    elif inp.startswith("http"):
         rss = find_rss_from_url(inp) or inp
     else:
         matches = search_itunes(inp)
@@ -152,16 +182,23 @@ def cmd_add(args: argparse.Namespace) -> int:
     if not args.yes:
         slug = input(f"slug [{slug}]: ").strip() or slug
 
-    prompt = suggest_whisper_prompt(
-        title=meta["title"],
-        author=meta["author"],
-        episodes=[{"title": e["title"], "description": e["description"]} for e in manifest[-20:]],
-    )
-    if not args.yes:
-        print(f"suggested prompt:\n  {prompt}")
-        custom = input("override prompt (enter to keep): ").strip()
-        if custom:
-            prompt = custom
+    # YouTube transcripts come from captions or whisper-on-audio, so the
+    # podcast-style whisper-prompt suggestion is meaningless there.
+    if yt_source:
+        prompt = ""
+    else:
+        prompt = suggest_whisper_prompt(
+            title=meta["title"],
+            author=meta["author"],
+            episodes=[
+                {"title": e["title"], "description": e["description"]} for e in manifest[-20:]
+            ],
+        )
+        if not args.yes:
+            print(f"suggested prompt:\n  {prompt}")
+            custom = input("override prompt (enter to keep): ").strip()
+            if custom:
+                prompt = custom
 
     wl = _watchlist()
     if any(s.slug == slug for s in wl.shows):
@@ -174,6 +211,7 @@ def cmd_add(args: argparse.Namespace) -> int:
             rss=rss,
             whisper_prompt=prompt,
             language=(args.lang or "de"),
+            source=("youtube" if yt_source else "podcast"),
         )
     )
     wl.save_atomic(DATA / "watchlist.yaml")

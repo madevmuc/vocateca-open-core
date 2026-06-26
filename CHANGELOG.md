@@ -1,5 +1,35 @@
 # Paragraphos Changelog
 
+## Unreleased — YouTube channels as first-class shows
+
+### Added
+- **"Add YouTube Channel…" button on the Shows tab.** A dedicated entry
+  point opens a focused popup — no podcast-search tabs, just a channel/​@handle
+  URL field. Paste the link, the channel name + thumbnail + video count
+  resolve automatically, the slug pre-fills from the channel name (editable),
+  and you pick how much history to pull: **only new** (future uploads only),
+  the **last 5 / 20 / 100** videos, or everything **since a specific date**.
+- **Per-video uploader-subtitle import.** A checkbox lets a channel skip
+  transcription whenever the uploader shipped a real (manually provided)
+  subtitle track in the chosen language — that track is moved straight into
+  the library. It's checked per video, so any clip lacking a manual subtitle
+  still falls back to whisper. Auto-generated captions are never used.
+
+### Fixed
+- **New YouTube uploads are now actually discovered.** Channel feeds are
+  Atom with no audio enclosure, so the feed poll had been yielding zero
+  episodes — only the initial backfill ever ran. The manifest builder now
+  recognises YouTube channel entries (keyed by the bare video id, pointing at
+  the watch URL), so new uploads are picked up, downloaded, and transcribed
+  on the regular check like any podcast episode.
+
+### Changed
+- **`cli.py add <youtube-url> --backlog …` is YouTube-aware.** A channel or
+  `@handle` URL is auto-detected and tagged `source=youtube` (resolving to the
+  channel feed), so the headless / AI-operator path matches the GUI. Settings
+  → Automation & remote control and the example agent prompt document the new
+  flow and the uploader-caption behaviour.
+
 ## v1.5.0 — 2026-06-25 (AI-operator guardrails & background-load levels)
 
 ### Added

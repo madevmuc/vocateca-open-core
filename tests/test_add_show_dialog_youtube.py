@@ -170,3 +170,178 @@ def test_install_gate_when_ytdlp_missing(tmp_path, monkeypatch):
     # The install button is shown; resolve is gated.
     assert not dlg._yt_install_btn.isHidden()
     assert not dlg.youtube_url_input.isEnabled()
+
+
+# --------------------------------------------------------------------------- #
+# Reworked YouTube page: slug field, captions toggle, backfill semantics       #
+# --------------------------------------------------------------------------- #
+
+_CID = "UCabc1234567890123456789"
+
+
+def _resolve(dlg, monkeypatch, title="Mr Beast", artwork="", videos=None):
+    """Drive a channel URL through resolve and wait for the worker thread."""
+    monkeypatch.setattr(
+        "core.youtube_meta.fetch_channel_preview",
+        lambda c: {
+            "channel_id": c,
+            "title": title,
+            "video_count": len(videos or []),
+            "artwork_url": artwork,
+        },
+    )
+    monkeypatch.setattr(
+        "core.youtube_meta.enumerate_channel_videos",
+        lambda c, limit=None: list(videos or []),
+    )
+    # Default: no real yt-dlp subprocess for the first-video lookup. Tests
+    # that exercise the 'since date' default override this.
+    monkeypatch.setattr(
+        "core.youtube_meta.fetch_channel_first_video_date",
+        lambda c: "",
+    )
+    dlg._activate_youtube_mode()
+    dlg.youtube_url_input.setText(f"https://www.youtube.com/channel/{_CID}")
+    dlg._on_youtube_url_resolve()
+    # Block on the worker thread (immune to the just-started isRunning()==False
+    # race), then pump until the queued preview signal is delivered.
+    import time
+
+    t = getattr(dlg, "_yt_resolve_thread", None)
+    if t is not None:
+        t.wait(5000)
+    start = time.monotonic()
+    while not dlg._loaded_yt_preview and time.monotonic() - start < 5.0:
+        _app_ref.processEvents()
+        time.sleep(0.01)
+
+
+def _vids(n):
+    # upload_date drives pubDate; spread across June 2026 so date filters bite.
+    return [
+        {"id": f"v{i:02d}", "title": f"Ep {i}", "upload_date": f"202606{i + 1:02d}"}
+        for i in range(n)
+    ]
+
+
+def _counts(dlg, slug):
+    from core.state import EpisodeStatus
+
+    pending = dlg.ctx.state.list_by_status(slug, EpisodeStatus.PENDING)
+    done = dlg.ctx.state.list_by_status(slug, EpisodeStatus.DONE)
+    return len(pending), len(done)
+
+
+def test_slug_autofills_from_channel_and_is_editable(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    _resolve(dlg, monkeypatch, title="Mr Beast", videos=[])
+    # Defaults to the slugified channel name.
+    assert dlg._yt_slug_input.text() == "mr-beast"
+    # A hand-edited slug is honoured by the add path.
+    dlg._yt_slug_input.setText("beast-custom")
+    dlg._add_from_youtube()
+    assert any(s.slug == "beast-custom" for s in dlg.updated_watchlist.shows)
+
+
+def test_captions_checkbox_sets_transcript_pref(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    # Settings default is "captions" → checkbox starts checked.
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    _resolve(dlg, monkeypatch, title="Chan A", videos=[])
+    assert dlg._yt_captions_chk.isChecked()
+    dlg._add_from_youtube()
+    show = next(s for s in dlg.updated_watchlist.shows if s.slug == "chan-a")
+    assert show.youtube_transcript_pref == "captions"
+
+
+def test_captions_unchecked_means_whisper(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    _resolve(dlg, monkeypatch, title="Chan B", videos=[])
+    dlg._yt_captions_chk.setChecked(False)
+    dlg._add_from_youtube()
+    show = next(s for s in dlg.updated_watchlist.shows if s.slug == "chan-b")
+    assert show.youtube_transcript_pref == "whisper"
+
+
+def test_only_new_marks_whole_baseline_done(tmp_path, monkeypatch):
+    """'Only new' seeds the current videos as a DONE baseline so nothing in
+    the back-catalogue transcribes — only future uploads will."""
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    _resolve(dlg, monkeypatch, title="Base", videos=_vids(5))
+    # Default radio is "Only new".
+    assert dlg._yt_backfill_choice() == "Only new"
+    dlg._add_from_youtube()
+    pending, done = _counts(dlg, "base")
+    assert pending == 0
+    assert done == 5
+
+
+def test_last5_keeps_videos_pending(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    _resolve(dlg, monkeypatch, title="Keep", videos=_vids(5))
+    for b in dlg._yt_backfill_grp.buttons():
+        if b.text() == "Last 5":
+            b.setChecked(True)
+            break
+    dlg._add_from_youtube()
+    pending, _done = _counts(dlg, "keep")
+    assert pending == 5
+
+
+def test_since_date_filters_to_videos_on_or_after_cutoff(tmp_path, monkeypatch):
+    from PyQt6.QtCore import QDate
+
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    # 5 videos: pubDates 2026-06-01 .. 2026-06-05.
+    _resolve(dlg, monkeypatch, title="Since", videos=_vids(5))
+    dlg._yt_since_chk.setChecked(True)
+    dlg._yt_since_date.setDate(QDate(2026, 6, 3))
+    dlg._add_from_youtube()
+    pending, _done = _counts(dlg, "since")
+    # 2026-06-03, -04, -05 stay pending; the two older ones are dropped.
+    assert pending == 3
+
+
+def test_since_date_defaults_to_channel_first_video(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    _resolve(dlg, monkeypatch, title="Old Chan", videos=_vids(3))
+    # The field advertises its default up front.
+    assert "first video" in dlg._yt_since_hint.text()
+    # Override the no-op stub: this channel's first upload is 2012-05-04.
+    monkeypatch.setattr("core.youtube_meta.fetch_channel_first_video_date", lambda c: "2012-05-04")
+    dlg._yt_since_chk.setChecked(True)
+    t = dlg._yt_first_video_thread
+    if t is not None:
+        t.wait(5000)
+    start = time.monotonic()
+    while (
+        dlg._yt_since_date.date().toString("yyyy-MM-dd") != "2012-05-04"
+        and time.monotonic() - start < 5.0
+    ):
+        _app_ref.processEvents()
+        time.sleep(0.01)
+    assert dlg._yt_since_date.date().toString("yyyy-MM-dd") == "2012-05-04"
+
+
+def test_initial_mode_youtube_hides_switcher(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    from ui.add_show_dialog import AddShowDialog
+    from ui.app_context import AppContext
+
+    ctx = AppContext.load(tmp_path)
+    ctx.settings = Settings(sources_youtube=True)
+    dlg = AddShowDialog(ctx, None, initial_mode="youtube")
+    _keepalive.append(dlg)
+    assert not dlg._mode_switcher.isVisible()
+    assert dlg.windowTitle() == "Add YouTube Channel"
+    # The YouTube radio is the active mode.
+    active = dlg._mode_buttons.checkedButton()
+    assert active is not None and active.property("mode") == "youtube"
