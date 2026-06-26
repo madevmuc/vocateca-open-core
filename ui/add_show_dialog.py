@@ -154,14 +154,16 @@ class _YoutubeResolveThread(QThread):
 
 
 class _YtFirstVideoThread(QThread):
-    """Fetch a channel's oldest upload date off-thread.
+    """Fetch a channel's oldest upload date + total video count off-thread.
 
     yt-dlp has to walk the channel's video listing to find the last (oldest)
-    item, which can take a few seconds — so it runs off the GUI thread and
-    only when the user actually picks the 'since a specific date' option.
+    item, which can take a few seconds — so it runs off the GUI thread. The
+    same walk also yields the total video count, so both come back together
+    and feed the channel card ("Active since" / "Total videos") + the
+    'since a specific date' default.
     """
 
-    done = pyqtSignal(str)  # "YYYY-MM-DD" or "" on failure
+    done = pyqtSignal(str, int)  # ("YYYY-MM-DD" or "", total_count or 0)
 
     def __init__(self, channel_id: str, parent=None):
         super().__init__(parent)
@@ -169,10 +171,10 @@ class _YtFirstVideoThread(QThread):
 
     def run(self) -> None:
         try:
-            iso = _youtube_meta.fetch_channel_first_video_date(self.channel_id)
+            iso, count = _youtube_meta.fetch_channel_first_video_and_count(self.channel_id)
         except Exception:  # noqa: BLE001
-            iso = ""
-        self.done.emit(iso)
+            iso, count = "", 0
+        self.done.emit(iso, count)
 
 
 def _merge_window_and_deep(window: list[dict], deep: list[dict]) -> list[dict]:
@@ -1405,11 +1407,10 @@ class AddShowDialog(QDialog):
         if not cur or cur == getattr(self, "_yt_autoslug", ""):
             self._yt_slug_input.setText(new_slug)
         self._yt_autoslug = new_slug
-        vc = preview.get("video_count") or 0
-        suffix = "+ recent" if preview.get("video_count_is_lower_bound") else ""
-        self.yt_card_meta.setText(
-            f"{vc}{suffix} video(s) · channel id: {preview.get('channel_id', '')}"
-        )
+        # The exact "Active since" date + total video count come from the eager
+        # _YtFirstVideoThread (started on resolve); show a placeholder until it
+        # lands so the card never shows a misleading lower-bound count.
+        self.yt_card_meta.setText("Loading channel details…")
         # Auto-load the channel thumbnail off-thread (silent on failure).
         self.yt_card_thumb.setVisible(False)
         art = preview.get("artwork_url") or ""
@@ -1466,8 +1467,13 @@ class AddShowDialog(QDialog):
         self._yt_first_video_thread.done.connect(self._on_yt_first_video_date)
         self._yt_first_video_thread.start()
 
-    def _on_yt_first_video_date(self, iso: str) -> None:
+    def _on_yt_first_video_date(self, iso: str, count: int = 0) -> None:
         self._yt_first_video_date = iso
+        # Fill the channel card's details line ("Active since" / "Total videos").
+        left = f"Active since: {iso}" if iso else "Active since: —"
+        right = f"Total videos: {count}" if count else "Total videos: —"
+        if hasattr(self, "yt_card_meta"):
+            self.yt_card_meta.setText(f"{left} · {right}")
         if iso:
             self._yt_since_hint.setText(f"defaults to the channel's first video ({iso})")
         else:

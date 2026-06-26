@@ -279,11 +279,15 @@ def test_fetch_preview_falls_back_to_rss_thumb_when_no_og(monkeypatch):
 
 
 def test_fetch_channel_first_video_date_parses_oldest_upload(tmp_path, monkeypatch):
-    """yt-dlp prints the oldest video's YYYYMMDD; we normalise it to ISO."""
+    """yt-dlp prints 'playlist_count|YYYYMMDD'; we normalise the date to ISO and
+    surface the total count together."""
+    from core.youtube_meta import fetch_channel_first_video_and_count
+
     _setup_fake_ytdlp(tmp_path, monkeypatch)
-    fake_proc = MagicMock(returncode=0, stdout="20120504\n", stderr="")
+    fake_proc = MagicMock(returncode=0, stdout="287|20120504\n", stderr="")
     with patch("subprocess.run", return_value=fake_proc):
         assert fetch_channel_first_video_date("UCabc") == "2012-05-04"
+        assert fetch_channel_first_video_and_count("UCabc") == ("2012-05-04", 287)
 
 
 def test_fetch_channel_first_video_date_empty_on_failure(tmp_path, monkeypatch):

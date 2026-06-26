@@ -227,11 +227,21 @@ def fetch_channel_preview(channel_id: str) -> Dict[str, object]:
 def fetch_channel_first_video_date(channel_id: str) -> str:
     """Return the channel's oldest video upload date as ``YYYY-MM-DD``, or "".
 
+    Thin wrapper over :func:`fetch_channel_first_video_and_count` for callers
+    that only need the date.
+    """
+    return fetch_channel_first_video_and_count(channel_id)[0]
+
+
+def fetch_channel_first_video_and_count(channel_id: str) -> tuple[str, int]:
+    """Return ``(oldest-upload-date 'YYYY-MM-DD' or "", total_video_count)``.
+
     The Videos tab is newest-first, so ``--playlist-items -1`` is the oldest
-    upload. yt-dlp walks the (flat) listing to its end but only fully extracts
-    that single video, so this is far cheaper than enumerating the whole
-    channel. Best-effort: any failure (network, no date, huge channel
-    timeout) returns "" so the caller can fall back to its own default.
+    upload — and walking to it also yields ``playlist_count``, so the channel's
+    "active since" date AND its total video count come back in ONE yt-dlp call.
+    yt-dlp fully extracts only that single (oldest) video, so this is far
+    cheaper than enumerating the whole channel. Best-effort: any failure
+    returns ``("", 0)`` so the caller can fall back to its own defaults.
     """
     try:
         out = _run_ytdlp(
@@ -240,20 +250,24 @@ def fetch_channel_first_video_date(channel_id: str) -> str:
                 "--playlist-items",
                 "-1",
                 "--print",
-                "%(upload_date)s",
+                "%(playlist_count)s|%(upload_date)s",
                 f"https://www.youtube.com/channel/{channel_id}/videos",
             ],
             timeout=120,
         )
     except Exception:  # noqa: BLE001
-        return ""
+        return "", 0
     lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
     if not lines:
-        return ""
-    ud = lines[-1]
-    if len(ud) == 8 and ud.isdigit():
-        return f"{ud[:4]}-{ud[4:6]}-{ud[6:8]}"
-    return ""
+        return "", 0
+    parts = lines[-1].split("|")
+    count = int(parts[0]) if parts and parts[0].strip().isdigit() else 0
+    date = ""
+    if len(parts) > 1:
+        ud = parts[1].strip()
+        if len(ud) == 8 and ud.isdigit():
+            date = f"{ud[:4]}-{ud[4:6]}-{ud[6:8]}"
+    return date, count
 
 
 def enumerate_channel_videos(

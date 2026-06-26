@@ -262,7 +262,14 @@ def _window(videos):
 
 
 def _resolve(
-    dlg, monkeypatch, title="Mr Beast", artwork="", videos=None, window=None, first_video=""
+    dlg,
+    monkeypatch,
+    title="Mr Beast",
+    artwork="",
+    videos=None,
+    window=None,
+    first_video="",
+    total_videos=0,
 ):
     """Drive a channel URL through resolve and wait for the worker thread.
 
@@ -290,8 +297,13 @@ def _resolve(
 
     monkeypatch.setattr("core.youtube_meta.enumerate_channel_videos", _fake_enum)
     monkeypatch.setattr("core.rss.build_manifest", lambda url, **kw: list(win))
-    # The first-video date is fetched eagerly on resolve (no real yt-dlp here).
-    # Tests exercising the 'since date' default pass first_video="YYYY-MM-DD".
+    # The first-video date + total count are fetched eagerly on resolve (no
+    # real yt-dlp). Tests exercising the 'since' default / card pass
+    # first_video="YYYY-MM-DD" and/or total_videos=N.
+    monkeypatch.setattr(
+        "core.youtube_meta.fetch_channel_first_video_and_count",
+        lambda c: (first_video, total_videos),
+    )
     monkeypatch.setattr(
         "core.youtube_meta.fetch_channel_first_video_date",
         lambda c: first_video,
@@ -458,6 +470,19 @@ def test_since_date_defaults_to_channel_first_video(tmp_path, monkeypatch):
     # the hint shows the concrete date.
     assert dlg._yt_since_date.date().toString("yyyy-MM-dd") == "2012-05-04"
     assert "2012-05-04" in dlg._yt_since_hint.text()
+
+
+def test_channel_card_shows_active_since_and_total(tmp_path, monkeypatch):
+    """The channel card shows 'Active since: <first-video date>' and the total
+    video count (both from the eager first-video+count fetch)."""
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    _resolve(
+        dlg, monkeypatch, title="Chan", videos=_vids(3), first_video="2015-03-04", total_videos=287
+    )
+    txt = dlg.yt_card_meta.text()
+    assert "Active since: 2015-03-04" in txt
+    assert "Total videos: 287" in txt
 
 
 def test_since_date_empty_first_video_keeps_placeholder(tmp_path, monkeypatch):
