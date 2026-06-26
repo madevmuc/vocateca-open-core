@@ -169,6 +169,10 @@ class ShowDetailsDialog(QDialog):
         super().__init__(parent)
         self.ctx = ctx
         self.slug = slug
+        # Active episode-status filter (None = show all). Initialised before
+        # any widget builder runs so the first `_reload_episodes()` (inside
+        # `_build_episodes_table`) sees it.
+        self._status_filter: str | None = None
         self.show_ = next((s for s in ctx.watchlist.shows if s.slug == slug), None)
         if self.show_ is None:
             self.reject()
@@ -757,6 +761,17 @@ class ShowDetailsDialog(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
 
+        # Status filter (left): narrows the table to a single status. The
+        # combo is wired AFTER its items are added so populating it doesn't
+        # fire the slot before the episodes table exists.
+        row.addWidget(QLabel("Filter:"))
+        self._status_filter_combo = QComboBox()
+        self._status_filter_combo.addItems(
+            ["All", "pending", "failed", "skipped", "deferred", "done"]
+        )
+        self._status_filter_combo.currentTextChanged.connect(self._on_status_filter_changed)
+        row.addWidget(self._status_filter_combo)
+
         row.addStretch(1)
 
         # Date-sweep: queue every not-yet-done episode published on or after
@@ -820,19 +835,28 @@ class ShowDetailsDialog(QDialog):
         self._reload_episodes()
         return tbl
 
+    def _on_status_filter_changed(self, text: str) -> None:
+        """Toolbar combo slot: ``"All"`` clears the filter, any other value
+        restricts the table to that status. Rebuilds the table in place."""
+        self._status_filter = None if text == "All" else text
+        self._reload_episodes()
+
     def _episode_rows(self) -> list:
-        """All episodes for this show, newest first.
+        """Episodes for this show, newest first.
 
         No LIMIT — the table is a full per-show browser, so every episode
-        renders (the previous last-10 cap is gone).
+        renders (the previous last-10 cap is gone). When ``_status_filter``
+        is set, only episodes with that status are returned (parameterised,
+        so no injection); the ``pub_date DESC`` order is preserved either way.
         """
+        sql = "SELECT guid, pub_date, title, status FROM episodes WHERE show_slug=?"
+        params: list = [self.slug]
+        if self._status_filter:
+            sql += " AND status = ?"
+            params.append(self._status_filter)
+        sql += " ORDER BY pub_date DESC"
         with self.ctx.state._conn() as c:
-            return c.execute(
-                "SELECT guid, pub_date, title, status "
-                "FROM episodes WHERE show_slug=? "
-                "ORDER BY pub_date DESC",
-                (self.slug,),
-            ).fetchall()
+            return c.execute(sql, tuple(params)).fetchall()
 
     def _reload_episodes(self) -> None:
         """Re-query episodes and rebuild the table body in place.

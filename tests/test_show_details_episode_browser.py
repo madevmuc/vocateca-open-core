@@ -260,3 +260,61 @@ def test_queue_since_queues_on_or_after_cutoff_skipping_done(qapp, tmp_path):
     # Pre-cutoff → untouched.
     assert ctx.state.get_episode("e1")["status"] == "failed"
     assert ctx.state.get_episode("e2")["status"] == "skipped"
+
+
+# ── Task 4.5 ─────────────────────────────────────────────────────────────
+
+
+def test_status_filter_limits_rows_to_one_status(qapp, tmp_path):
+    """Setting the status filter restricts the table to matching rows;
+    clearing it (All / None) shows every episode again."""
+    from core.state import EpisodeStatus
+    from ui.show_details_dialog import ShowDetailsDialog
+
+    show = Show(slug="flt", title="Flt", rss="https://feed", source="podcast")
+    ctx = _make_ctx(tmp_path, show)
+    _seed_one(ctx, "flt", "p1", 1, EpisodeStatus.PENDING)
+    _seed_one(ctx, "flt", "p2", 2, EpisodeStatus.PENDING)
+    _seed_one(ctx, "flt", "fail1", 3, EpisodeStatus.FAILED)
+    _seed_one(ctx, "flt", "done1", 4, EpisodeStatus.DONE)
+    _seed_one(ctx, "flt", "skip1", 5, EpisodeStatus.SKIPPED)
+    _seed_one(ctx, "flt", "def1", 6, EpisodeStatus.DEFERRED)
+    dlg = ShowDetailsDialog(ctx, "flt")
+    _keepalive.append(dlg)
+
+    # Unfiltered: all six render.
+    assert dlg._episodes_tbl.rowCount() == 6
+
+    # Filter to failed → exactly the one failed row.
+    dlg._status_filter = "failed"
+    dlg._reload_episodes()
+    assert dlg._episodes_tbl.rowCount() == 1
+    assert dlg._episodes_tbl.item(0, 0).data(Qt.ItemDataRole.UserRole) == "fail1"
+
+    # Back to All (None) → every row again.
+    dlg._status_filter = None
+    dlg._reload_episodes()
+    assert dlg._episodes_tbl.rowCount() == 6
+
+
+def test_status_filter_combo_drives_reload(qapp, tmp_path):
+    """Driving the combo's text updates `_status_filter` and the table."""
+    from core.state import EpisodeStatus
+    from ui.show_details_dialog import ShowDetailsDialog
+
+    show = Show(slug="cmb", title="Cmb", rss="https://feed", source="podcast")
+    ctx = _make_ctx(tmp_path, show)
+    _seed_one(ctx, "cmb", "p1", 1, EpisodeStatus.PENDING)
+    _seed_one(ctx, "cmb", "fail1", 2, EpisodeStatus.FAILED)
+    dlg = ShowDetailsDialog(ctx, "cmb")
+    _keepalive.append(dlg)
+
+    assert dlg._status_filter is None
+    dlg._status_filter_combo.setCurrentText("failed")
+    assert dlg._status_filter == "failed"
+    assert dlg._episodes_tbl.rowCount() == 1
+    assert dlg._episodes_tbl.item(0, 0).data(Qt.ItemDataRole.UserRole) == "fail1"
+
+    dlg._status_filter_combo.setCurrentText("All")
+    assert dlg._status_filter is None
+    assert dlg._episodes_tbl.rowCount() == 2
