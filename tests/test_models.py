@@ -80,3 +80,29 @@ def test_settings_has_local_source_defaults():
     assert s.watch_folder_root == "~/Paragraphos/to-be-transcribed"
     assert s.watch_folder_post == "keep"  # keep | move | delete
     assert s.local_max_duration_hours == 4
+
+
+def test_youtube_skip_shorts_default_is_true():
+    assert Settings().youtube_skip_shorts_default is True
+
+
+def test_youtube_skip_shorts_default_round_trips(tmp_path: Path):
+    import yaml
+
+    s = Settings()
+    s.youtube_skip_shorts_default = False
+    p = tmp_path / "settings.yaml"
+    s.save(p)
+    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    assert raw["youtube_skip_shorts_default"] is False
+    reloaded = Settings.model_validate(raw)
+    assert reloaded.youtube_skip_shorts_default is False
+
+
+def test_youtube_skip_shorts_default_migration_safe():
+    # An existing settings.yaml predating the field must load and default True.
+    data = Settings().model_dump()
+    data.pop("youtube_skip_shorts_default", None)
+    assert "youtube_skip_shorts_default" not in data
+    s = Settings.model_validate(data)
+    assert s.youtube_skip_shorts_default is True
