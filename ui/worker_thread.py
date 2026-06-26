@@ -46,7 +46,7 @@ from core.pipeline import (
     transcribe_phase,
 )
 from core.rss import build_manifest_with_url
-from core.state import EpisodeStatus
+from core.state import EpisodeStatus, claim_order_by
 from core.watchlist_io import save_watchlist
 
 # Sentinel pushed onto the queue to tell the transcribe worker "no more work".
@@ -110,9 +110,11 @@ class _DownloadPool(QThread):
         stop_flag: threading.Event,
         workers: int,
         orphan_guids: list | None = None,
+        queue_order: str = "oldest_first",
     ):
         super().__init__()
         self._ctx = ctx
+        self._queue_order = queue_order
         self._show_by_slug = show_by_slug  # slug -> Show
         self._ep_num_map = ep_num_map  # guid -> "0042" / "0000"
         self._scope_slugs = list(scope_slugs)  # which shows this pass touches
@@ -171,13 +173,14 @@ class _DownloadPool(QThread):
         # Two-step claim: try pending first (cheapest path forward),
         # fall back to downloaded (orphan recovery). Each step is a
         # single atomic UPDATE…RETURNING.
+        order_by = claim_order_by(self._queue_order)
         with self._claim_lock, self._ctx.state._conn() as c:
             row = c.execute(
                 "UPDATE episodes SET status='downloading' "
                 "WHERE guid = ("
                 "  SELECT guid FROM episodes "
                 f"  WHERE status='pending' AND show_slug IN ({placeholders}) "
-                "  ORDER BY priority DESC, pub_date ASC LIMIT 1"
+                f"  ORDER BY {order_by} LIMIT 1"
                 ") "
                 "RETURNING *",
                 tuple(self._scope_slugs),
@@ -880,6 +883,7 @@ class CheckAllThread(QThread):
             stop_flag=self._stop_event,
             workers=dl_conc,
             orphan_guids=orphan_guids,
+            queue_order=getattr(self.settings, "queue_order", "oldest_first"),
         )
         # Spawn the load profile's transcribe-worker count (default 1).
         # Pre-2026-04-23 only one was created regardless of the setting,

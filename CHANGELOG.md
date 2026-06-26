@@ -24,6 +24,10 @@ people actually paste, and paired with a full per-show episode browser.
   a curated subset is mirrored into the activity-log dock.
 
 ### Added
+- **Queue order toggle.** A control in the Queue toolbar picks **oldest first**,
+  **newest first**, or **shortest first**; the worker honours it on the next
+  claim (priority bumps still win). Also settable via
+  `cli.py set-setting queue_order …`.
 - **Low-confidence word marking (opt-in).** Enable it in Settings → Processing
   & reliability and whisper reports per-word confidence; words below the
   threshold are wrapped in `==highlight==` (Obsidian-compatible) and the

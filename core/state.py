@@ -34,6 +34,23 @@ class EpisodeStatus(str, Enum):
     PAUSED = "paused"
 
 
+# Queue claim ordering (2.5). Whitelisted SQL fragments — never interpolate a
+# raw setting value. `priority DESC` always leads so 'Run next/now' bumps win.
+_QUEUE_ORDERS = {
+    "oldest_first": "priority DESC, pub_date ASC",
+    "newest_first": "priority DESC, pub_date DESC",
+    "shortest_first": "priority DESC, (duration_sec IS NULL), duration_sec ASC",
+}
+
+
+def claim_order_by(queue_order: str) -> str:
+    """Return the whitelisted ORDER BY fragment for a queue_order setting.
+
+    Falls back to ``oldest_first`` for any unknown value.
+    """
+    return _QUEUE_ORDERS.get(queue_order, _QUEUE_ORDERS["oldest_first"])
+
+
 # Episode status → lifecycle event type. Statuses absent from this map
 # (PENDING/STALE/PAUSED) emit no event.
 _STATUS_EVENT_MAP = {

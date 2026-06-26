@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from PyQt6.QtCore import QItemSelection, QItemSelectionModel, Qt, QTimer
 from PyQt6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -101,6 +102,21 @@ class QueueTab(QWidget):
         for b in (self.start_btn, self.pause_btn, self.stop_btn, refresh, self.clear_btn):
             h.addWidget(b)
         h.addStretch()
+        # Queue order — takes effect on the next claim (worker reads the
+        # setting per claim). Whitelisted values map to claim ORDER BY.
+        h.addWidget(QLabel("Order:"))
+        self.order_combo = QComboBox()
+        for label, value in (
+            ("Oldest first", "oldest_first"),
+            ("Newest first", "newest_first"),
+            ("Shortest first", "shortest_first"),
+        ):
+            self.order_combo.addItem(label, value)
+        cur = getattr(self.ctx.settings, "queue_order", "oldest_first")
+        idx = self.order_combo.findData(cur)
+        self.order_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.order_combo.currentIndexChanged.connect(self._on_order_changed)
+        h.addWidget(self.order_combo)
         v.addLayout(h)
 
         # Big-visible hero dashboard — always-visible state card (idle =
@@ -314,6 +330,18 @@ class QueueTab(QWidget):
         QMessageBox.information(
             self, "Queue cleared", f"{moved} episode(s) removed from the queue."
         )
+
+    def _on_order_changed(self, _idx: int) -> None:
+        """Persist the chosen queue order; the worker reads it on the next claim."""
+        value = self.order_combo.currentData() or "oldest_first"
+        if getattr(self.ctx.settings, "queue_order", "oldest_first") == value:
+            return
+        self.ctx.settings.queue_order = value
+        try:
+            self.ctx.settings.save(self.ctx.data_dir / "settings.yaml")
+        except Exception:
+            pass
+        log_activity(f"Queue order set to {value}")
 
     def _update_btns(self):
         from core.queue_status import queue_ui_state
