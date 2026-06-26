@@ -356,3 +356,36 @@ def test_cancelled_stream_ignores_late_load(qapp, tmp_path, monkeypatch):
     assert dlg._available_buffer == []
     timer = getattr(dlg, "_history_timer", None)
     assert timer is None or not timer.isActive()
+
+
+def test_loading_spinner_tracks_stream(qapp, tmp_path, monkeypatch):
+    """The bottom progress strip is shown while the back-catalogue streams and
+    hidden once the buffer is fully drained."""
+    _patch_youtube(monkeypatch)
+    show = Show(slug="sp", title="Sp", rss=_YT_RSS, source="youtube")
+    ctx = _make_ctx(tmp_path, show)
+    dlg = _dialog(ctx, "sp")
+    # Stream kicked off on open → spinner visible.
+    assert not dlg._history_spinner.isHidden()
+    dlg._on_history_loaded([_video("a1", 1700000200)])
+    while dlg._available_buffer:
+        dlg._append_next_batch()
+    # Buffer drained → spinner hidden.
+    assert dlg._history_spinner.isHidden()
+
+
+def test_undated_available_rows_show_dash(qapp, tmp_path, monkeypatch):
+    """yt-dlp's flat listing carries no date; an undated back-catalogue row
+    shows an em dash, not a blank cell."""
+    _patch_youtube(monkeypatch)
+    show = Show(slug="ds", title="Ds", rss=_YT_RSS, source="youtube")
+    ctx = _make_ctx(tmp_path, show)
+    dlg = _dialog(ctx, "ds")
+    dlg._on_history_loaded([{"id": "a1", "title": "No Date Vid"}])  # no timestamp
+    while dlg._available_buffer:
+        dlg._append_next_batch()
+    tbl = dlg._episodes_tbl
+    row = next(
+        i for i in range(tbl.rowCount()) if tbl.item(i, 0).data(Qt.ItemDataRole.UserRole) == "a1"
+    )
+    assert tbl.item(row, 0).text() == "—"

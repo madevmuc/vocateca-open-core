@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QTableWidget,
@@ -264,7 +265,22 @@ class ShowDetailsDialog(QDialog):
         root.addWidget(self._build_episode_toolbar())
         root.addWidget(self._build_episode_search_bar())
         root.addWidget(self._build_episodes_table(), 1)
+        root.addWidget(self._build_history_spinner())
         root.addLayout(self._build_footer())
+
+        # macOS clips QLineEdit/QComboBox descenders at the default height with
+        # the app font — give every editable field a little more vertical room
+        # so its text isn't cut off at the bottom.
+        for w in (
+            self.slug_edit,
+            self.rss_edit,
+            self.output_edit,
+            self._title_edit,
+            self._ep_search,
+            self._status_filter_combo,
+            self._since_date_edit,
+        ):
+            w.setMinimumHeight(28)
 
         # Kick off the paced back-catalogue stream now that the table exists
         # (no-op for non-YouTube shows or when yt-dlp isn't installed).
@@ -930,6 +946,35 @@ class ShowDetailsDialog(QDialog):
         row.addWidget(self._history_status)
         return bar
 
+    def _build_history_spinner(self) -> QWidget:
+        """An indeterminate progress strip shown UNDER the episode table while
+        the channel's back-catalogue is still being enumerated/appended, so the
+        loading state is visible at the END of the list — not only beside the
+        search bar."""
+        bar = QWidget()
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(0, 2, 0, 0)
+        h.setSpacing(8)
+        self._history_progress = QProgressBar()
+        self._history_progress.setRange(0, 0)  # 0..0 → indeterminate marquee
+        self._history_progress.setTextVisible(False)
+        self._history_progress.setFixedHeight(6)
+        h.addWidget(self._history_progress, 1)
+        lbl = QLabel("Loading more episodes…")
+        lbl.setStyleSheet("color: #f5a623; font-weight: 600;")
+        h.addWidget(lbl)
+        self._history_spinner = bar
+        bar.hide()
+        return bar
+
+    def _set_history_loading(self, loading: bool) -> None:
+        """Toggle BOTH 'still loading' affordances together: the orange hint
+        beside the search bar and the progress strip under the table."""
+        for attr in ("_history_status", "_history_spinner"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(loading)
+
     # ── recent episodes ──────────────────────────────────────
 
     def _build_episodes_table(self) -> QTableWidget:
@@ -987,10 +1032,12 @@ class ShowDetailsDialog(QDialog):
                 # was applied) re-materialize immediately instead of hiding
                 # behind "Load more" at the >cap boundary.
                 self._history_session_count = 0
+                self._set_history_loading(True)
                 self._ensure_history_timer().start(_HISTORY_TICK_MS)
                 self._append_next_batch()
         else:
             self._stop_history_timer()
+            self._set_history_loading(False)
 
     def _episode_rows(self) -> list:
         """Episodes for this show, newest first.
@@ -1106,6 +1153,7 @@ class ShowDetailsDialog(QDialog):
             self._append_available_row(self._available_buffer.pop(0))
         self._stop_history_timer()
         self._set_load_more_visible(False)
+        self._set_history_loading(False)
 
     def _apply_episode_search(self, query: str) -> None:
         """Hide rows whose title doesn't contain ``query`` (already lower-cased);
@@ -1357,14 +1405,13 @@ class ShowDetailsDialog(QDialog):
         self._history_thread = thread
         if getattr(self, "_history_status", None) is not None:
             self._history_status.setText("Loading the channel's full episode list…")
-            self._history_status.show()
+        self._set_history_loading(True)
         thread.start()
 
     def _on_history_failed(self, message: str) -> None:
         """A failed back-catalogue enumeration is non-fatal — the DB-seeded
         rows are already on screen, so we swallow the error silently."""
-        if getattr(self, "_history_status", None) is not None:
-            self._history_status.hide()
+        self._set_history_loading(False)
         return
 
     def _seeded_guids(self) -> set[str]:
@@ -1385,8 +1432,8 @@ class ShowDetailsDialog(QDialog):
         # thread finished its yt-dlp dump just as we cancelled); ignore it.
         if self._history_cancelled:
             return
-        if getattr(self, "_history_status", None) is not None:
-            self._history_status.hide()
+        # Stay in the loading state — the enumeration is done but the paced
+        # appends continue; _append_next_batch clears it when the buffer drains.
         manifest = manifest_from_videos(videos)
         seeded = self._seeded_guids()
         self._available_buffer = [m for m in manifest if m["guid"] not in seeded]
@@ -1428,10 +1475,12 @@ class ShowDetailsDialog(QDialog):
             # Filtered view: don't append synthetic rows, keep the buffer
             # intact, and stop ticking until the filter is cleared.
             self._stop_history_timer()
+            self._set_history_loading(False)
             return
         if not self._available_buffer:
             self._stop_history_timer()
             self._set_load_more_visible(False)
+            self._set_history_loading(False)
             return
         appended = 0
         while (
@@ -1445,9 +1494,12 @@ class ShowDetailsDialog(QDialog):
         if not self._available_buffer:
             self._stop_history_timer()
             self._set_load_more_visible(False)
+            self._set_history_loading(False)
         elif self._history_session_count >= self._history_cap:
+            # Paused at the cap — hand off to the "Load more" button.
             self._stop_history_timer()
             self._set_load_more_visible(True)
+            self._set_history_loading(False)
 
     def _append_available_row(self, entry: dict) -> None:
         """Append one synthetic ``available`` row for a back-catalogue video.
@@ -1459,7 +1511,9 @@ class ShowDetailsDialog(QDialog):
         tbl = self._episodes_tbl
         i = tbl.rowCount()
         tbl.insertRow(i)
-        date_item = QTableWidgetItem((entry.get("pubDate") or "")[:10])
+        # yt-dlp's fast channel listing carries no upload date, so back-catalogue
+        # rows usually have none — show an em dash rather than a blank cell.
+        date_item = QTableWidgetItem((entry.get("pubDate") or "")[:10] or "—")
         date_item.setFont(QFont("Menlo"))
         date_item.setData(Qt.ItemDataRole.UserRole, entry["guid"])
         date_item.setData(Qt.ItemDataRole.UserRole + 1, "available")
@@ -1487,6 +1541,7 @@ class ShowDetailsDialog(QDialog):
         self._set_load_more_visible(False)
         if not self._available_buffer:
             return
+        self._set_history_loading(True)
         self._ensure_history_timer().start(_HISTORY_TICK_MS)
         self._append_next_batch()
 
@@ -1509,6 +1564,7 @@ class ShowDetailsDialog(QDialog):
         """
         self._history_cancelled = True
         self._stop_history_timer()
+        self._set_history_loading(False)
         thread = getattr(self, "_history_thread", None)
         if thread is not None:
             try:
