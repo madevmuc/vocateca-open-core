@@ -466,3 +466,42 @@ def test_since_filter_empties_manifest_shows_info(tmp_path, monkeypatch):
     _wait_for_enumerate(dlg)
     assert len(dlg.updated_watchlist.shows) == n_before
     assert info  # the "No videos" dialog fired
+
+
+def test_duplicate_channel_rejected_in_gui(tmp_path, monkeypatch):
+    """Re-adding the same channel under a different slug must be rejected by
+    the channel-id dedup, appending nothing to the watchlist."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    from core.models import Show
+    from core.youtube import rss_url_for_channel_id
+
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    rss = rss_url_for_channel_id(_CID)
+    dlg.updated_watchlist.shows.append(
+        Show(slug="existing", title="Existing", rss=rss, source="youtube")
+    )
+    before = len(dlg.updated_watchlist.shows)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *a, **k: (captured.update(args=a), QMessageBox.StandardButton.Ok)[1]),
+        raising=False,
+    )
+
+    dlg._do_save(
+        {
+            "source": "youtube",
+            "rss": rss,
+            "slug": "different",
+            "title": "X",
+            "manifest": [],
+        }
+    )
+
+    # No second show for the channel was appended.
+    assert len(dlg.updated_watchlist.shows) == before
+    # The warning named the existing show.
+    assert any("existing" in str(a).lower() for a in captured.get("args", ()))

@@ -72,3 +72,14 @@ def parse_youtube_url(url: str) -> YoutubeUrl:
 
 def rss_url_for_channel_id(channel_id: str) -> str:
     return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+
+
+def channel_id_from_feed_url(feed_url: str) -> str:
+    """Return the ``channel_id`` query param of a YouTube channel feed URL.
+
+    Returns ``""`` when the URL carries no such param (e.g. a podcast RSS
+    URL). Kept permissive on purpose — does not validate the ``UC…`` shape —
+    so it can dedup channels by the id embedded in their canonical feed URL.
+    """
+    qs = parse_qs(urlparse((feed_url or "").strip()).query)
+    return (qs.get("channel_id") or [""])[0]

@@ -44,6 +44,7 @@ from core.sources import youtube_enabled
 from core.watchlist_io import save_watchlist
 from core.youtube import (
     YoutubeUrlError,
+    channel_id_from_feed_url,
     parse_youtube_url,
     rss_url_for_channel_id,
 )
@@ -1573,10 +1574,31 @@ class AddShowDialog(QDialog):
         if not slug:
             QMessageBox.warning(self, "Missing", "Slug required.")
             return
+        rss = (show.get("rss") or "").strip()
+        # Dedup YouTube channels by the channel id embedded in the feed URL —
+        # runs BEFORE the slug-exists check so re-adding the same channel under
+        # a different slug is caught with a channel-specific message.
+        if show.get("source") == "youtube":
+            new_cid = channel_id_from_feed_url(rss)
+            if new_cid:
+                existing = next(
+                    (
+                        s
+                        for s in self.updated_watchlist.shows
+                        if s.source == "youtube" and channel_id_from_feed_url(s.rss) == new_cid
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    QMessageBox.warning(
+                        self,
+                        "Already added",
+                        f"This channel is already in your watchlist as {existing.slug!r}.",
+                    )
+                    return
         if any(s.slug == slug for s in self.updated_watchlist.shows):
             QMessageBox.warning(self, "Exists", f"{slug!r} is already in the watchlist.")
             return
-        rss = (show.get("rss") or "").strip()
         if not rss:
             QMessageBox.warning(self, "Missing", "RSS URL required.")
             return

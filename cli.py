@@ -211,6 +211,24 @@ def cmd_add(args: argparse.Namespace) -> int:
                 prompt = custom
 
     wl = _watchlist()
+    # Dedup YouTube channels by the channel id embedded in the feed URL, so the
+    # same channel can't be re-added under a different slug.
+    if yt_source:
+        from core.youtube import channel_id_from_feed_url
+
+        new_cid = channel_id_from_feed_url(rss)
+        if new_cid:
+            existing = next(
+                (
+                    s
+                    for s in wl.shows
+                    if s.source == "youtube" and channel_id_from_feed_url(s.rss) == new_cid
+                ),
+                None,
+            )
+            if existing is not None:
+                print(f"channel already in watchlist as {existing.slug!r}", file=sys.stderr)
+                return 3
     if any(s.slug == slug for s in wl.shows):
         print(f"show {slug!r} already in watchlist", file=sys.stderr)
         return 3

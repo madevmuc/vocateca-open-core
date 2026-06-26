@@ -65,3 +65,17 @@ def test_parse_bare_handle_rejects_garbage(bad):
     # those still raise so the caller can report a real error.
     with pytest.raises(YoutubeUrlError):
         parse_youtube_url(bad)
+
+
+def test_channel_id_from_feed_url_extracts_id():
+    from core.youtube import channel_id_from_feed_url
+
+    assert (
+        channel_id_from_feed_url("https://www.youtube.com/feeds/videos.xml?channel_id=UCx") == "UCx"
+    )
+
+
+def test_channel_id_from_feed_url_empty_for_non_channel_feed():
+    from core.youtube import channel_id_from_feed_url
+
+    assert channel_id_from_feed_url("https://example.com/podcast.rss") == ""

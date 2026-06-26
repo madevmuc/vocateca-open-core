@@ -132,6 +132,35 @@ def test_unresolvable_channel_url_exits_2(tmp_path, monkeypatch):
     assert cli.cmd_add(ns) == 2
 
 
+def test_duplicate_channel_id_rejected(tmp_path, monkeypatch):
+    """Adding the same channel id under a different slug must be rejected
+    (exit 3) and must not create a second show for that channel."""
+    _wire(tmp_path, monkeypatch, _yt_manifest(3))
+    ns1 = argparse.Namespace(
+        name_or_url=f"https://www.youtube.com/channel/{_CID}",
+        backlog="all",
+        slug="first",
+        lang="en",
+        yes=True,
+    )
+    assert cli.cmd_add(ns1) == 0
+
+    # Same channel id, different slug — should be caught by channel-id dedup.
+    ns2 = argparse.Namespace(
+        name_or_url=f"https://www.youtube.com/channel/{_CID}",
+        backlog="all",
+        slug="second",
+        lang="en",
+        yes=True,
+    )
+    assert cli.cmd_add(ns2) == 3
+
+    wl = Watchlist.load(tmp_path / "watchlist.yaml")
+    feed = f"https://www.youtube.com/feeds/videos.xml?channel_id={_CID}"
+    yt_for_channel = [s for s in wl.shows if s.source == "youtube" and s.rss == feed]
+    assert len(yt_for_channel) == 1
+
+
 def test_single_video_url_is_rejected(tmp_path, monkeypatch):
     _wire(tmp_path, monkeypatch, _yt_manifest(1))
     ns = argparse.Namespace(
