@@ -468,6 +468,87 @@ def test_since_filter_empties_manifest_shows_info(tmp_path, monkeypatch):
     assert info  # the "No videos" dialog fired
 
 
+# --------------------------------------------------------------------------- #
+# Pasting a video URL offers to add its channel                                #
+# --------------------------------------------------------------------------- #
+
+
+def _patch_question(monkeypatch, answer):
+    """Patch the modal QMessageBox.question the dialog sees → `answer`.
+
+    The dialog imports ``QMessageBox`` into its own module namespace, but
+    ``question`` is a static method on the (shared) class object, so patching
+    it on ``ui.add_show_dialog.QMessageBox`` patches the single class the
+    dialog actually calls. conftest leaves ``question`` unstubbed on purpose.
+    """
+    import ui.add_show_dialog as mod
+
+    monkeypatch.setattr(
+        mod.QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: answer),
+        raising=False,
+    )
+
+
+def test_video_url_offers_channel_and_proceeds_on_yes(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    _patch_question(monkeypatch, QMessageBox.StandardButton.Yes)
+    seen = {}
+    monkeypatch.setattr(
+        "core.youtube_meta.resolve_video_to_channel_id",
+        lambda vid: (seen.update(vid=vid), "UCabc1234567890123456789")[1],
+    )
+    monkeypatch.setattr(
+        "core.youtube_meta.fetch_channel_preview",
+        lambda cid: {
+            "channel_id": cid,
+            "title": "Rick Astley",
+            "video_count": 1,
+            "artwork_url": "",
+        },
+    )
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    dlg._activate_youtube_mode()
+    dlg.youtube_url_input.setText("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    dlg._on_youtube_url_resolve()
+    _wait_for_resolve(dlg)
+    # It went video → channel → preview, all off the GUI thread.
+    assert seen.get("vid") == "dQw4w9WgXcQ"
+    assert dlg._loaded_yt_preview["title"] == "Rick Astley"
+
+
+def test_video_url_declined_does_not_proceed(tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    _patch_question(monkeypatch, QMessageBox.StandardButton.No)
+    # These must never be called when the user declines.
+    monkeypatch.setattr(
+        "core.youtube_meta.resolve_video_to_channel_id",
+        lambda vid: (_ for _ in ()).throw(AssertionError("should not resolve")),
+    )
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    dlg._activate_youtube_mode()
+    dlg.youtube_url_input.setText("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    dlg._on_youtube_url_resolve()
+    _wait_for_resolve(dlg)
+    # No preview was loaded and Add stays disabled.
+    assert not getattr(dlg, "_loaded_yt_preview", None)
+    assert not dlg._yt_add_btn.isEnabled()
+    # And the UI is left in a clean (non-error) state.
+    assert dlg.yt_status.property("kind") != "fail"
+
+
+def test_youtube_placeholder_mentions_video_channel_offer(tmp_path):
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    placeholder = dlg.youtube_url_input.placeholderText().lower()
+    assert "channel" in placeholder
+    assert "offer" in placeholder
+
+
 def test_duplicate_channel_rejected_in_gui(tmp_path, monkeypatch):
     """Re-adding the same channel under a different slug must be rejected by
     the channel-id dedup, appending nothing to the watchlist."""

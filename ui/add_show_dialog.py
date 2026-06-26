@@ -135,6 +135,8 @@ class _YoutubeResolveThread(QThread):
                 cid = _youtube_meta.resolve_channel_url_to_id(self.parsed_value)
             elif self.parsed_kind == "channel_id":
                 cid = self.parsed_value
+            elif self.parsed_kind == "video":
+                cid = _youtube_meta.resolve_video_to_channel_id(self.parsed_value)
             else:
                 raise ValueError(f"unsupported YouTube URL kind: {self.parsed_kind!r}")
             if not cid:
@@ -1005,7 +1007,9 @@ class AddShowDialog(QDialog):
         v.addWidget(QLabel("Paste a YouTube channel URL or video URL:"))
         row = QHBoxLayout()
         self.youtube_url_input = QLineEdit()
-        self.youtube_url_input.setPlaceholderText("Paste YouTube channel URL or video URL")
+        self.youtube_url_input.setPlaceholderText(
+            "Paste a YouTube channel URL (or a video — we'll offer its channel)"
+        )
         self.youtube_url_input.editingFinished.connect(self._on_youtube_url_resolve)
         row.addWidget(self.youtube_url_input, 1)
         self._yt_resolve_btn = QPushButton("Resolve")
@@ -1223,13 +1227,24 @@ class AddShowDialog(QDialog):
             return
 
         if parsed.kind == "video":
-            # v1.2: video flow not yet supported in the Add dialog.
-            self.yt_status.setText(
-                "Adding single videos comes in a follow-up — please paste a channel URL for now."
+            # A single video — offer to add the channel that posted it.
+            answer = QMessageBox.question(
+                self,
+                "Add channel?",
+                "That's a single video. Add the channel that posted it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
-            self.yt_status.set_kind("fail")
-            self._yt_add_btn.setEnabled(False)
-            return
+            if answer != QMessageBox.StandardButton.Yes:
+                # Declined — leave the UI in a clean, neutral state (no error).
+                self.yt_status.setText("No problem — paste a channel or video URL when ready.")
+                self.yt_status.set_kind("idle")
+                self.yt_status.setVisible(True)
+                self._yt_add_btn.setEnabled(False)
+                return
+            # Yes: fall through to the resolve-thread start block below. It
+            # passes parsed.kind == "video" + parsed.value == <video_id> to
+            # _YoutubeResolveThread, which does the (slow) video → channel
+            # resolution off the GUI thread.
 
         # Initial status — the step signal will overwrite this almost
         # immediately, but seed it so the user sees motion before the
