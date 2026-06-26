@@ -553,6 +553,53 @@ def test_video_url_offers_channel_and_proceeds_on_yes(tmp_path, monkeypatch):
     assert dlg._loaded_yt_preview["title"] == "Rick Astley"
 
 
+def test_video_resolve_is_reentrancy_safe(tmp_path, monkeypatch):
+    """Regression: the channel-offer modal steals focus from the URL field,
+    re-firing editingFinished → _on_youtube_url_resolve while the modal is up.
+    The re-entrancy guard must drop that second entry (no duplicate dialog, no
+    second resolve thread clobbering the running one). Without the guard this
+    test would recurse until the stack overflows."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    import ui.add_show_dialog as mod
+
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    monkeypatch.setattr(
+        "core.youtube_meta.resolve_video_to_channel_id",
+        lambda vid: "UCabc1234567890123456789",
+    )
+    monkeypatch.setattr(
+        "core.youtube_meta.fetch_channel_preview",
+        lambda cid: {
+            "channel_id": cid,
+            "title": "Reentrant",
+            "video_count": 1,
+            "artwork_url": "",
+        },
+    )
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    dlg._activate_youtube_mode()
+    dlg.youtube_url_input.setText("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    calls = {"n": 0}
+
+    def reentrant_question(*a, **k):
+        calls["n"] += 1
+        # Simulate the focus-steal re-firing the slot WHILE the modal is open.
+        dlg._on_youtube_url_resolve()
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(
+        mod.QMessageBox, "question", staticmethod(reentrant_question), raising=False
+    )
+
+    dlg._on_youtube_url_resolve()
+    # The re-entrant call hit the guard and returned → modal shown exactly once.
+    assert calls["n"] == 1
+    _wait_for_resolve(dlg)
+    assert dlg._loaded_yt_preview["title"] == "Reentrant"
+
+
 def test_video_url_declined_does_not_proceed(tmp_path, monkeypatch):
     from PyQt6.QtWidgets import QMessageBox
 

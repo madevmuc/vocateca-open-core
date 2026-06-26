@@ -1047,6 +1047,8 @@ class AddShowDialog(QDialog):
         # Live-tick state for the resolve progress UI.
         self._yt_resolve_timer: Optional[QTimer] = None
         self._yt_resolve_started_at: float = 0.0
+        # Re-entrancy guard for _on_youtube_url_resolve (see the comment there).
+        self._yt_resolving: bool = False
         self._yt_resolve_step_label: str = ""
         self._yt_resolve_step_idx: tuple = (0, 2)
 
@@ -1215,6 +1217,14 @@ class AddShowDialog(QDialog):
                 self._on_youtube_url_resolve()
 
     def _on_youtube_url_resolve(self) -> None:
+        # Re-entrancy guard: the channel-offer QMessageBox below (and any modal
+        # in this slot) steals focus from the URL field, which re-fires its
+        # editingFinished signal — i.e. THIS slot — before the modal returns.
+        # Without the guard that second entry pops a duplicate dialog, keeps
+        # resetting `_yt_resolve_started_at` (so the elapsed counter is stuck at
+        # 0s), and spawns a second resolve thread that destroys the running one.
+        if self._yt_resolving:
+            return
         url = self.youtube_url_input.text().strip()
         if not url:
             return
@@ -1231,6 +1241,8 @@ class AddShowDialog(QDialog):
             self._yt_add_btn.setEnabled(False)
             return
 
+        # Claim the resolve before any modal can re-enter this slot.
+        self._yt_resolving = True
         if parsed.kind == "video":
             # A single video — offer to add the channel that posted it.
             answer = QMessageBox.question(
@@ -1243,6 +1255,7 @@ class AddShowDialog(QDialog):
                 # Declined — leave the UI in a clean, neutral state (no error).
                 # Clear any previously-resolved channel card so a stale preview
                 # doesn't linger above the idle pill.
+                self._yt_resolving = False
                 self.yt_card.setVisible(False)
                 self.yt_status.setText("No problem — paste a channel or video URL when ready.")
                 self.yt_status.set_kind("idle")
@@ -1291,6 +1304,9 @@ class AddShowDialog(QDialog):
         self.yt_status.setText(f"Step {cur}/{total}: {self._yt_resolve_step_label} ({elapsed}s)")
 
     def _on_youtube_resolve_done(self, out: dict) -> None:
+        # Resolve finished (ok or error) → release the re-entrancy guard so a
+        # fresh paste/Resolve can start a new resolve.
+        self._yt_resolving = False
         # Stop the elapsed-second ticker + hide the marquee.
         if getattr(self, "_yt_resolve_timer", None) is not None:
             self._yt_resolve_timer.stop()
