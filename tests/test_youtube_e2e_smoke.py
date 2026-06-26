@@ -86,6 +86,17 @@ def test_add_youtube_channel_writes_watchlist_and_enqueues(tmp_path, monkeypatch
 
     dlg._add_from_youtube()
 
+    # Enumeration also runs on a worker thread now; block on it then pump the
+    # event loop so the queued ``done`` slot performs the save.
+    et = getattr(dlg, "_yt_enumerate_thread", None)
+    if et is not None:
+        et.wait(5000)
+    _start = time.monotonic()
+    while getattr(dlg, "_yt_enumerating", False) and time.monotonic() - _start < 5.0:
+        QApplication.instance().processEvents()
+        time.sleep(0.01)
+    QApplication.instance().processEvents()
+
     # 1. watchlist.yaml on disk has the YouTube show.
     wl_path = ctx.data_dir / "watchlist.yaml"
     assert wl_path.exists()

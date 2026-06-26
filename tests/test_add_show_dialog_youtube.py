@@ -43,6 +43,27 @@ def _wait_for_resolve(dlg, timeout_ms: int = 3000) -> None:
         time.sleep(0.01)
 
 
+def _wait_for_enumerate(dlg, timeout_ms: int = 5000) -> None:
+    """Pump the event loop until the off-thread channel enumeration finishes.
+
+    ``_add_from_youtube`` is now asynchronous: it starts a worker thread and
+    returns, and the save (or "no videos" info dialog) happens later in the
+    queued ``done``/``error`` slot. Mirror the robust ``_resolve`` pattern —
+    block on the worker (immune to the just-started ``isRunning()==False``
+    race) then pump until the queued slot has run (``_yt_enumerating`` clears).
+    """
+    import time
+
+    t = getattr(dlg, "_yt_enumerate_thread", None)
+    if t is not None:
+        t.wait(timeout_ms)
+    start = time.monotonic()
+    while getattr(dlg, "_yt_enumerating", False) and time.monotonic() - start < timeout_ms / 1000.0:
+        _app_ref.processEvents()
+        time.sleep(0.01)
+    _app_ref.processEvents()
+
+
 def test_youtube_mode_visible_when_setting_on(tmp_path):
     dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
     assert _yt_mode_present(dlg)
@@ -139,7 +160,7 @@ def test_add_yt_channel_persists_show(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "core.youtube_meta.enumerate_channel_videos",
-        lambda c, limit=None: [],
+        lambda c, limit=None: _vids(1),
     )
     dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
     dlg._activate_youtube_mode()
@@ -147,7 +168,9 @@ def test_add_yt_channel_persists_show(tmp_path, monkeypatch):
     dlg._on_youtube_url_resolve()
     _wait_for_resolve(dlg)
     # Bypass the modal accept() — call _do_save directly via the YT add path.
+    # Enumeration is off-thread now, so wait for the queued save to land.
     dlg._add_from_youtube()
+    _wait_for_enumerate(dlg)
     shows = dlg.updated_watchlist.shows
     assert any(s.source == "youtube" and s.slug == "mr-beast" for s in shows)
     yt = next(s for s in shows if s.source == "youtube")
@@ -260,12 +283,13 @@ def _counts(dlg, slug):
 def test_slug_autofills_from_channel_and_is_editable(tmp_path, monkeypatch):
     monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
     dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
-    _resolve(dlg, monkeypatch, title="Mr Beast", videos=[])
+    _resolve(dlg, monkeypatch, title="Mr Beast", videos=_vids(1))
     # Defaults to the slugified channel name.
     assert dlg._yt_slug_input.text() == "mr-beast"
     # A hand-edited slug is honoured by the add path.
     dlg._yt_slug_input.setText("beast-custom")
     dlg._add_from_youtube()
+    _wait_for_enumerate(dlg)
     assert any(s.slug == "beast-custom" for s in dlg.updated_watchlist.shows)
 
 
@@ -273,9 +297,10 @@ def test_captions_checkbox_sets_transcript_pref(tmp_path, monkeypatch):
     monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
     # Settings default is "captions" → checkbox starts checked.
     dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
-    _resolve(dlg, monkeypatch, title="Chan A", videos=[])
+    _resolve(dlg, monkeypatch, title="Chan A", videos=_vids(1))
     assert dlg._yt_captions_chk.isChecked()
     dlg._add_from_youtube()
+    _wait_for_enumerate(dlg)
     show = next(s for s in dlg.updated_watchlist.shows if s.slug == "chan-a")
     assert show.youtube_transcript_pref == "captions"
 
@@ -283,9 +308,10 @@ def test_captions_checkbox_sets_transcript_pref(tmp_path, monkeypatch):
 def test_captions_unchecked_means_whisper(tmp_path, monkeypatch):
     monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
     dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
-    _resolve(dlg, monkeypatch, title="Chan B", videos=[])
+    _resolve(dlg, monkeypatch, title="Chan B", videos=_vids(1))
     dlg._yt_captions_chk.setChecked(False)
     dlg._add_from_youtube()
+    _wait_for_enumerate(dlg)
     show = next(s for s in dlg.updated_watchlist.shows if s.slug == "chan-b")
     assert show.youtube_transcript_pref == "whisper"
 
@@ -299,6 +325,7 @@ def test_only_new_marks_whole_baseline_done(tmp_path, monkeypatch):
     # Default radio is "Only new".
     assert dlg._yt_backfill_choice() == "Only new"
     dlg._add_from_youtube()
+    _wait_for_enumerate(dlg)
     pending, done = _counts(dlg, "base")
     assert pending == 0
     assert done == 5
@@ -313,6 +340,7 @@ def test_last5_keeps_videos_pending(tmp_path, monkeypatch):
             b.setChecked(True)
             break
     dlg._add_from_youtube()
+    _wait_for_enumerate(dlg)
     pending, _done = _counts(dlg, "keep")
     assert pending == 5
 
@@ -327,6 +355,7 @@ def test_since_date_filters_to_videos_on_or_after_cutoff(tmp_path, monkeypatch):
     dlg._yt_since_chk.setChecked(True)
     dlg._yt_since_date.setDate(QDate(2026, 6, 3))
     dlg._add_from_youtube()
+    _wait_for_enumerate(dlg)
     pending, _done = _counts(dlg, "since")
     # 2026-06-03, -04, -05 stay pending; the two older ones are dropped.
     assert pending == 3
@@ -370,3 +399,70 @@ def test_initial_mode_youtube_hides_switcher(tmp_path, monkeypatch):
     # The YouTube radio is the active mode.
     active = dlg._mode_buttons.checkedButton()
     assert active is not None and active.property("mode") == "youtube"
+
+
+# --------------------------------------------------------------------------- #
+# Off-thread, cancellable channel enumeration                                  #
+# --------------------------------------------------------------------------- #
+
+
+def _record_information(monkeypatch) -> list:
+    """Spy on QMessageBox.information (conftest stubs it to a silent no-op)."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    calls: list = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        staticmethod(lambda *a, **k: (calls.append(a), QMessageBox.StandardButton.Ok)[1]),
+        raising=False,
+    )
+    return calls
+
+
+def test_enumerate_runs_off_thread_and_seeds(tmp_path, monkeypatch):
+    """The Add path runs enumeration on a worker thread and then seeds."""
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    _resolve(dlg, monkeypatch, title="Off Thread", videos=_vids(3))
+    # Keep the videos pending so we can count them.
+    for b in dlg._yt_backfill_grp.buttons():
+        if b.text() == "Last 5":
+            b.setChecked(True)
+            break
+    dlg._add_from_youtube()
+    # A real worker thread was used for the enumeration.
+    assert dlg._yt_enumerate_thread is not None
+    _wait_for_enumerate(dlg)
+    pending, _done = _counts(dlg, "off-thread")
+    assert pending == 3
+
+
+def test_enumerate_empty_shows_info_and_does_not_save(tmp_path, monkeypatch):
+    """An empty enumeration shows the 'No videos' info and saves nothing."""
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    _resolve(dlg, monkeypatch, title="Empty Chan", videos=[])
+    info = _record_information(monkeypatch)
+    n_before = len(dlg.updated_watchlist.shows)
+    dlg._add_from_youtube()
+    _wait_for_enumerate(dlg)
+    assert len(dlg.updated_watchlist.shows) == n_before
+    assert info  # the "No videos" dialog fired
+
+
+def test_since_filter_empties_manifest_shows_info(tmp_path, monkeypatch):
+    """Videos all before the cutoff → manifest empties → info, no save."""
+    monkeypatch.setattr("core.ytdlp.is_installed", lambda: True)
+    dlg = _make_dialog(tmp_path, Settings(sources_youtube=True))
+    # videos pubDates 2026-06-01 .. 2026-06-05.
+    _resolve(dlg, monkeypatch, title="Future Cut", videos=_vids(5))
+    info = _record_information(monkeypatch)
+    dlg._yt_since_chk.setChecked(True)
+    # Cut off at the latest allowed date (today) — well after every video.
+    dlg._yt_since_date.setDate(dlg._yt_since_date.maximumDate())
+    n_before = len(dlg.updated_watchlist.shows)
+    dlg._add_from_youtube()
+    _wait_for_enumerate(dlg)
+    assert len(dlg.updated_watchlist.shows) == n_before
+    assert info  # the "No videos" dialog fired

@@ -168,6 +168,31 @@ class _YtFirstVideoThread(QThread):
         self.done.emit(iso)
 
 
+class _YoutubeEnumerateThread(QThread):
+    """Enumerate a channel's videos off-thread.
+
+    ``enumerate_channel_videos`` shells out to yt-dlp and can take many
+    seconds on a large channel. Running it on the GUI thread freezes the app
+    (and macOS then SIGTERMs the unresponsive process), so it runs here.
+    """
+
+    done = pyqtSignal(list)  # list[dict] of video entries
+    error = pyqtSignal(str)  # message on failure
+
+    def __init__(self, channel_id: str, limit, parent=None):
+        super().__init__(parent)
+        self.channel_id = channel_id
+        self.limit = limit
+
+    def run(self) -> None:
+        try:
+            videos = _youtube_meta.enumerate_channel_videos(self.channel_id, limit=self.limit)
+        except Exception as e:  # noqa: BLE001
+            self.error.emit(str(e))
+            return
+        self.done.emit(videos)
+
+
 class _CoverSignals(QObject):
     done = pyqtSignal(int, QPixmap)
 
@@ -991,13 +1016,26 @@ class AddShowDialog(QDialog):
         self.yt_status.setVisible(False)
         v.addWidget(self.yt_status, 0, Qt.AlignmentFlag.AlignLeft)
 
-        # Indeterminate marquee — visible only while a resolve is in flight,
-        # so the user can see the app isn't frozen during the yt-dlp wait.
+        # Indeterminate marquee — visible only while a resolve OR an off-thread
+        # channel enumeration is in flight, so the user can see the app isn't
+        # frozen during the yt-dlp wait. The Cancel button rides alongside it
+        # and is only shown while enumeration is running (the user can bail).
+        prog_row = QHBoxLayout()
         self.yt_progress = QProgressBar()
         self.yt_progress.setRange(0, 0)
         self.yt_progress.setTextVisible(False)
         self.yt_progress.setVisible(False)
-        v.addWidget(self.yt_progress)
+        prog_row.addWidget(self.yt_progress, 1)
+        self._yt_enum_cancel_btn = QPushButton("Cancel")
+        self._yt_enum_cancel_btn.setVisible(False)
+        self._yt_enum_cancel_btn.clicked.connect(self._cancel_yt_enumerate)
+        prog_row.addWidget(self._yt_enum_cancel_btn, 0)
+        v.addLayout(prog_row)
+
+        # Off-thread channel-enumeration state.
+        self._yt_enumerate_thread: Optional[QThread] = None
+        self._yt_pending: dict = {}
+        self._yt_enumerating: bool = False
 
         # Live-tick state for the resolve progress UI.
         self._yt_resolve_timer: Optional[QTimer] = None
@@ -1346,6 +1384,9 @@ class AddShowDialog(QDialog):
             self._yt_since_chk.blockSignals(False)
 
     def _add_from_youtube(self) -> None:
+        """Validate the selection, then kick off the (slow) channel
+        enumeration on a worker thread. The save itself happens later in
+        ``_on_yt_enumerate_done`` once the worker returns."""
         preview = self._loaded_yt_preview
         if not preview:
             QMessageBox.warning(self, "Missing", "Resolve a channel URL first.")
@@ -1375,17 +1416,75 @@ class AddShowDialog(QDialog):
             # returns ~15 entries; 30 covers it with margin.
             limit = 30
 
-        from PyQt6.QtWidgets import QApplication
+        # Stash the prep so the worker's done handler can finish the save.
+        self._yt_pending = {
+            "title": title,
+            "cid": cid,
+            "slug": slug,
+            "since_iso": since_iso,
+            "choice": choice,
+            "preview": preview,
+        }
 
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            videos = _youtube_meta.enumerate_channel_videos(cid, limit=limit)
-        except Exception as e:  # noqa: BLE001
-            QApplication.restoreOverrideCursor()
-            QMessageBox.warning(self, "Error", f"Failed to enumerate videos: {e}")
+        # Indeterminate progress + Cancel; disable Add while the (potentially
+        # many-second) yt-dlp enumeration runs off the GUI thread so the app
+        # stays responsive.
+        self._yt_enumerating = True
+        self.yt_progress.setVisible(True)
+        self._yt_enum_cancel_btn.setVisible(True)
+        self._yt_add_btn.setEnabled(False)
+
+        self._yt_enumerate_thread = _YoutubeEnumerateThread(cid, limit, self)
+        self._yt_enumerate_thread.done.connect(self._on_yt_enumerate_done)
+        self._yt_enumerate_thread.error.connect(self._on_yt_enumerate_error)
+        self._yt_enumerate_thread.start()
+
+    def _teardown_yt_enumerate_ui(self) -> None:
+        """Hide the progress/cancel affordances and re-enable Add."""
+        self._yt_enumerating = False
+        self.yt_progress.setVisible(False)
+        self._yt_enum_cancel_btn.setVisible(False)
+        self._yt_add_btn.setEnabled(True)
+
+    def _cancel_yt_enumerate(self) -> None:
+        """Abandon an in-flight enumeration. ``enumerate_channel_videos`` is a
+        blocking subprocess that can't be cleanly interrupted mid-flight, so we
+        request interruption, disconnect the result slots (a late result is
+        ignored), drop our reference (the thread stays alive via its Qt parent),
+        and restore the UI."""
+        t = self._yt_enumerate_thread
+        if t is not None:
+            try:
+                t.requestInterruption()
+                t.done.disconnect(self._on_yt_enumerate_done)
+                t.error.disconnect(self._on_yt_enumerate_error)
+            except (TypeError, RuntimeError):
+                pass
+            self._yt_enumerate_thread = None
+        self._teardown_yt_enumerate_ui()
+
+    def _on_yt_enumerate_error(self, msg: str) -> None:
+        self._teardown_yt_enumerate_ui()
+        QMessageBox.warning(self, "Error", f"Failed to enumerate videos: {msg}")
+
+    def _on_yt_enumerate_done(self, videos: list) -> None:
+        """Build the manifest from the enumerated videos and save the show.
+
+        Empty enumeration → "No videos" info, no save. The since-date filter
+        can also empty the manifest even when ``videos`` was non-empty; that
+        too surfaces the info dialog and saves nothing."""
+        self._teardown_yt_enumerate_ui()
+        if not videos:
+            QMessageBox.information(self, "No videos", "0 videos match this selection.")
             return
-        finally:
-            QApplication.restoreOverrideCursor()
+
+        pending = self._yt_pending or {}
+        title = pending.get("title") or "channel"
+        cid = pending.get("cid") or ""
+        slug = pending.get("slug") or ""
+        since_iso = pending.get("since_iso")
+        choice = pending.get("choice") or "Only new"
+        preview = pending.get("preview") or {}
 
         # Build a manifest the existing _do_save funnel understands.
         # Date sourcing: yt-dlp --flat-playlist returns `timestamp`
@@ -1426,6 +1525,13 @@ class AddShowDialog(QDialog):
         # are dropped to avoid silently dragging in the whole back-catalogue.
         if since_iso is not None:
             manifest = [m for m in manifest if m["pubDate"] and m["pubDate"] >= since_iso]
+
+        # The since-date filter (or videos with no usable id) can empty the
+        # manifest even though enumeration returned entries — never save an
+        # empty show; surface the same "no videos" notice instead.
+        if not manifest:
+            QMessageBox.information(self, "No videos", "0 videos match this selection.")
+            return
 
         # Backlog mode controls which seeded items transcribe. "Only new"
         # marks the entire seeded baseline done so only future uploads run;
