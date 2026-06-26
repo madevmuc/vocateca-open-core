@@ -37,3 +37,10 @@ Plan: [`2026-06-26-roadmap-execution-plan.md`](2026-06-26-roadmap-execution-plan
   `AppContext.load` (+ prune to retention) and CLI `_state()`. Used
   `getattr(settings, "event_retention_days", 90)` so it's robust before Task 4
   adds the field. 5 unit tests.
+- **Task 3 — lifecycle emissions (0.1)** ✅ `set_status` maps status→event
+  (DOWNLOADING/DOWNLOADED/TRANSCRIBING/DONE/FAILED/SKIPPED/DEFERRED; payload
+  carries title + error_text; PENDING/STALE/PAUSED emit nothing). Worker emits
+  run.started/run.finished/queue.sized + feed.checked/unchanged/error. CLI
+  show add/remove/enable/disable emit show.* events. Activity-log bridge
+  (`install_event_bridge`, idempotent via new `events.subscribe_once`)
+  installed in MainWindow. 5 unit tests.

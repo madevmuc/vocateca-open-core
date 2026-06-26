@@ -251,6 +251,9 @@ class MainWindow(QMainWindow):
         from ui import activity_log
 
         activity_log.set_sink(_log_sink)
+        # Translate a curated subset of bus events into activity-log lines so
+        # the dock surfaces richer lifecycle info alongside direct log() calls.
+        activity_log.install_event_bridge()
 
         self.setMenuBar(build_menu_bar(self))
 

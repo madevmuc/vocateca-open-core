@@ -32,6 +32,8 @@ from urllib.parse import parse_qs, urlparse
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
+from core import events
+from core.events import Event, EventType
 from core.hw import detect as hw_detect
 from core.load import resolve_load_profile
 from core.models import Settings, Watchlist
@@ -606,16 +608,28 @@ class CheckAllThread(QThread):
             self.progress.emit(f"{show.slug}: {promoted} deferred video(s) now ready")
         return promoted
 
+    def _finish(self) -> None:
+        """Emit the run.finished event then the Qt finished signal."""
+        events.emit(Event(type=EventType.RUN_FINISHED, ts=events.now_iso()))
+        self.finished_all.emit()
+
     def run(self) -> None:
         wl: Watchlist = self.ctx.watchlist
         targets = [
             s for s in wl.shows if s.enabled and (not self.only_slug or s.slug == self.only_slug)
         ]
+        events.emit(
+            Event(
+                type=EventType.RUN_STARTED,
+                ts=events.now_iso(),
+                payload={"scope": self.only_slug or "all", "shows": len(targets)},
+            )
+        )
 
         # Respect a persisted "paused" flag — if set, bail out cleanly.
         if self.ctx.state.get_meta("queue_paused") == "1":
             self.progress.emit("queue is paused — click Resume in Shows tab")
-            self.finished_all.emit()
+            self._finish()
             return
 
         from core import backoff
@@ -661,6 +675,14 @@ class CheckAllThread(QThread):
                     except Exception as e:
                         fails = backoff.on_failure(self.ctx.state, show.slug, exc=e)
                         self.progress.emit(f"feed error {show.slug} (fail #{fails}): {e}")
+                        events.emit(
+                            Event(
+                                type=EventType.FEED_ERROR,
+                                ts=events.now_iso(),
+                                show_slug=show.slug,
+                                payload={"error": str(e), "fails": fails},
+                            )
+                        )
                         continue
                     backoff.on_success(self.ctx.state, show.slug)
                     if manifest is None:
@@ -668,8 +690,23 @@ class CheckAllThread(QThread):
                         # still hold pending episodes from an earlier run;
                         # pass 1b picks those up via list_by_status(PENDING).
                         self.progress.emit(f"{show.slug}: feed unchanged")
+                        events.emit(
+                            Event(
+                                type=EventType.FEED_UNCHANGED,
+                                ts=events.now_iso(),
+                                show_slug=show.slug,
+                            )
+                        )
                         fetch_results[show.slug] = (show, canonical, None)
                         continue
+                    events.emit(
+                        Event(
+                            type=EventType.FEED_CHECKED,
+                            ts=events.now_iso(),
+                            show_slug=show.slug,
+                            payload={"episodes": len(manifest)},
+                        )
+                    )
                     if new_etag:
                         self.ctx.state.set_meta(f"feed_etag:{show.slug}", new_etag)
                     if new_modified:
@@ -751,19 +788,26 @@ class CheckAllThread(QThread):
 
         total = len(all_pending) + orphan_count
         self.queue_sized.emit(total)
+        events.emit(
+            Event(
+                type=EventType.QUEUE_SIZED,
+                ts=events.now_iso(),
+                payload={"total": total, "pending": len(all_pending), "orphan": orphan_count},
+            )
+        )
         self.progress.emit(
             f"queue sized: {len(all_pending)} pending + {orphan_count} orphan-downloaded"
         )
 
         if total == 0 or self._stop:
-            self.finished_all.emit()
+            self._finish()
             return
 
         # Check the persisted pause flag one more time before kicking
         # off the pipeline (matches pre-existing behaviour).
         if self.ctx.state.get_meta("queue_paused") == "1":
             self.progress.emit("queue paused mid-run — halting before pipeline")
-            self.finished_all.emit()
+            self._finish()
             return
 
         # Pass 2: parallel download + transcribe.
@@ -858,4 +902,4 @@ class CheckAllThread(QThread):
             tr.wait()
         pause_watch_stop.set()
 
-        self.finished_all.emit()
+        self._finish()

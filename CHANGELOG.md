@@ -11,7 +11,9 @@ people actually paste, and paired with a full per-show episode browser.
   dispatch, subscriber failures isolated, no GUI dependency. Every event is
   persisted to a new `events` SQLite table and pruned on launch to
   `event_retention_days` (default 90). Backbone for the notifications,
-  webhooks, timeline, logs and stats features below.
+  webhooks, timeline, logs and stats features below. Episode status changes,
+  check run start/finish, queue sizing and feed checks now publish events, and
+  a curated subset is mirrored into the activity-log dock.
 
 ### Added
 - **Add a channel by any URL form.** `/channel/UC…`, `/@handle`, `/c/Name`,

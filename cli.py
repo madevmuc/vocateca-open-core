@@ -280,6 +280,14 @@ def cmd_add(args: argparse.Namespace) -> int:
         )
     apply_backlog(state, slug, mode, manifest)
     mark_decided(state, slug)
+    events.emit(
+        events.Event(
+            type=events.EventType.SHOW_ADDED,
+            ts=events.now_iso(),
+            show_slug=slug,
+            payload={"episodes": len(manifest), "source": "youtube" if yt_source else "podcast"},
+        )
+    )
     print(f"added '{slug}' ({len(manifest)} episodes, backlog={args.backlog})")
     return 0
 
@@ -906,6 +914,13 @@ def _toggle_enabled(slug: str, enabled: bool) -> int:
         return 2
     show.enabled = enabled
     wl.save(DATA / "watchlist.yaml")
+    events.emit(
+        events.Event(
+            type=events.EventType.SHOW_ENABLED if enabled else events.EventType.SHOW_DISABLED,
+            ts=events.now_iso(),
+            show_slug=slug,
+        )
+    )
     print(f"{slug}: enabled={enabled}")
     return 0
 
@@ -949,6 +964,9 @@ def cmd_remove(args: argparse.Namespace) -> int:
                 (args.slug,),
             )
             print(f"marked {cur.rowcount or 0} episode(s) as done")
+    events.emit(
+        events.Event(type=events.EventType.SHOW_REMOVED, ts=events.now_iso(), show_slug=args.slug)
+    )
     print(f"removed '{args.slug}' from watchlist")
     return 0
 

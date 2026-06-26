@@ -103,6 +103,19 @@ def subscribe(matcher: Matcher, callback: Callable[[Event], None]) -> None:
         _subscribers.append((matcher, callback))
 
 
+def subscribe_once(matcher: Matcher, callback: Callable[[Event], None]) -> None:
+    """Like :func:`subscribe` but a no-op if ``callback`` is already subscribed.
+
+    Identity is by ``==`` (bound methods to the same instance compare equal), so
+    installers (persistence, activity bridge) are safe to call repeatedly.
+    """
+    with _lock:
+        for _matcher, existing in _subscribers:
+            if existing == callback:
+                return
+    subscribe(matcher, callback)
+
+
 def emit(event: Event) -> None:
     """Dispatch ``event`` synchronously to every matching subscriber.
 
@@ -135,9 +148,4 @@ def install_persistence(store) -> None:
     pipeline. Idempotent per store — calling it twice for the same store does
     not double-persist.
     """
-    cb = store.append_event
-    with _lock:
-        for matcher, existing in _subscribers:
-            if matcher == "" and existing == cb:
-                return
-    subscribe("", cb)
+    subscribe_once("", store.append_event)

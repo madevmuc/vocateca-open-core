@@ -11,6 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
+from core import events
+
 
 class EpisodeStatus(str, Enum):
     PENDING = "pending"
@@ -30,6 +32,19 @@ class EpisodeStatus(str, Enum):
     # worker never claims it (the claim query is status='pending'). Toggle back
     # to pending to resume; the feed poll preserves it (upsert keeps status).
     PAUSED = "paused"
+
+
+# Episode status → lifecycle event type. Statuses absent from this map
+# (PENDING/STALE/PAUSED) emit no event.
+_STATUS_EVENT_MAP = {
+    EpisodeStatus.DOWNLOADING: events.EventType.EPISODE_DOWNLOAD_STARTED,
+    EpisodeStatus.DOWNLOADED: events.EventType.EPISODE_DOWNLOADED,
+    EpisodeStatus.TRANSCRIBING: events.EventType.EPISODE_TRANSCRIBE_STARTED,
+    EpisodeStatus.DONE: events.EventType.EPISODE_TRANSCRIBED,
+    EpisodeStatus.FAILED: events.EventType.EPISODE_FAILED,
+    EpisodeStatus.SKIPPED: events.EventType.EPISODE_SKIPPED,
+    EpisodeStatus.DEFERRED: events.EventType.EPISODE_DEFERRED,
+}
 
 
 _SCHEMA = """
@@ -333,6 +348,31 @@ class StateStore:
                 )
             else:
                 c.execute("UPDATE episodes SET status=? WHERE guid=?", (status.value, guid))
+            row = c.execute(
+                "SELECT show_slug, title FROM episodes WHERE guid=?", (guid,)
+            ).fetchone()
+        self._emit_status_event(guid, status, row, error_text)
+
+    @staticmethod
+    def _emit_status_event(guid, status, row, error_text):
+        """Translate a status change into a lifecycle event (best-effort)."""
+        event_type = _STATUS_EVENT_MAP.get(status)
+        if event_type is None:
+            return
+        payload: dict = {}
+        if row is not None and row["title"]:
+            payload["title"] = row["title"]
+        if error_text:
+            payload["error_text"] = error_text
+        events.emit(
+            events.Event(
+                type=event_type,
+                ts=events.now_iso(),
+                show_slug=(row["show_slug"] if row is not None else None),
+                guid=guid,
+                payload=payload,
+            )
+        )
 
     def recover_in_flight(self) -> int:
         """Called on startup: reset downloading/transcribing → pending."""
