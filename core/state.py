@@ -20,6 +20,12 @@ class EpisodeStatus(str, Enum):
     DONE = "done"
     FAILED = "failed"
     STALE = "stale"
+    # Deliberately not processed (e.g. a Short on a show that excludes
+    # Shorts); leaves the pending pool but is not a failure.
+    SKIPPED = "skipped"
+    # Temporarily not processable, re-checked later (e.g. a live/premiere
+    # video that hasn't finished); leaves the pending pool but is not a failure.
+    DEFERRED = "deferred"
 
 
 _SCHEMA = """
