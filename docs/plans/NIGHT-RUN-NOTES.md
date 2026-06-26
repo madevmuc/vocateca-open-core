@@ -31,3 +31,9 @@ Plan: [`2026-06-26-roadmap-execution-plan.md`](2026-06-26-roadmap-execution-plan
   `subscribe`/`emit`/`reset`/`now_iso`. Matcher = exact / prefix (`"x."`) /
   match-all (`""`) / predicate. Synchronous, lock-guarded, subscriber failures
   swallowed+logged. 7 unit tests.
+- **Task 2 — event persistence (0.1)** ✅ `events` SQLite table + indexes;
+  `append_event`/`query_events`/`prune_events` on StateStore;
+  `events.install_persistence(store)` (idempotent per store). Wired into
+  `AppContext.load` (+ prune to retention) and CLI `_state()`. Used
+  `getattr(settings, "event_retention_days", 90)` so it's robust before Task 4
+  adds the field. 5 unit tests.

@@ -6,7 +6,7 @@ import hashlib
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
@@ -75,6 +75,19 @@ CREATE TABLE IF NOT EXISTS slug_reservations (
     slug TEXT PRIMARY KEY,
     guid TEXT NOT NULL UNIQUE
 );
+
+-- Append-only lifecycle event log (core.events backbone). Pruned on startup
+-- to settings.event_retention_days. Backs timeline / filterable logs / stats.
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    type TEXT NOT NULL,
+    show_slug TEXT,
+    guid TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
+CREATE INDEX IF NOT EXISTS idx_events_guid ON events(guid);
 """
 
 
@@ -357,3 +370,89 @@ class StateStore:
         with self._conn() as c:
             row = c.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
             return row["value"] if row else None
+
+    # ── events (core.events persistence) ──────────────────────────────────
+    def append_event(self, ev: Any) -> None:
+        """Persist a single ``core.events.Event``."""
+        import json
+
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO events (ts, type, show_slug, guid, payload_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    ev.ts,
+                    ev.type,
+                    ev.show_slug,
+                    ev.guid,
+                    json.dumps(ev.payload or {}, ensure_ascii=False),
+                ),
+            )
+
+    def query_events(
+        self,
+        *,
+        type_prefix: Optional[str] = None,
+        show_slug: Optional[str] = None,
+        guid: Optional[str] = None,
+        since: Optional[str] = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Read persisted events, oldest-first, with optional filters.
+
+        ``type_prefix`` matches by prefix (e.g. ``"episode."``) or, with no
+        trailing dot, exactly. ``since`` is an inclusive ISO-8601 lower bound on
+        ``ts`` (string comparison is valid for ISO-8601 UTC).
+        """
+        import json
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if type_prefix:
+            if type_prefix.endswith("."):
+                clauses.append("type LIKE ?")
+                params.append(type_prefix + "%")
+            else:
+                clauses.append("type = ?")
+                params.append(type_prefix)
+        if show_slug is not None:
+            clauses.append("show_slug = ?")
+            params.append(show_slug)
+        if guid is not None:
+            clauses.append("guid = ?")
+            params.append(guid)
+        if since is not None:
+            clauses.append("ts >= ?")
+            params.append(since)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        with self._conn() as c:
+            rows = c.execute(
+                f"SELECT id, ts, type, show_slug, guid, payload_json FROM events"
+                f"{where} ORDER BY id ASC LIMIT ?",
+                params,
+            ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d.pop("payload_json") or "{}")
+            except Exception:
+                d["payload"] = {}
+                d.pop("payload_json", None)
+            out.append(d)
+        return out
+
+    def prune_events(self, retention_days: int) -> int:
+        """Delete events older than ``retention_days``. Returns rows deleted.
+
+        A non-positive ``retention_days`` keeps everything (no-op).
+        """
+        if retention_days is None or retention_days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat(
+            timespec="seconds"
+        )
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+            return cur.rowcount or 0

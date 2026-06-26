@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from core import events
 from core.discovery import find_rss_from_url, search_itunes
 from core.library import LibraryIndex
 from core.models import Settings, Show, Watchlist
@@ -59,6 +60,7 @@ def _watchlist() -> Watchlist:
 def _state() -> StateStore:
     s = StateStore(DATA / "state.sqlite")
     s.init_schema()
+    events.install_persistence(s)
     return s
 
 

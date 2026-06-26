@@ -124,3 +124,20 @@ def reset() -> None:
     """Clear all subscribers (test helper / app teardown)."""
     with _lock:
         _subscribers.clear()
+
+
+def install_persistence(store) -> None:
+    """Subscribe a persister that records every emitted event to ``store``.
+
+    ``store`` is a ``core.state.StateStore`` (or anything with
+    ``append_event(Event)``). Persistence failures are swallowed by ``emit``'s
+    subscriber-isolation contract, so a transient DB error never breaks the
+    pipeline. Idempotent per store — calling it twice for the same store does
+    not double-persist.
+    """
+    cb = store.append_event
+    with _lock:
+        for matcher, existing in _subscribers:
+            if matcher == "" and existing == cb:
+                return
+    subscribe("", cb)

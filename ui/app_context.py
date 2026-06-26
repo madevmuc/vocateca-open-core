@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from core import events
 from core.library import LibraryIndex, start_watching
 from core.models import Settings, Watchlist
 from core.state import StateStore
@@ -72,6 +73,9 @@ class AppContext:
         state = StateStore(data_dir / "state.sqlite")
         state.init_schema()
         state.recover_in_flight()
+        # Wire the event bus persister and prune old events on launch.
+        events.install_persistence(state)
+        state.prune_events(getattr(settings, "event_retention_days", 90))
         # One-time grandfathering of pre-existing shows + baseline content-hash
         # so the new backlog gate never ambushes shows that predate it and we
         # can later detect external edits to watchlist.yaml.
