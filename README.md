@@ -31,8 +31,12 @@ later.
 
 - 🎧 **Finds podcast feeds** from a name (via iTunes Search) or a URL
   (RSS auto-detect from `<link rel="alternate">`).
-- 📺 **Adds YouTube channels** by handle / channel URL — `yt-dlp`
-  lazy-installs on first use and self-updates weekly.
+- 📺 **Adds YouTube channels** by any URL form — `/channel/UC…`, `/@handle`,
+  `/c/Name`, `/user/Name`, or a bare `@handle`; paste a single video URL and
+  it offers to add the channel that posted it. The same channel can't be added
+  twice. Shorts are excluded by default; live / premiere videos are deferred
+  and re-tried once they finish. `yt-dlp` lazy-installs on first use and
+  self-updates weekly.
 - 📥 **Ingests any file or URL** — the dedicated **Local Transcript**
   tab has a big drop zone for audio / video files (`.mp3` / `.m4a` /
   `.wav` / `.mp4` / `.mov` / `.mkv` / `.webm` / …), a folder-import
@@ -41,9 +45,10 @@ later.
   recognises). A watched folder at `~/Paragraphos/to-be-transcribed/`
   auto-queues new drops; a drop anywhere on the main window navigates
   to Local Transcript and ingests there.
-- 🗒 **Captions-first for YouTube** — uploader-supplied subtitles are
-  used when available (requested language → English → any), with whisper
-  as the fallback.
+- 🗒 **Captions-first for YouTube** — a manual uploader subtitle in the
+  chosen language is imported straight into the library (auto-generated
+  captions are never used), with whisper as the fallback. The **Auto**
+  language accepts the channel's default manual track, else whisper.
 - ⬇ **Downloads new episodes** resumably, with retry + backoff on transient
   failures.
 - 📝 **Transcribes locally** with `whisper.cpp` (`large-v3-turbo`),
@@ -211,7 +216,7 @@ via SQLite WAL — mutations show up live in a running window.
 |---------------|-----------------------------------------------------------------------------------------|
 | Inspection    | `status`, `shows`, `show <slug>`, `episodes <slug>`, `failed`, `settings`, `feed-health` |
 | Queue control | `pause`, `resume`, `stop`, `clear-queue`, `priority <guid> <N>`, `run-next <guid>`, `retranscribe <guid>`, `retry-failed` |
-| Show admin    | `add <name-or-url> --backlog <all\|recent\|last:N\|since:YYYY-MM-DD> [--yes]` (backlog **required**; never edit `watchlist.yaml` directly), `enable <slug>`, `disable <slug>`, `remove <slug>`, `set <slug> key=value`, `import-feeds` |
+| Show admin    | `add <name-or-url> --backlog <all\|recent\|last:N\|since:YYYY-MM-DD> [--yes]` (backlog **required**; never edit `watchlist.yaml` directly; YouTube adds accept `--captions`/`--whisper` + `--skip-shorts`/`--include-shorts`), `backlog <slug> --backlog …` (deepen a YouTube show's history + queue it), `enable <slug>`, `disable <slug>`, `remove <slug>`, `set <slug> key=value`, `import-feeds` |
 | Local ingest  | `ingest file <path> [--show SLUG]`, `ingest url <url> [--show SLUG]`, `ingest folder <path> [--show SLUG] [--no-recursive]`, `watch add <path>`, `watch remove`, `watch list [--json]` |
 | Feed retry    | `retry-feed <slug>`, `retry-all-feeds`                                                  |
 | Settings      | `set-setting <key> <value>`                                                             |
@@ -288,9 +293,19 @@ See `About Paragraphos → Security` in the app for the full threat model.
   to pre-fill RSS/Title/Slug, double-click to run the full metadata
   fetch + whisper-prompt suggestion), *By URL* (RSS with rich preview),
   *Paste Apple link* (one-step auto-detect), and **YouTube URL**
-  (channel handle / channel ID, with backfill segmented control). The
+  (any channel-URL form, a bare `@handle`, or a video URL — it offers
+  the posting channel — with a backfill segmented control, a curated
+  language picker incl. **Auto**, and an Include-Shorts toggle). The
   YouTube mode appears only when *Settings → Sources → YouTube* is
   enabled.
+- **Per-show episode browser** — double-click any show to open a
+  resizable window listing every episode with status pills. Multi-select
+  + **Queue selected**, a date picker + **Queue all since <date>**, and a
+  status filter (pending / failed / skipped / deferred / done). YouTube
+  shows stream their whole back-catalogue in the background; not-yet-fetched
+  videos show as **available** rows you can trigger to seed + queue (with
+  **Load more**). YouTube language / caption preference / skip-Shorts are
+  editable from the same window.
 - **Local Transcript tab** — dedicated top-level tab for one-off
   ingest. Drop audio/video on the big panel, pick a folder to bulk-
   scan, or paste a URL. Every ingest emits an inline status line; the
@@ -326,20 +341,28 @@ export PYTHONPATH=.
 .venv/bin/python cli.py add https://feeds.acast.com/public/shows/… --backlog all
 
 # YouTube channels (yt-dlp auto-installs to
-# ~/Library/Application Support/Paragraphos/bin/yt-dlp on first use)
+# ~/Library/Application Support/Paragraphos/bin/yt-dlp on first use).
+# --backlog drives a DEEP channel backfill, not just the RSS window.
+# Any URL form works: /channel/UC…, /@handle, /c/Name, /user/Name, @handle.
 .venv/bin/python cli.py add https://www.youtube.com/@TED --backlog last:10
-.venv/bin/python cli.py add https://www.youtube.com/channel/UCAuU… --backlog recent
+.venv/bin/python cli.py add @veritasium --backlog all --include-shorts --whisper
+
+# Deepen an existing YouTube show's history and queue the new videos:
+.venv/bin/python cli.py backlog ted --backlog since:2024-01-01
 
 .venv/bin/python cli.py list                    # source col: podcast | youtube
 .venv/bin/python cli.py check --show odd-lots --limit 5
 .venv/bin/python cli.py import-feeds            # seed from built-in list
 ```
 
-YouTube transcripts go through **captions-first** by default — uploader
-captions are fetched and converted (VTT → SRT) instantly; whisper takes
-over when captions are absent. Override per channel via Show Details
-(*Captions / Always whisper / Use auto-captions if no manual*) or
-globally via `youtube_default_transcript_source` in `settings.yaml`.
+YouTube transcripts go through **captions-first** by default — a manual
+uploader subtitle in the chosen language is converted (VTT → SRT) and moved
+straight into the library; whisper takes over when no manual caption exists.
+Auto-generated captions are never used. Override per channel via the episode
+browser (*Captions / Always whisper*) or globally via
+`youtube_default_transcript_source` in `settings.yaml`; Shorts are skipped by
+default (`youtube_skip_shorts_default`) and the default language comes from
+`youtube_default_language`.
 
 The Settings pane ships a ready-to-paste **agent prompt** you can give
 to Claude Code / Gemini CLI / any coding agent with shell access. The

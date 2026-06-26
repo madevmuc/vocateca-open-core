@@ -18,6 +18,31 @@ PYTHONPATH=. .venv/bin/python cli.py add "<name | rss-url | youtube-url>" \
 | `last:N`          | the newest N episodes (e.g. `last:5`)                             |
 | `since:YYYY-MM-DD`| episodes published on/after that date                            |
 
+### YouTube channels
+
+`cli.py add` auto-detects a YouTube URL (any form — `/channel/UC…`, `/@handle`,
+`/c/Name`, `/user/Name`, or a bare `@handle` — or a video URL, which adds the
+posting channel) and tags it `source=youtube`. `--backlog` then drives a
+**deep** channel backfill (the whole archive, not just the RSS window). The
+same channel can't be added twice. Extra YouTube-only flags:
+
+| flag                              | effect                                                       |
+|-----------------------------------|--------------------------------------------------------------|
+| `--captions` / `--whisper`        | import manual uploader captions (whisper fallback) / always whisper |
+| `--skip-shorts` / `--include-shorts` | exclude Shorts (default) / include them                   |
+
+To deepen an **existing** YouTube show's history later and queue the new
+videos, use:
+
+```
+PYTHONPATH=. .venv/bin/python cli.py backlog <slug> \
+    --backlog <all|recent|last:N|since:YYYY-MM-DD>
+```
+
+Shorts are marked `skipped`; live/premiere videos are `deferred` and re-probed
+on the next daily check; members-only / age-restricted / region-locked videos
+`fail` with a specific message. None of these count as generic failures.
+
 ### Why not edit `watchlist.yaml` directly?
 
 1. **The running app holds the watchlist in memory and overwrites a raw file edit** on its

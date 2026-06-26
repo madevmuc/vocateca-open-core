@@ -1,19 +1,59 @@
 # Paragraphos Changelog
 
-## Unreleased — YouTube channels as first-class shows
+## Unreleased — YouTube hardening + per-show episode browser
+
+The original "Add YouTube Channel" feature, hardened against the channels
+people actually paste, and paired with a full per-show episode browser.
 
 ### Added
-- **"Add YouTube Channel…" button on the Shows tab.** A dedicated entry
-  point opens a focused popup — no podcast-search tabs, just a channel/​@handle
-  URL field. Paste the link, the channel name + thumbnail + video count
-  resolve automatically, the slug pre-fills from the channel name (editable),
-  and you pick how much history to pull: **only new** (future uploads only),
-  the **last 5 / 20 / 100** videos, or everything **since a specific date**.
-- **Per-video uploader-subtitle import.** A checkbox lets a channel skip
-  transcription whenever the uploader shipped a real (manually provided)
-  subtitle track in the chosen language — that track is moved straight into
-  the library. It's checked per video, so any clip lacking a manual subtitle
-  still falls back to whisper. Auto-generated captions are never used.
+- **Add a channel by any URL form.** `/channel/UC…`, `/@handle`, `/c/Name`,
+  `/user/Name`, and a bare `@handle` all resolve to the right channel. Paste a
+  single **video** URL and Paragraphos offers to add the channel that posted
+  it instead of rejecting it. Adding the **same channel twice** — even under a
+  different slug or a different URL form — is refused, naming the show it
+  already lives under. The Shows tab keeps its dedicated **"Add YouTube
+  Channel…"** button: paste the link, the channel name + avatar + video count
+  resolve, the slug pre-fills (editable), and you pick how much history to
+  pull (only-new / last 5·20·100 / since a date).
+- **Per-show episode browser** — double-click a show to open a resizable,
+  maximizable window. It keeps everything Show Details had (artwork, settings,
+  feed health) and lists **every** episode with status pills, plus:
+  **multi-select** + **Queue selected**, a date picker + **Queue all since
+  <date>**, and a **status filter** (pending / failed / skipped / deferred /
+  done). YouTube shows stream their **entire back-catalogue** in paced
+  background batches — not-yet-fetched videos appear as **"available"** rows
+  you can trigger to seed + queue (capped, with **Load more**). YouTube
+  language / caption preference / skip-Shorts are editable inline.
+- **Expanded language picker** in the Add dialog — a curated list plus a new
+  **Auto** option, seeded from the `youtube_default_language` setting.
+- **Channel avatar** is now shown (og:image → yt-dlp thumbnail →
+  latest-video-frame fallback) instead of a generic placeholder.
+- **`cli.py backlog <slug> --backlog …`** deepens an existing YouTube show's
+  history beyond the RSS window and queues the newly fetched videos.
+
+### Changed
+- **Shorts, live, and restricted videos are handled deliberately, not as
+  generic failures.** Shorts are excluded by default (enumeration uses the
+  channel's `/videos` tab); an **Include Shorts** per-show option opts in, and
+  a Short that slips through is marked **skipped** (terminal, not a failure).
+  Live / premiere / upcoming videos are **deferred** and re-probed on the
+  daily check — once the stream finishes they auto-queue. Members-only /
+  age-restricted / region-locked videos **fail with a specific, friendly
+  message** instead of a raw error dump. `skipped` and `deferred` are
+  first-class episode states with their own pills and filters.
+- **Strict captions.** Only a manual/uploader subtitle in the chosen language
+  is imported (auto-generated captions are never used); otherwise whisper. The
+  new **Auto** language accepts the channel's default manual track, else
+  whisper.
+- **`cli.py add <youtube-url> --backlog …` does a deep channel backfill** —
+  the whole archive honouring `--backlog`, not just the ~15-video RSS window —
+  with new flags `--captions`/`--whisper` and `--skip-shorts`/
+  `--include-shorts`. New settings `youtube_skip_shorts_default`,
+  `youtube_default_language`, and `youtube_default_transcript_source` hold the
+  global defaults.
+- **The selectable "use auto-captions if no manual" transcript option is
+  gone** (auto-generated captions were never actually used). Legacy stored
+  values still load, but there is no UI or CLI path to set it.
 
 ### Fixed
 - **New YouTube uploads are now actually discovered.** Channel feeds are
@@ -22,13 +62,6 @@
   recognises YouTube channel entries (keyed by the bare video id, pointing at
   the watch URL), so new uploads are picked up, downloaded, and transcribed
   on the regular check like any podcast episode.
-
-### Changed
-- **`cli.py add <youtube-url> --backlog …` is YouTube-aware.** A channel or
-  `@handle` URL is auto-detected and tagged `source=youtube` (resolving to the
-  channel feed), so the headless / AI-operator path matches the GUI. Settings
-  → Automation & remote control and the example agent prompt document the new
-  flow and the uploader-caption behaviour.
 
 ## v1.5.0 — 2026-06-25 (AI-operator guardrails & background-load levels)
 
