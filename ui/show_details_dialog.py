@@ -67,6 +67,7 @@ _STATUS_PILL_KIND = {
     "transcribing": "running",
     "skipped": "idle",
     "deferred": "pausing",
+    "paused": "pausing",  # user-deactivated: held in the queue, not processed
     # Synthetic back-catalogue rows discovered by the history stream — not
     # yet seeded into the DB, so they read as neutral/idle until triggered.
     "available": "idle",
@@ -849,7 +850,7 @@ class ShowDetailsDialog(QDialog):
         row.addWidget(QLabel("Filter:"))
         self._status_filter_combo = QComboBox()
         self._status_filter_combo.addItems(
-            ["All", "pending", "failed", "skipped", "deferred", "done"]
+            ["All", "pending", "failed", "skipped", "deferred", "paused", "done"]
         )
         self._status_filter_combo.currentTextChanged.connect(self._on_status_filter_changed)
         row.addWidget(self._status_filter_combo)

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.state import EpisodeStatus
 from ui.prioritize import (
     PRIORITY_RUN_NEXT,
     PRIORITY_RUN_NOW,
@@ -422,7 +423,10 @@ class QueueTab(QWidget):
             rows = c.execute(
                 "SELECT show_slug, pub_date, title, status, guid, duration_sec "
                 "FROM episodes "
-                "WHERE status IN ('pending','downloading','downloaded','transcribing') "
+                # 'paused' rows stay visible in the queue but the worker never
+                # claims them (its claim query is status='pending').
+                "WHERE status IN "
+                "('pending','downloading','downloaded','transcribing','paused') "
                 # Default sort = pipeline-stage order so the user sees
                 # whatever's actively burning CPU at the top:
                 #   transcribing → downloading → downloaded → pending.
@@ -438,6 +442,7 @@ class QueueTab(QWidget):
                 "    WHEN 'transcribing' THEN 0 "
                 "    WHEN 'downloading'  THEN 1 "
                 "    WHEN 'downloaded'   THEN 2 "
+                "    WHEN 'paused'       THEN 4 "  # deactivated → sink below active
                 "    ELSE 3 "
                 "  END, "
                 "  priority DESC, pub_date ASC"
@@ -547,6 +552,7 @@ class QueueTab(QWidget):
             return
         status_item = self.table.item(index.row(), 4)
         status = status_item.text() if status_item is not None else ""
+        is_paused = status.lower().startswith("paused")
         menu = QMenu(self)
         menu.addAction(
             "Re-transcribe this episode",
@@ -562,7 +568,37 @@ class QueueTab(QWidget):
                 "Run now",
                 lambda g=guid: self._bump(g, PRIORITY_RUN_NOW),
             )
+        menu.addSeparator()
+        if is_paused:
+            menu.addAction(
+                "Activate (resume in queue)",
+                lambda g=guid: self._set_episode_status(g, EpisodeStatus.PENDING),
+            )
+        else:
+            menu.addAction(
+                "Deactivate (keep in queue, don't process)",
+                lambda g=guid: self._set_episode_status(g, EpisodeStatus.PAUSED),
+            )
+        menu.addAction(
+            "Remove from queue",
+            lambda g=guid: self._remove_from_queue(g),
+        )
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _set_episode_status(self, guid: str, status: EpisodeStatus) -> None:
+        """Flip an episode's status (e.g. pending↔paused) and refresh now."""
+        self.ctx.state.set_status(guid, status)
+        self._last_table_refresh = 0.0
+        self.refresh()
+
+    def _remove_from_queue(self, guid: str) -> None:
+        """Soft-delete from the queue: mark the episode ``skipped`` so it leaves
+        the active queue and the daily feed-poll won't re-queue it (upsert
+        preserves status). It stays in the per-show episode browser as
+        ``skipped`` and can be re-queued from there."""
+        self.ctx.state.set_status(guid, EpisodeStatus.SKIPPED)
+        self._last_table_refresh = 0.0
+        self.refresh()
 
     def _retranscribe(self, guid: str) -> None:
         retranscribe_episode(self.ctx, guid)

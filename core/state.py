@@ -26,6 +26,10 @@ class EpisodeStatus(str, Enum):
     # Temporarily not processable, re-checked later (e.g. a live/premiere
     # video that hasn't finished); leaves the pending pool but is not a failure.
     DEFERRED = "deferred"
+    # Manually deactivated by the user: stays visible in the queue but the
+    # worker never claims it (the claim query is status='pending'). Toggle back
+    # to pending to resume; the feed poll preserves it (upsert keeps status).
+    PAUSED = "paused"
 
 
 _SCHEMA = """
