@@ -323,8 +323,21 @@ class QueueTab(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+        # Snapshot before clearing so the action is undoable (9.5).
+        snapshot = self.ctx.state.snapshot_statuses(
+            ["pending", "downloading", "downloaded", "transcribing"]
+        )
         moved = self.ctx.state.clear_pending()
-        log_activity(f"Cleared the queue ({moved} episode(s) marked done)")
+
+        def _undo() -> None:
+            self.ctx.state.restore_statuses(snapshot)
+            self._last_table_refresh = 0.0
+            self.refresh()
+
+        from ui.undo import manager as undo_manager
+
+        undo_manager.push(f"Cleared the queue ({moved} episode(s))", _undo)
+        log_activity(f"Cleared the queue ({moved} episode(s) marked done) — Undo available (⌘Z)")
         self._last_table_refresh = 0.0
         self.refresh()
         QMessageBox.information(

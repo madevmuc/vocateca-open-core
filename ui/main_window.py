@@ -266,6 +266,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+L", lambda: self.log_dock.setVisible(not self.log_dock.isVisible())),
             ("?", lambda: self._show_cheatsheet()),
             ("Ctrl+/", lambda: self._show_cheatsheet()),
+            ("Ctrl+Z", self._undo_last),
         ):
             QShortcut(
                 QKeySequence(key) if isinstance(key, str) else QKeySequence(key), self, activated=fn
@@ -501,6 +502,18 @@ class MainWindow(QMainWindow):
         self.sidebar.set_count("shows", len(self.ctx.watchlist.shows))
         self.sidebar.set_count("queue", pending)
         self.sidebar.set_count("failed", failed)
+
+    def _undo_last(self) -> None:
+        """Run the most recent undoable destructive action (9.5), if any."""
+        from ui.activity_log import log as log_activity
+        from ui.undo import manager as undo_manager
+
+        label = undo_manager.undo_last()
+        if label:
+            log_activity(f"Undone: {label}")
+            self._refresh_status_bar()
+        else:
+            log_activity("Nothing to undo")
 
     def _refresh_status_bar(self) -> None:
         from datetime import datetime, timedelta

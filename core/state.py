@@ -428,6 +428,27 @@ class StateStore:
             )
             return cur.rowcount or 0
 
+    def snapshot_statuses(self, statuses: list[str]) -> list[tuple[str, str, int]]:
+        """Capture (guid, status, priority) for rows in the given statuses, so a
+        destructive bulk change (e.g. clear-queue) can be undone (9.5)."""
+        ph = ",".join("?" for _ in statuses)
+        with self._conn() as c:
+            rows = c.execute(
+                f"SELECT guid, status, priority FROM episodes WHERE status IN ({ph})",
+                tuple(statuses),
+            ).fetchall()
+        return [(r["guid"], r["status"], r["priority"]) for r in rows]
+
+    def restore_statuses(self, snapshot: list[tuple[str, str, int]]) -> int:
+        """Restore (guid, status, priority) rows captured by ``snapshot_statuses``."""
+        with self._conn() as c:
+            for guid, status, priority in snapshot:
+                c.execute(
+                    "UPDATE episodes SET status=?, priority=? WHERE guid=?",
+                    (status, priority, guid),
+                )
+        return len(snapshot)
+
     def set_meta(self, key: str, value: str) -> None:
         with self._conn() as c:
             c.execute(

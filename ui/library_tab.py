@@ -621,14 +621,30 @@ class LibraryTab(QWidget):
             f"Really delete {len(files)} file(s)? This is final.",
         ):
             return
+        # Soft-delete: move to trash so the action is undoable (9.5) rather than
+        # an irreversible unlink. Each file's restore is captured for undo.
+        from ui.undo import manager as undo_manager
+        from ui.undo import trash_file
+
+        restores = []
         for p in files:
             try:
-                p.unlink()
+                restores.append(trash_file(p, data_dir=self.ctx.data_dir))
             except OSError:
                 pass
+
+        def _undo() -> None:
+            for restore in restores:
+                try:
+                    restore()
+                except OSError:
+                    pass
+            self.refresh()
+
+        undo_manager.push(f"Deleted transcript: {md.name}", _undo)
         from ui.activity_log import log as log_activity
 
-        log_activity(f"Deleted transcript: {md.name}")
+        log_activity(f"Deleted transcript: {md.name} — Undo available (⌘Z, 60s)")
         self.refresh()
 
     def _delete_show_folder(self, slug: str) -> None:

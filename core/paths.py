@@ -32,6 +32,17 @@ def user_data_dir() -> Path:
     return target
 
 
+def trash_dir(data_dir: Path | None = None) -> Path:
+    """Directory where soft-deleted files (e.g. undone transcript deletes) live.
+
+    Defaults to ``<user_data_dir>/trash``; pass ``data_dir`` to override (tests).
+    Created on demand."""
+    base = Path(data_dir) if data_dir is not None else user_data_dir()
+    t = base / "trash"
+    t.mkdir(parents=True, exist_ok=True)
+    return t
+
+
 def _run_migration(target: Path) -> None:
     moved: list[str] = []
     for legacy in _LEGACY_CANDIDATES:

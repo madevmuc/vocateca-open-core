@@ -114,6 +114,15 @@ per-test `_reset_event_bus` fixture was also added for subscriber isolation
   its debounce QTimer deterministically — it was being starved by the
   pre-existing lingering-QThread issue under full-suite ordering (the same root
   as the teardown SIGABRT). Suite back to fully green (792 passed).
+- **Task 13 — undo for destructive actions (9.5)** ✅ `ui/undo.py`
+  `UndoManager` (LIFO, per-entry TTL, expiry-drops), `trash_file`
+  (move→restore), module `manager` singleton; `core.paths.trash_dir`;
+  `state.snapshot_statuses`/`restore_statuses`. Wired: delete-transcript →
+  trash+undo, clear-queue → snapshot+undo. Surfaced via **⌘Z** MainWindow
+  action + activity log. 7 tests. **Simplification:** used a ⌘Z action +
+  activity-log line instead of integrating a new state into the priority-ranked
+  MainWindow banner (lower regression risk); remove-show/dequeue undo wiring
+  deferred (delete-transcript + clear-queue cover the data-loss cases).
 - **Task 11 — wire use_etag_cache (8.5)** ✅ `rss.conditional_validators`
   gates stored ETag/Last-Modified by the setting; worker uses it (off → sends
   no conditional headers). respx tests confirm header present/absent. Settings

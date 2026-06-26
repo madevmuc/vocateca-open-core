@@ -24,6 +24,10 @@ people actually paste, and paired with a full per-show episode browser.
   a curated subset is mirrored into the activity-log dock.
 
 ### Added
+- **Undo for destructive actions.** Deleting a transcript now moves it to a
+  trash folder (recoverable) instead of an irreversible unlink, and clearing
+  the queue snapshots the affected episodes — both undoable for 60 seconds via
+  **⌘Z**. The activity log notes when an undo is available.
 - **Pre-transcribe integrity checks.** Before whisper runs, the audio file is
   verified non-empty with a valid container header and the model file's
   SHA-256 is checked against its Trust-On-First-Use pin; a truncated download
