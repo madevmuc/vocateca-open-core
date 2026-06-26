@@ -75,3 +75,13 @@ fixture was added for subscriber isolation (independent of the flake).
   transcript count). Worker `_resolve_prompt` reads up to 30 recent show
   `.md` files lazily (only on cache miss). Show-details "Auto-vocabulary"
   toggle. 7 tests.
+- **Task 7 — confidence marking (1.3)** ✅ `core/confidence.py`
+  (`parse_json_full`/`mean_confidence`/`mark_low_confidence`, special-token
+  filtering, defensive). Transcriber: extracted `_build_whisper_cmd` (testable
+  flag set), adds `-oj --output-json-full` only when enabled; parses tokens,
+  wraps sub-threshold words in `==..==`, returns `mean_confidence`. Pipeline +
+  worker wire settings; `mean_confidence` episodes column + setter; CLI JSON;
+  settings "Processing & reliability" section with the toggle. Off by default.
+  **Deviation:** `mark_low_confidence(tokens, threshold)` (rebuilds body from
+  tokens) instead of the spec's `(markdown, tokens, threshold)` — cleaner and
+  more reliable than fuzzy-matching marks back into rendered markdown. 6 tests.

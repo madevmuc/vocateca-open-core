@@ -24,6 +24,10 @@ people actually paste, and paired with a full per-show episode browser.
   a curated subset is mirrored into the activity-log dock.
 
 ### Added
+- **Low-confidence word marking (opt-in).** Enable it in Settings → Processing
+  & reliability and whisper reports per-word confidence; words below the
+  threshold are wrapped in `==highlight==` (Obsidian-compatible) and the
+  episode's mean confidence is stored and exposed via `cli.py episodes --json`.
 - **Auto-vocabulary prompt.** Toggle **Auto-vocabulary** on a show and
   Paragraphos seeds whisper's `--prompt` with recurring proper nouns mined
   from that show's past transcripts, so names and jargon spell consistently.

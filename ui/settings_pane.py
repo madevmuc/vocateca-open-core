@@ -352,6 +352,26 @@ class SettingsPane(QWidget):
         formats_hint.setWordWrap(True)
         root.addWidget(formats_hint)
 
+        # ── Processing & reliability (roadmap) ─────────────────
+        root.addWidget(_section("Processing & reliability"))
+
+        self.confidence_marking_cb = QCheckBox("Mark low-confidence words in transcripts")
+        self.confidence_marking_cb.setObjectName("confidence_marking_checkbox")
+        self.confidence_marking_cb.setChecked(
+            bool(getattr(self.ctx.settings, "confidence_marking_enabled", False))
+        )
+        self.confidence_marking_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.confidence_marking_cb)
+
+        conf_hint = QLabel(
+            "<span style='color: palette(placeholder-text); font-size: 11px;'>"
+            "Asks whisper for per-word confidence and wraps shaky words in "
+            "<code>==highlight==</code> (Obsidian) so you can spot likely "
+            "mis-hearings. Slightly slower; off by default.</span>"
+        )
+        conf_hint.setWordWrap(True)
+        root.addWidget(conf_hint)
+
         # ── YouTube ────────────────────────────────────────────
         # Visible only when Sources → YouTube channels is checked. The
         # whole group hides/shows live as the Sources toggle flips.
@@ -1077,6 +1097,7 @@ class SettingsPane(QWidget):
         s.notify_mode = self.notify_mode.currentData() or "per_episode"
         s.log_retention_days = self.log_retention.value()
         s.save_srt = self.save_srt_cb.isChecked()
+        s.confidence_marking_enabled = self.confidence_marking_cb.isChecked()
         s.sources_podcasts = self.podcasts_checkbox.isChecked()
         s.sources_youtube = self.youtube_checkbox.isChecked()
         s.show_log_dock = self.show_log_dock_cb.isChecked()

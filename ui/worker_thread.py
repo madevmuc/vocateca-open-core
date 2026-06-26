@@ -586,6 +586,8 @@ class CheckAllThread(QThread):
             threads=self._load_profile.threads,
             launch_prefix=tuple(self._load_profile.command_prefix()),
             save_srt=self.settings.save_srt,
+            confidence_marking=bool(getattr(self.settings, "confidence_marking_enabled", False)),
+            confidence_threshold=float(getattr(self.settings, "confidence_threshold", 0.5)),
         )
         if getattr(show, "source", "podcast") == "youtube":
             # Pull the channel id straight off the canonical channel-RSS URL

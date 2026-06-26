@@ -255,6 +255,8 @@ class TranscribeResult:
     # ISO 639 code whisper auto-detected when language="auto" (e.g. "de").
     # None when a fixed language was supplied or detection couldn't be parsed.
     detected_language: str | None = None
+    # Mean whisper token confidence (0..1) when confidence marking ran; else None.
+    mean_confidence: float | None = None
 
 
 # whisper-cli logs e.g. "whisper_full_with_state: auto-detected language: de (p = 0.98)"
@@ -267,6 +269,53 @@ def parse_detected_language(text: str) -> str | None:
         return None
     m = _DETECTED_LANG_RE.search(text)
     return m.group(1) if m else None
+
+
+def _build_whisper_cmd(
+    *,
+    whisper_bin: str,
+    model_path,
+    whisper_input,
+    language: str,
+    threads: int,
+    stem,
+    fast_mode: bool,
+    processors: int,
+    whisper_prompt: str,
+    confidence_json: bool = False,
+    launch_prefix: Sequence[str] = (),
+) -> list[str]:
+    """Assemble the whisper-cli argv. Split out so the flag set is unit-testable.
+
+    ``confidence_json`` adds ``-oj`` / ``--output-json-full`` (token-level JSON)
+    only when confidence marking is enabled — it changes the output set and
+    costs runtime, so it stays off by default.
+    """
+    cmd = [
+        *launch_prefix,
+        whisper_bin,
+        "-m",
+        str(model_path),
+        "-f",
+        str(whisper_input),
+        "-l",
+        language,
+        "-t",
+        str(threads),
+        "-of",
+        str(stem),
+        "-otxt",
+        "-osrt",
+    ]
+    if confidence_json:
+        cmd += ["-oj", "--output-json-full"]
+    if fast_mode:
+        cmd += ["-bs", "1", "-bo", "1", "-ac", "0", "--no-fallback"]
+    if processors > 1:
+        cmd += ["-p", str(processors)]
+    if whisper_prompt:
+        cmd += ["--prompt", whisper_prompt]
+    return cmd
 
 
 def _fmt_frontmatter(
@@ -326,6 +375,8 @@ def transcribe_episode(
     threads: int = int(THREADS),
     launch_prefix: Sequence[str] = (),
     save_srt: bool = True,
+    confidence_marking: bool = False,
+    confidence_threshold: float = 0.5,
     progress_cb=None,
 ) -> TranscribeResult:
     """Run whisper-cli once and produce <output_dir>/<slug>.md and .srt.
@@ -379,28 +430,19 @@ def transcribe_episode(
         # and feed whisper the WAV. The output stem stays slug-based so
         # downstream .txt / .srt paths don't change.
         whisper_input = _maybe_convert_to_wav(mp3_path, td)
-        cmd = [
-            *launch_prefix,
-            whisper_bin,
-            "-m",
-            str(model_path),
-            "-f",
-            str(whisper_input),
-            "-l",
-            language,
-            "-t",
-            str(threads),
-            "-of",
-            str(stem),
-            "-otxt",
-            "-osrt",
-        ]
-        if fast_mode:
-            cmd += ["-bs", "1", "-bo", "1", "-ac", "0", "--no-fallback"]
-        if processors > 1:
-            cmd += ["-p", str(processors)]
-        if whisper_prompt:
-            cmd += ["--prompt", whisper_prompt]
+        cmd = _build_whisper_cmd(
+            whisper_bin=whisper_bin,
+            model_path=model_path,
+            whisper_input=whisper_input,
+            language=language,
+            threads=threads,
+            stem=stem,
+            fast_mode=fast_mode,
+            processors=processors,
+            whisper_prompt=whisper_prompt,
+            confidence_json=confidence_marking,
+            launch_prefix=launch_prefix,
+        )
         # Per-episode timeout scaled to MP3 size — see _whisper_timeout
         # docstring. Keeps slow Intel macs from hard-failing on hour-long
         # podcasts while still detecting genuine hangs.
@@ -545,6 +587,22 @@ def transcribe_episode(
 
         text = txt_path.read_text(encoding="utf-8").strip()
         words = len(text.split())
+
+        # Confidence marking (1.3): parse the token-level JSON, compute the
+        # mean confidence, and rewrite the body wrapping sub-threshold tokens
+        # in ==highlight== spans. Defensive — a missing/garbled JSON leaves the
+        # plain text untouched.
+        mean_conf = None
+        if confidence_marking:
+            from core import confidence as _conf
+
+            json_path = stem.parent / (stem.name + ".json")
+            tokens = _conf.parse_json_full(json_path)
+            if tokens:
+                mean_conf = _conf.mean_confidence(tokens)
+                marked = _conf.mark_low_confidence(tokens, confidence_threshold)
+                if marked:
+                    text = marked
         if words < MIN_WPM_GUARD:
             raise TranscriptionError(
                 f"suspected whisper hallucination / silence: only {words} "
@@ -574,4 +632,5 @@ def transcribe_episode(
             srt_path=srt_dest,
             word_count=words,
             detected_language=detected_language,
+            mean_confidence=mean_conf,
         )

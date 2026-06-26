@@ -155,6 +155,7 @@ class StateStore:
                 "ALTER TABLE episodes ADD COLUMN word_count INTEGER",
                 "ALTER TABLE episodes ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE episodes ADD COLUMN detected_language TEXT",
+                "ALTER TABLE episodes ADD COLUMN mean_confidence REAL",
             ):
                 try:
                     c.execute(stmt)
@@ -213,6 +214,11 @@ class StateStore:
         """Persist the language whisper auto-detected for this episode (1.1)."""
         with self._conn() as c:
             c.execute("UPDATE episodes SET detected_language=? WHERE guid=?", (lang, guid))
+
+    def set_mean_confidence(self, guid: str, value: float) -> None:
+        """Persist the mean whisper confidence for this episode (1.3)."""
+        with self._conn() as c:
+            c.execute("UPDATE episodes SET mean_confidence=? WHERE guid=?", (value, guid))
 
     def set_duration_sec(self, guid: str, duration_sec: int) -> None:
         """Persist a video's known audio length mid-flight (before transcription

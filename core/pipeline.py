@@ -38,6 +38,10 @@ class PipelineContext:
     threads: int = 6
     launch_prefix: tuple[str, ...] = ()
     save_srt: bool = True
+    # Confidence marking (1.3): when on, request token-level JSON and wrap
+    # sub-threshold words in ==highlight== in the transcript body.
+    confidence_marking: bool = False
+    confidence_threshold: float = 0.5
     # YouTube-source dispatch (Theme A). When ``source == "youtube"`` the
     # pipeline routes the episode through the captions-first / whisper-
     # fallback branch instead of the standard MP3-download path. The
@@ -321,6 +325,8 @@ def transcribe_phase(outcome: DownloadOutcome, ctx: PipelineContext) -> Pipeline
             threads=ctx.threads,
             launch_prefix=ctx.launch_prefix,
             save_srt=ctx.save_srt,
+            confidence_marking=ctx.confidence_marking,
+            confidence_threshold=ctx.confidence_threshold,
             progress_cb=_write_progress,
         )
     except TranscriptionError as e:
@@ -335,6 +341,9 @@ def transcribe_phase(outcome: DownloadOutcome, ctx: PipelineContext) -> Pipeline
     _detected = getattr(result, "detected_language", None)
     if _detected:
         ctx.state.set_detected_language(guid, _detected)
+    _meanconf = getattr(result, "mean_confidence", None)
+    if _meanconf is not None:
+        ctx.state.set_mean_confidence(guid, _meanconf)
     ctx.state.set_status(guid, EpisodeStatus.DONE)
     # Clean up stale % so a later re-transcribe of the same guid starts
     # from blank instead of inheriting the previous 99%.
