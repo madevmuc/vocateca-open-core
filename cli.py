@@ -827,6 +827,44 @@ def cmd_retranscribe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_deactivate(args: argparse.Namespace) -> int:
+    """Deactivate an episode: status → paused. It stays VISIBLE in the queue
+    but the worker never claims it (the claim query is status='pending'), and
+    the daily feed-poll preserves it. Reactivate with `activate`."""
+    state = _state()
+    if state.get_episode(args.guid) is None:
+        print(f"unknown guid: {args.guid}", file=sys.stderr)
+        return 2
+    state.set_status(args.guid, EpisodeStatus.PAUSED)
+    print(f"deactivate: {args.guid} → paused (kept in queue, not processed)")
+    return 0
+
+
+def cmd_activate(args: argparse.Namespace) -> int:
+    """Reactivate a paused episode: status → pending."""
+    state = _state()
+    if state.get_episode(args.guid) is None:
+        print(f"unknown guid: {args.guid}", file=sys.stderr)
+        return 2
+    state.set_status(args.guid, EpisodeStatus.PENDING)
+    print(f"activate: {args.guid} → pending")
+    return 0
+
+
+def cmd_dequeue(args: argparse.Namespace) -> int:
+    """Remove an episode from the queue: status → skipped. It leaves the active
+    queue and the feed-poll won't re-queue it (upsert preserves status); it
+    stays in the show's episode list as `skipped` and can be re-queued with
+    `retranscribe`."""
+    state = _state()
+    if state.get_episode(args.guid) is None:
+        print(f"unknown guid: {args.guid}", file=sys.stderr)
+        return 2
+    state.set_status(args.guid, EpisodeStatus.SKIPPED)
+    print(f"dequeue: {args.guid} → skipped (removed from queue)")
+    return 0
+
+
 def cmd_retry_failed(args: argparse.Namespace) -> int:
     """Re-queue failed episodes. Without --show, retries everything; with
     --show <slug>, only that show. Without --all-time, only retries
@@ -1331,6 +1369,20 @@ def main() -> int:
     s_rt = sub.add_parser("retranscribe", help="set status=pending + priority=100")
     s_rt.add_argument("guid")
     s_rt.set_defaults(fn=cmd_retranscribe)
+
+    s_da = sub.add_parser(
+        "deactivate", help="deactivate an episode (paused: stays in queue, not processed)"
+    )
+    s_da.add_argument("guid")
+    s_da.set_defaults(fn=cmd_deactivate)
+
+    s_ac = sub.add_parser("activate", help="reactivate a paused episode (back to pending)")
+    s_ac.add_argument("guid")
+    s_ac.set_defaults(fn=cmd_activate)
+
+    s_dq = sub.add_parser("dequeue", help="remove an episode from the queue (mark skipped)")
+    s_dq.add_argument("guid")
+    s_dq.set_defaults(fn=cmd_dequeue)
 
     s_rf = sub.add_parser("retry-failed", help="re-queue failed episodes")
     s_rf.add_argument("--show", type=str, default=None)
