@@ -716,6 +716,7 @@ class ShowDetailsDialog(QDialog):
         # the Settings default). Tuple form lets us decouple display labels
         # from the persisted internal value.
         self.transcript_pref_combo: QComboBox | None = None
+        self._skip_shorts_toggle: QCheckBox | None = None
         if getattr(self.show_, "source", "podcast") == "youtube":
             inner.addWidget(self._label("Transcript source"), r, 0)
             combo = QComboBox()
@@ -734,6 +735,20 @@ class ShowDetailsDialog(QDialog):
                     break
             inner.addWidget(combo, r, 1)
             self.transcript_pref_combo = combo
+            r += 1
+
+            # YouTube-only: exclude Shorts from backfill and as a per-video
+            # safety net. Defaults from the show (model default is True).
+            inner.addWidget(self._label("Skip Shorts"), r, 0)
+            self._skip_shorts_toggle = QCheckBox()
+            self._skip_shorts_toggle.setChecked(bool(getattr(self.show_, "skip_shorts", True)))
+            inner.addWidget(self._skip_shorts_toggle, r, 1)
+            r += 1
+
+            shorts_hint = QLabel("Excludes Shorts on backfill and as a per-video safety net.")
+            shorts_hint.setStyleSheet(f"color: {current_tokens()['ink_3']}; font-size: 11px;")
+            shorts_hint.setWordWrap(True)
+            inner.addWidget(shorts_hint, r, 1)
             r += 1
 
         # Toggle: switch controls body visibility + grows/shrinks the
@@ -1102,6 +1117,8 @@ class ShowDetailsDialog(QDialog):
         self.show_.whisper_prompt = self._whisper_prompt_edit.toPlainText().strip()
         if self.transcript_pref_combo is not None:
             self.show_.youtube_transcript_pref = self.transcript_pref_combo.currentData() or ""
+        if self._skip_shorts_toggle is not None:
+            self.show_.skip_shorts = self._skip_shorts_toggle.isChecked()
         save_watchlist(self.ctx)
         self.accept()
 
