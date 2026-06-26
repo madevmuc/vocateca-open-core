@@ -71,15 +71,15 @@ def _http_get_text(url: str, *, timeout: float = 10.0) -> str:
     return r.text
 
 
-def resolve_handle_to_channel_id(handle: str) -> str:
-    """Look up a channel id from its @handle.
+def resolve_channel_url_to_id(url: str) -> str:
+    """Resolve any channel URL (``/c/``, ``/user/``, ``/@handle``, …) to its id.
 
-    Fast path: scrape the @handle page for the `<link rel="canonical">`
-    tag (~0.5s). Falls back to yt-dlp on any failure (~12-90s).
+    Fast path: scrape the page for the `<link rel="canonical">` tag
+    (~0.5s). Falls back to yt-dlp on a miss (~12-90s), which prints the
+    bare ``UC…`` channel id via ``%(channel_id)s``.
     """
-    handle = handle.lstrip("@")
     try:
-        html = _http_get_text(f"https://www.youtube.com/@{handle}", timeout=8.0)
+        html = _http_get_text(url, timeout=8.0)
     except Exception:  # noqa: BLE001
         html = ""
     m = _CANONICAL_RE.search(html)
@@ -87,19 +87,24 @@ def resolve_handle_to_channel_id(handle: str) -> str:
         return m.group(1)
     # Fallback — yt-dlp slow path (kept so blocked HTTP still resolves).
     out = _run_ytdlp(
-        [
-            "--skip-download",
-            "--print",
-            "%(channel_id)j",
-            f"https://www.youtube.com/@{handle}",
-        ],
+        ["--skip-download", "--print", "%(channel_id)s", url],
         timeout=120,
     )
-    line = out.strip().splitlines()[0]
-    parsed = json.loads(line) if line.startswith('"') else json.loads(out.strip())
-    if isinstance(parsed, dict):
-        return parsed.get("channel_id") or ""
-    return parsed
+    for line in out.splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return ""
+
+
+def resolve_handle_to_channel_id(handle: str) -> str:
+    """Look up a channel id from its @handle.
+
+    Thin wrapper over :func:`resolve_channel_url_to_id` for the
+    @handle URL form.
+    """
+    handle = handle.lstrip("@")
+    return resolve_channel_url_to_id(f"https://www.youtube.com/@{handle}")
 
 
 def fetch_channel_preview(channel_id: str) -> Dict[str, object]:

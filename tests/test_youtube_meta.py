@@ -6,6 +6,7 @@ from core.youtube_meta import (
     enumerate_channel_videos,
     fetch_channel_first_video_date,
     fetch_channel_preview,
+    resolve_channel_url_to_id,
     resolve_handle_to_channel_id,
 )
 
@@ -36,12 +37,19 @@ def test_resolve_handle_falls_back_to_ytdlp_when_http_fails(tmp_path, monkeypatc
         "core.youtube_meta._http_get_text",
         lambda url, timeout=10.0: (_ for _ in ()).throw(RuntimeError("network down")),
     )
-    fake_proc = MagicMock(returncode=0, stdout=json.dumps({"channel_id": "UCabc"}), stderr="")
+    # yt-dlp now prints the bare id via `%(channel_id)s` (plain, not JSON).
+    fake_proc = MagicMock(returncode=0, stdout="UCabc\n", stderr="")
     with patch("subprocess.run", return_value=fake_proc) as run:
         cid = resolve_handle_to_channel_id("MrBeast")
         assert cid == "UCabc"
         args = run.call_args[0][0]
         assert "https://www.youtube.com/@MrBeast" in args
+
+
+def test_resolve_channel_url_scrapes_canonical(monkeypatch):
+    html = '<link rel="canonical" href="https://www.youtube.com/channel/UCabc1234567890123456789">'
+    monkeypatch.setattr("core.youtube_meta._http_get_text", lambda url, timeout=10.0: html)
+    assert resolve_channel_url_to_id("https://www.youtube.com/c/X") == "UCabc1234567890123456789"
 
 
 def test_enumerate_channel_videos_parses_flat_playlist(tmp_path, monkeypatch):
