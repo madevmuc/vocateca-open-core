@@ -24,7 +24,7 @@ def _videos(n):
     ]
 
 
-def _wire(tmp_path, monkeypatch, *, n_videos=5, source="youtube", skip_shorts=True):
+def _wire(tmp_path, monkeypatch, *, n_videos=5, source="youtube", skip_shorts=True, rss=_FEED):
     """Point cli at tmp data dirs, write a watchlist with one show (slug
     ``ch``), and stub the channel enumerator with a recorder.
 
@@ -39,7 +39,7 @@ def _wire(tmp_path, monkeypatch, *, n_videos=5, source="youtube", skip_shorts=Tr
             Show(
                 slug="ch",
                 title="Sample Channel",
-                rss=_FEED,
+                rss=rss,
                 source=source,
                 skip_shorts=skip_shorts,
             )
@@ -131,7 +131,33 @@ def test_backlog_last_passes_limit(tmp_path, monkeypatch):
 def test_backlog_since_passes_date_after(tmp_path, monkeypatch):
     calls = _wire(tmp_path, monkeypatch, n_videos=3)
     assert cli.cmd_backlog(_ns(backlog="since:2021-01-01")) == 0
-    assert calls and calls[0]["date_after"] == "2021-01-01"
+    # since: must not also smuggle a stray limit.
+    assert calls and calls[0]["date_after"] == "2021-01-01" and calls[0]["limit"] is None
+
+
+def test_backlog_recent_passes_limit_15(tmp_path, monkeypatch):
+    calls = _wire(tmp_path, monkeypatch, n_videos=20)
+    assert cli.cmd_backlog(_ns(backlog="recent")) == 0
+    assert calls and calls[0]["limit"] == 15
+
+
+def test_backlog_include_shorts_follows_show_flag(tmp_path, monkeypatch):
+    # A show that opts into Shorts must enumerate the channel root, not /videos.
+    calls = _wire(tmp_path, monkeypatch, n_videos=3, skip_shorts=False)
+    assert cli.cmd_backlog(_ns()) == 0
+    assert calls and calls[0]["include_shorts"] is True
+
+
+def test_backlog_skip_shorts_excludes_shorts(tmp_path, monkeypatch):
+    calls = _wire(tmp_path, monkeypatch, n_videos=3, skip_shorts=True)
+    assert cli.cmd_backlog(_ns()) == 0
+    assert calls and calls[0]["include_shorts"] is False
+
+
+def test_backlog_underivable_channel_id_exits_2(tmp_path, monkeypatch):
+    # A youtube show whose RSS carries no channel_id can't be enumerated.
+    _wire(tmp_path, monkeypatch, rss="https://www.youtube.com/feeds/videos.xml")
+    assert cli.cmd_backlog(_ns()) == 2
 
 
 def test_backlog_bad_backlog_value_exits_2(tmp_path, monkeypatch):
