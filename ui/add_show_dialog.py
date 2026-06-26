@@ -45,6 +45,7 @@ from core.watchlist_io import save_watchlist
 from core.youtube import (
     YoutubeUrlError,
     channel_id_from_feed_url,
+    manifest_from_videos,
     parse_youtube_url,
     rss_url_for_channel_id,
 )
@@ -1509,39 +1510,11 @@ class AddShowDialog(QDialog):
         choice = pending.get("choice") or "Only new"
         preview = pending.get("preview") or {}
 
-        # Build a manifest the existing _do_save funnel understands.
-        # Date sourcing: yt-dlp --flat-playlist returns `timestamp`
-        # (Unix epoch seconds), not `upload_date`. Convert to ISO so
-        # build_slug doesn't fall back to 1970-01-01 in the filename.
-        import time as _time
-
-        manifest = []
-        for v in videos:
-            vid = v.get("id") or v.get("url") or ""
-            if not vid:
-                continue
-            ts = v.get("timestamp") or 0
-            pub = ""
-            if ts:
-                pub = _time.strftime("%Y-%m-%d", _time.gmtime(int(ts)))
-            elif v.get("upload_date"):
-                # Some yt-dlp paths emit YYYYMMDD instead — normalise.
-                ud = str(v["upload_date"])
-                if len(ud) == 8 and ud.isdigit():
-                    pub = f"{ud[:4]}-{ud[4:6]}-{ud[6:8]}"
-                else:
-                    pub = ud
-            manifest.append(
-                {
-                    "guid": vid,
-                    "title": v.get("title") or vid,
-                    "pubDate": pub,
-                    # YouTube videos have no MP3 enclosure — point at the
-                    # watch URL; the YouTube pipeline branch resolves the
-                    # actual source (captions or audio) itself.
-                    "mp3_url": f"https://www.youtube.com/watch?v={vid}",
-                }
-            )
+        # Build a manifest the existing _do_save funnel understands. Shared
+        # with the CLI (core.youtube.manifest_from_videos) so GUI-add and
+        # CLI-add seed the SAME guid (bare video id) + watch-URL shape — the
+        # seam feed-poll dedup relies on.
+        manifest = manifest_from_videos(videos)
 
         # A "since" date keeps only videos published on/after the cutoff
         # (ISO date strings compare lexicographically). Unknown-date videos

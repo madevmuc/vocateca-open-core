@@ -63,6 +63,8 @@ _STATUS_PILL_KIND = {
     "failed": "fail",
     "pending": "running",
     "downloading": "running",
+    "downloaded": "running",
+    "transcribing": "running",
     "skipped": "idle",
     "deferred": "pausing",
     # Synthetic back-catalogue rows discovered by the history stream — not
