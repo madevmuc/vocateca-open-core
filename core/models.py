@@ -156,8 +156,9 @@ class Settings(BaseModel):
     # German-podcast default; pick "en" if you mostly track English
     # YouTube channels.
     youtube_default_language: str = "de"
-    # Default for the per-show Show.skip_shorts on newly-added YouTube
-    # channels (the Add dialog + CLI seed from this). True = exclude Shorts.
+    # Global fallback for a YouTube show's Shorts policy: the pipeline uses
+    # this when a Show has no own ``skip_shorts`` (e.g. a legacy show written
+    # before that field existed). True = exclude Shorts.
     youtube_skip_shorts_default: bool = True
     # Whether the bottom log dock is visible across all pages. Off by
     # default — power-user diagnostic, surfaced by the Logs sidebar
