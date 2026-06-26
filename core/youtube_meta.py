@@ -31,6 +31,7 @@ _CANONICAL_RE = re.compile(
     r'<link rel="canonical" href="https://www\.youtube\.com/channel/(UC[\w-]{22})"'
 )
 _CHANNEL_ID_RE = re.compile(r"^UC[\w-]{22}$")
+_OG_IMAGE_RE = re.compile(r'<meta property="og:image" content="([^"]+)"')
 
 
 def _first_channel_id(out: str) -> str:
@@ -85,6 +86,29 @@ def _http_get_text(url: str, *, timeout: float = 10.0) -> str:
     )
     r.raise_for_status()
     return r.text
+
+
+def _og_image(channel_id: str, *, timeout: float = 8.0) -> str:
+    """Scrape the channel page's ``<meta property="og:image">`` (the avatar).
+
+    YouTube's channel page exposes the real channel avatar as its
+    Open Graph image. Best-effort: any failure (network, no match)
+    returns "" so the caller falls through the avatar fallback chain.
+    """
+    try:
+        html = _http_get_text(f"https://www.youtube.com/channel/{channel_id}", timeout=timeout)
+        m = _OG_IMAGE_RE.search(html)
+        return m.group(1) if m else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _pick_avatar(og: str, ytdlp_thumb: str, rss_thumb: str) -> str:
+    """First non-empty of og:image → yt-dlp thumb → latest-video frame → ""."""
+    for candidate in (og, ytdlp_thumb, rss_thumb):
+        if candidate:
+            return candidate
+    return ""
 
 
 def resolve_channel_url_to_id(url: str) -> str:
@@ -155,14 +179,17 @@ def fetch_channel_preview(channel_id: str) -> Dict[str, object]:
         title = title_el.text.strip() if title_el is not None and title_el.text else ""
         entries = root.findall("atom:entry", ns)
         # The channel avatar isn't in the feed, but every entry carries a
-        # per-video <media:thumbnail>. Surface the latest one so the Add
-        # dialog has an image to show immediately without the slow yt-dlp path.
-        artwork = ""
+        # per-video <media:thumbnail>. Keep the latest one as a free fallback
+        # frame; the real avatar comes from the channel page's og:image.
+        rss_thumb = ""
         if entries:
             thumb = entries[0].find("media:group/media:thumbnail", ns)
             if thumb is not None:
-                artwork = thumb.get("url") or ""
+                rss_thumb = thumb.get("url") or ""
         if title:
+            # One extra cheap GET for the avatar; don't trigger the slow
+            # yt-dlp path just for an image (hence ytdlp_thumb="").
+            artwork = _pick_avatar(_og_image(channel_id), "", rss_thumb)
             return {
                 "channel_id": channel_id,
                 "title": title,
@@ -185,9 +212,11 @@ def fetch_channel_preview(channel_id: str) -> Dict[str, object]:
     )
     data = json.loads(out)
     thumbs = data.get("thumbnails") or []
-    artwork = thumbs[-1]["url"] if thumbs else ""
+    ytdlp_thumb = thumbs[-1]["url"] if thumbs else ""
+    resolved_id = data.get("channel_id") or channel_id
+    artwork = _pick_avatar(_og_image(resolved_id), ytdlp_thumb, "")
     return {
-        "channel_id": data.get("channel_id") or channel_id,
+        "channel_id": resolved_id,
         "title": data.get("channel") or data.get("title") or "",
         "video_count": int(data.get("playlist_count") or 0),
         "video_count_is_lower_bound": False,

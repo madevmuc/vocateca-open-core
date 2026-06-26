@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from core.youtube_meta import (
     YoutubeMetaError,
+    _pick_avatar,
     enumerate_channel_videos,
     fetch_channel_first_video_date,
     fetch_channel_preview,
@@ -187,6 +188,64 @@ def test_fetch_channel_preview_surfaces_latest_video_thumbnail(monkeypatch):
         "</feed>"
     )
     monkeypatch.setattr("core.youtube_meta._http_get_text", lambda url, timeout=10.0: rss)
+    prev = fetch_channel_preview("UCabc")
+    assert prev["artwork_url"] == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
+
+
+def test_pick_avatar_prefers_og_then_ytdlp_then_rss():
+    """First non-empty wins: og:image → yt-dlp thumb → latest-video frame → ""."""
+    assert _pick_avatar("og", "y", "r") == "og"
+    assert _pick_avatar("", "y", "r") == "y"
+    assert _pick_avatar("", "", "r") == "r"
+    assert _pick_avatar("", "", "") == ""
+
+
+def _feed_with_thumb():
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<feed xmlns="http://www.w3.org/2005/Atom" '
+        'xmlns:media="http://search.yahoo.com/mrss/">'
+        "<title>Mr Beast</title>"
+        "<entry><title>vid 1</title><media:group>"
+        '<media:thumbnail url="https://i.ytimg.com/vi/abc/hqdefault.jpg"/>'
+        "</media:group></entry>"
+        "</feed>"
+    )
+
+
+def test_fetch_preview_uses_og_image_when_present(monkeypatch):
+    """Fast path: the channel page's og:image (the real avatar) wins over the
+    latest-video frame from the RSS feed."""
+    feed = _feed_with_thumb()
+    channel_html = (
+        '<html><head><meta property="og:image" content="https://yt3/avatar.jpg"></head></html>'
+    )
+
+    def fake_get(url, timeout=10.0):
+        if "/feeds/videos.xml" in url:
+            return feed
+        if "/channel/" in url:
+            return channel_html
+        return ""
+
+    monkeypatch.setattr("core.youtube_meta._http_get_text", fake_get)
+    prev = fetch_channel_preview("UCabc")
+    assert prev["artwork_url"] == "https://yt3/avatar.jpg"
+
+
+def test_fetch_preview_falls_back_to_rss_thumb_when_no_og(monkeypatch):
+    """Fast path: with no og:image on the channel page, the latest-video frame
+    from the RSS feed is preserved (existing behaviour)."""
+    feed = _feed_with_thumb()
+
+    def fake_get(url, timeout=10.0):
+        if "/feeds/videos.xml" in url:
+            return feed
+        if "/channel/" in url:
+            return "<html><head></head></html>"
+        return ""
+
+    monkeypatch.setattr("core.youtube_meta._http_get_text", fake_get)
     prev = fetch_channel_preview("UCabc")
     assert prev["artwork_url"] == "https://i.ytimg.com/vi/abc/hqdefault.jpg"
 
