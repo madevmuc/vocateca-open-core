@@ -242,6 +242,10 @@ per-test `_reset_event_bus` fixture was also added for subscriber isolation
   verification already lives in `first_run_wizard` (deps.check). 3 tests.
   **Best-assumption:** OPML import exposed via CLI; wizard GUI import step
   deferred (wizard's dep-verification half already shipped).
+- **Task 34 — command palette (9.2)** ✅ `ui/command_palette.py`:
+  `fuzzy_filter` (substring-first then subsequence ranking) + `CommandPalette`
+  dialog (filter-as-you-type, Enter runs, Esc closes). MainWindow ⌘K opens it
+  with nav + start/stop/undo/log-toggle commands. 5 tests.
 - **Task 11 — wire use_etag_cache (8.5)** ✅ `rss.conditional_validators`
   gates stored ETag/Last-Modified by the setting; worker uses it (off → sends
   no conditional headers). respx tests confirm header present/absent. Settings

@@ -104,6 +104,8 @@ people actually paste, and paired with a full per-show episode browser.
   history beyond the RSS window and queues the newly fetched videos.
 
 ### Added
+- **Command palette (⌘K).** Press ⌘K for a fuzzy-searchable list of actions —
+  jump between tabs, start/stop the queue, undo, toggle the log panel.
 - **OPML subscription import.** `cli.py import-opml subs.opml --backlog …`
   imports podcast subscriptions from an OPML export (XXE-safe via defusedxml),
   seeding each feed as a show.

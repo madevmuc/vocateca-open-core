@@ -267,6 +267,7 @@ class MainWindow(QMainWindow):
             ("?", lambda: self._show_cheatsheet()),
             ("Ctrl+/", lambda: self._show_cheatsheet()),
             ("Ctrl+Z", self._undo_last),
+            ("Ctrl+K", self._open_command_palette),
         ):
             QShortcut(
                 QKeySequence(key) if isinstance(key, str) else QKeySequence(key), self, activated=fn
@@ -502,6 +503,28 @@ class MainWindow(QMainWindow):
         self.sidebar.set_count("shows", len(self.ctx.watchlist.shows))
         self.sidebar.set_count("queue", pending)
         self.sidebar.set_count("failed", failed)
+
+    def _open_command_palette(self) -> None:
+        """Cmd-K fuzzy command palette (9.2)."""
+        from ui.command_palette import Command, CommandPalette
+
+        cmds = [
+            Command("Go to Shows", lambda: self._on_nav("shows")),
+            Command("Go to Queue", lambda: self._on_nav("queue")),
+            Command("Go to Library", lambda: self._on_nav("library")),
+            Command("Go to Failed", lambda: self._on_nav("failed")),
+            Command("Open Settings", lambda: self._on_nav("settings")),
+            Command("Start check", lambda: self.shows_tab.start_check(force=True)),
+            Command("Stop", self.shows_tab._stop),
+            Command("Undo last action", self._undo_last),
+            Command(
+                "Toggle log panel",
+                lambda: self.log_dock.setVisible(not self.log_dock.isVisible()),
+            ),
+        ]
+        pal = CommandPalette(cmds, self)
+        pal.resize(420, 320)
+        pal.exec()
 
     def _undo_last(self) -> None:
         """Run the most recent undoable destructive action (9.5), if any."""
