@@ -7,6 +7,7 @@ import respx
 from core.rss import FeedHealth, build_manifest, build_manifest_with_url
 
 FIX = Path(__file__).parent / "fixtures" / "sample_feed.xml"
+YT_FIX = Path(__file__).parent / "fixtures" / "youtube_channel_feed.xml"
 
 
 @respx.mock
@@ -28,6 +29,22 @@ def test_build_manifest_parses_items():
         assert key in first
     assert first["mp3_url"].startswith("https://")
     assert first["episode_number"].isdigit()
+
+
+@respx.mock
+def test_build_manifest_parses_youtube_channel_feed():
+    """YouTube channel feeds are Atom with no audio enclosure. The manifest
+    must still surface every video — keyed by the bare 11-char video id and
+    pointing at the watch URL — so feed-poll dedup matches the rows the Add
+    dialog seeds and new uploads get auto-downloaded."""
+    respx.get("https://yt.test/feed").respond(200, text=YT_FIX.read_text())
+    episodes = build_manifest("https://yt.test/feed")
+    assert len(episodes) == 2
+    # Sorted oldest → newest by pubDate.
+    assert [e["guid"] for e in episodes] == ["VID11111111", "VID22222222"]
+    for e in episodes:
+        assert e["mp3_url"] == f"https://www.youtube.com/watch?v={e['guid']}"
+        assert e["pubDate"].startswith("2026-06-")
 
 
 def test_build_manifest_rejects_non_http():

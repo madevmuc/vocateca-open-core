@@ -93,10 +93,61 @@ class ParagraphosApp(QObject):
     notify = pyqtSignal(str, str, str)  # title, subtitle, body
     update_available = pyqtSignal(str, str)  # tag, html_url — GUI-thread safe
 
+    def _deliver_notification(self, title: str, subtitle: str, body: str) -> None:
+        """GUI-thread delivery of a notification (connected to the notify signal)."""
+        tray = getattr(self, "tray", None)
+        if tray is None:
+            return
+        msg = (subtitle + ("\n" + body if body else "")).strip()
+        try:
+            tray.showMessage(title, msg or title)
+        except Exception:
+            pass
+
+    def _on_online_changed(self, online: bool) -> None:
+        """GUI-thread slot for ConnectivityMonitor.online_changed. Connected as a
+        bound method so Qt marshals the worker-thread signal onto the GUI thread
+        before the window touches widgets / the DB."""
+        win = getattr(self, "_window", None)
+        if win is not None:
+            win.on_online_changed(online)
+
+    def _bus_notify(self, ev) -> None:
+        """Bus callback: fire a desktop notification if the event passes the
+        granular notify rules (7.4). Runs on whatever thread emitted the event;
+        delivery is marshalled to the GUI thread via the notify signal."""
+        try:
+            from core.notify_rules import should_notify
+
+            show = next((s for s in self.ctx.watchlist.shows if s.slug == ev.show_slug), None)
+            if not should_notify(ev, self.ctx.settings, show):
+                return
+            from core.events import EventType
+
+            if ev.type == EventType.EPISODE_FAILED:
+                title = "✗ Transcription failed"
+                sub = (ev.payload or {}).get("title", "") or (ev.show_slug or "episode")
+            elif ev.type == EventType.RUN_FINISHED:
+                title = "Paragraphos — check finished"
+                sub = ""
+            else:
+                title = ev.type
+                sub = ev.show_slug or ""
+            self.notify.emit(title, sub, "")
+        except Exception:
+            pass
+
     def __init__(self) -> None:
         super().__init__()
         self.ctx = AppContext.load(DATA_DIR)
         setup_logging(DATA_DIR, retention_days=self.ctx.settings.log_retention_days)
+        # Crash visibility (6.4): route uncaught exceptions to the activity log
+        # (which also lands in the rotating log file) before deferring to the
+        # default handler.
+        from core.bugbundle import install_excepthook
+        from ui.activity_log import log as _activity_log
+
+        install_excepthook(_activity_log)
         # One-line system fingerprint at startup — useful when users send
         # logs for debugging. Carefully NO PII: no username, no hostname,
         # no IP, no file paths, no watchlist content. macOS version,
@@ -311,6 +362,22 @@ class ParagraphosApp(QObject):
 
         self._rebuild_tray_menu(running=False)
         self.tray.show()
+
+        # Granular event-driven notifications (7.4). The legacy notify_mode path
+        # already covers per-episode 'transcribed' messages, so to avoid
+        # duplicates the bus notifier handles the gaps it doesn't: failures and
+        # run-finished. Delivery marshals to the GUI thread via the notify
+        # signal (bus callbacks may run on a worker thread).
+        self.notify.connect(self._deliver_notification)
+        from core import events as _events
+
+        _events.subscribe(_events.EventType.EPISODE_FAILED, self._bus_notify)
+        _events.subscribe(_events.EventType.RUN_FINISHED, self._bus_notify)
+
+        # Event-driven webhooks (10.1) — non-blocking, settings read live.
+        from core import webhooks as _webhooks
+
+        _webhooks.install(lambda: self.ctx.settings)
 
         # Re-render the tray icon when macOS flips light/dark so its
         # glyph color tracks the new menu-bar appearance.
@@ -618,6 +685,7 @@ class ParagraphosApp(QObject):
             return
         if action != "transcribed":
             return
+        # (failures + run-finished are handled by the event-bus notifier below)
         spot_key = f"spotcheck_done:{slug}"
         title_prefix = f"{done_idx}/{total}"
         if self.ctx.state.get_meta(spot_key) != "1":
@@ -1050,9 +1118,13 @@ def main() -> int:
 
     if app.ctx.settings.connectivity_monitor_enabled:
         app._conn_monitor = ConnectivityMonitor()
-        app._conn_monitor.online_changed.connect(
-            lambda online: app._window.on_online_changed(online) if app._window else None
-        )
+        # Connect to a bound method of `app` (a QObject on the GUI thread), NOT a
+        # bare lambda. online_changed is emitted from the monitor's worker
+        # thread; a lambda has no receiver QObject so Qt would run it directly on
+        # that worker thread, mutating widgets + the DB off the GUI thread. A
+        # bound method whose object lives on the GUI thread gives a queued
+        # (AutoConnection) delivery onto the GUI thread.
+        app._conn_monitor.online_changed.connect(app._on_online_changed)
         app._conn_monitor.start()
     # Universal-ingest watch folder — starts iff the user opted in via
     # Settings. Observes the chosen root recursively and ingests any

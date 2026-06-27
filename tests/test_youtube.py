@@ -38,3 +38,67 @@ def test_rss_url_for_channel_id():
         rss_url_for_channel_id("UC123")
         == "https://www.youtube.com/feeds/videos.xml?channel_id=UC123"
     )
+
+
+def test_parse_c_custom_url():
+    u = parse_youtube_url("https://www.youtube.com/c/Veritasium")
+    assert u.kind == "channel_url" and u.value == "https://www.youtube.com/c/Veritasium"
+
+
+def test_parse_user_legacy_url():
+    u = parse_youtube_url("https://www.youtube.com/user/Vsauce")
+    assert u.kind == "channel_url"
+
+
+def test_parse_bare_handle():
+    u = parse_youtube_url("@veritasium")
+    assert u.kind == "channel_url" and "veritasium" in u.value
+
+
+def test_parse_handle_still_works():
+    assert parse_youtube_url("https://www.youtube.com/@veritasium").kind == "handle"
+
+
+@pytest.mark.parametrize("bad", ["", "@", "foo/bar", "foo bar", "@foo bar", "   "])
+def test_parse_bare_handle_rejects_garbage(bad):
+    # The bare-name branch must not swallow empty/slash/whitespace tokens —
+    # those still raise so the caller can report a real error.
+    with pytest.raises(YoutubeUrlError):
+        parse_youtube_url(bad)
+
+
+def test_channel_id_from_feed_url_extracts_id():
+    from core.youtube import channel_id_from_feed_url
+
+    assert (
+        channel_id_from_feed_url("https://www.youtube.com/feeds/videos.xml?channel_id=UCx") == "UCx"
+    )
+
+
+def test_channel_id_from_feed_url_empty_for_non_channel_feed():
+    from core.youtube import channel_id_from_feed_url
+
+    assert channel_id_from_feed_url("https://example.com/podcast.rss") == ""
+
+
+def test_manifest_from_videos_captures_duration():
+    from core.youtube import manifest_from_videos
+
+    out = manifest_from_videos(
+        [
+            {"id": "v1", "title": "A", "upload_date": "20260601", "duration": 615},
+            {"id": "v2", "title": "B", "upload_date": "20260602", "duration": 42.0},
+        ]
+    )
+    assert out[0]["duration_sec"] == 615
+    assert out[1]["duration_sec"] == 42
+
+
+def test_manifest_from_videos_duration_none_when_missing():
+    from core.youtube import manifest_from_videos
+
+    out = manifest_from_videos([{"id": "v1", "title": "A", "upload_date": "20260601"}])
+    assert out[0]["duration_sec"] is None
+    # A non-numeric duration (e.g. the flat path's None) also collapses to None.
+    out2 = manifest_from_videos([{"id": "v2", "title": "B", "duration": None}])
+    assert out2[0]["duration_sec"] is None

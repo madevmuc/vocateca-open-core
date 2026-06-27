@@ -66,8 +66,9 @@ def _list_available_sub_langs(video_id: str, *, auto_ok: bool = False) -> list[s
 
     Returns the language codes in YouTube's listed order (typically the
     uploader's chosen primary first). Empty list if yt-dlp errors out.
-    Used by fetch_manual_captions to pick a viable language when the
-    requested one isn't available.
+    Used by fetch_manual_captions ONLY for ``lang == "auto"`` — to accept
+    the channel's default manual track. A specific language is strict and
+    never consults this list.
     """
     if not ytdlp.is_installed():
         return []
@@ -125,21 +126,32 @@ def fetch_manual_captions(
     `out_basename` is e.g. `/tmp/xyz/video` (no extension); yt-dlp will
     write `<basename>.<lang>.vtt` next to it.
 
-    Language fallback: tries `lang` first, then `en`, then whatever
-    yt-dlp lists as available. This avoids the "TED show created with
-    German default → no German subs → fall through to audio" failure
-    mode where the video DOES have English subs but we asked for the
-    wrong language.
+    Language rule:
+      * A specific language (e.g. ``lang="de"``) is STRICT: only that
+        language is ever requested. If the video has no manual track in
+        that language, ``NoCaptionsAvailable`` is raised (the caller then
+        falls back to whisper). There is deliberately NO ``en``/other-
+        language fallback — asking for German must never silently import
+        an English track.
+      * ``lang="auto"`` is LOOSE: it accepts the channel's default manual
+        track. The available manual languages are probed once (via
+        ``--list-subs``) in YouTube's listed order — channel default
+        first — and tried in turn. If none exist, ``NoCaptionsAvailable``
+        is raised (→ whisper).
     """
     if not ytdlp.is_installed():
         raise NoCaptionsAvailable("yt-dlp not installed")
 
-    # Build the candidate-language list: requested first, then en, then
-    # whatever's actually available on the video (probed once via
-    # --list-subs). Dedup while preserving order.
+    # Build the candidate-language list. "auto" → whatever manual tracks
+    # the video actually has (channel default first); a specific language
+    # → that language ONLY (strict, no fallback). Dedup, preserve order.
+    if lang == "auto":
+        raw_candidates = _list_available_sub_langs(video_id, auto_ok=auto_ok)
+    else:
+        raw_candidates = [lang]
     candidates: list[str] = []
     seen: set[str] = set()
-    for code in [lang, "en", *_list_available_sub_langs(video_id, auto_ok=auto_ok)]:
+    for code in raw_candidates:
         if code and code not in seen:
             candidates.append(code)
             seen.add(code)

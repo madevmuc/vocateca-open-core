@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QItemSelection, QItemSelectionModel, Qt, QTimer
 from PyQt6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -16,6 +17,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.state import EpisodeStatus
+from ui.activity_log import log as log_activity
 from ui.prioritize import (
     PRIORITY_RUN_NEXT,
     PRIORITY_RUN_NOW,
@@ -99,6 +102,21 @@ class QueueTab(QWidget):
         for b in (self.start_btn, self.pause_btn, self.stop_btn, refresh, self.clear_btn):
             h.addWidget(b)
         h.addStretch()
+        # Queue order — takes effect on the next claim (worker reads the
+        # setting per claim). Whitelisted values map to claim ORDER BY.
+        h.addWidget(QLabel("Order:"))
+        self.order_combo = QComboBox()
+        for label, value in (
+            ("Oldest first", "oldest_first"),
+            ("Newest first", "newest_first"),
+            ("Shortest first", "shortest_first"),
+        ):
+            self.order_combo.addItem(label, value)
+        cur = getattr(self.ctx.settings, "queue_order", "oldest_first")
+        idx = self.order_combo.findData(cur)
+        self.order_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.order_combo.currentIndexChanged.connect(self._on_order_changed)
+        h.addWidget(self.order_combo)
         v.addLayout(h)
 
         # Big-visible hero dashboard — always-visible state card (idle =
@@ -128,6 +146,10 @@ class QueueTab(QWidget):
                 "Finish ≈",
             ]
         )
+        # Select whole rows (not single cells) and allow multi-select, so the
+        # context-menu actions can act on every selected episode at once.
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         from ui.widgets.resizable_header import make_resizable
 
         # Columns: 0 Show, 1 Pub Date, 2 Ep#, 3 Title (stretch),
@@ -156,6 +178,15 @@ class QueueTab(QWidget):
         self._status_sort_mode = "priority"
         self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         v.addWidget(self.table)
+
+        from ui.widgets.empty_state import EmptyState
+
+        self.empty_state = EmptyState(
+            title="Nothing in the queue",
+            hint="Run a check (Start) or queue episodes from a show to see them here.",
+        )
+        v.addWidget(self.empty_state)
+        self.empty_state.setVisible(False)
 
         # (Buttons already created above as the top toolbar — _update_btns
         # syncs their enabled/text state from the queue's current run-state.)
@@ -231,11 +262,13 @@ class QueueTab(QWidget):
         paused = self.ctx.state.get_meta("queue_paused") == "1"
         if paused:
             self.ctx.state.set_meta("queue_paused", "0")
+        log_activity("Resumed the queue" if paused else "Started the queue")
         # Queue tab Start is always user-initiated → bypass feed backoff.
         self._shows_tab().start_check(force=True)
         self._update_btns()
 
     def _pause(self):
+        log_activity("Paused the queue")
         self._shows_tab()._pause()
         self._update_btns()
 
@@ -243,6 +276,7 @@ class QueueTab(QWidget):
         # Dual-stage: graceful first, force on the second click.
         if not self._stop_pressed_once:
             self._stop_pressed_once = True
+            log_activity("Stopping the queue (graceful — finishing the current episode)")
             self._shows_tab()._stop()
             self.stop_btn.setText("Stop now (force)")
             self.stop_btn.setEnabled(True)  # keep clickable for the force step
@@ -252,6 +286,7 @@ class QueueTab(QWidget):
         # Then terminate the worker QThread as a last resort.
         self._stop_pressed_once = False
         self.stop_btn.setText("Stop")
+        log_activity("Force-stopped the queue (killed running whisper-cli / yt-dlp)")
         try:
             import subprocess
 
@@ -297,12 +332,38 @@ class QueueTab(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+        # Snapshot before clearing so the action is undoable (9.5).
+        snapshot = self.ctx.state.snapshot_statuses(
+            ["pending", "downloading", "downloaded", "transcribing"]
+        )
         moved = self.ctx.state.clear_pending()
+
+        def _undo() -> None:
+            self.ctx.state.restore_statuses(snapshot)
+            self._last_table_refresh = 0.0
+            self.refresh()
+
+        from ui.undo import manager as undo_manager
+
+        undo_manager.push(f"Cleared the queue ({moved} episode(s))", _undo)
+        log_activity(f"Cleared the queue ({moved} episode(s) marked done) — Undo available (⌘Z)")
         self._last_table_refresh = 0.0
         self.refresh()
         QMessageBox.information(
             self, "Queue cleared", f"{moved} episode(s) removed from the queue."
         )
+
+    def _on_order_changed(self, _idx: int) -> None:
+        """Persist the chosen queue order; the worker reads it on the next claim."""
+        value = self.order_combo.currentData() or "oldest_first"
+        if getattr(self.ctx.settings, "queue_order", "oldest_first") == value:
+            return
+        self.ctx.settings.queue_order = value
+        try:
+            self.ctx.settings.save(self.ctx.data_dir / "settings.yaml")
+        except Exception:
+            pass
+        log_activity(f"Queue order set to {value}")
 
     def _update_btns(self):
         from core.queue_status import queue_ui_state
@@ -422,7 +483,10 @@ class QueueTab(QWidget):
             rows = c.execute(
                 "SELECT show_slug, pub_date, title, status, guid, duration_sec "
                 "FROM episodes "
-                "WHERE status IN ('pending','downloading','downloaded','transcribing') "
+                # 'paused' rows stay visible in the queue but the worker never
+                # claims them (its claim query is status='pending').
+                "WHERE status IN "
+                "('pending','downloading','downloaded','transcribing','paused') "
                 # Default sort = pipeline-stage order so the user sees
                 # whatever's actively burning CPU at the top:
                 #   transcribing → downloading → downloaded → pending.
@@ -438,10 +502,15 @@ class QueueTab(QWidget):
                 "    WHEN 'transcribing' THEN 0 "
                 "    WHEN 'downloading'  THEN 1 "
                 "    WHEN 'downloaded'   THEN 2 "
+                "    WHEN 'paused'       THEN 4 "  # deactivated → sink below active
                 "    ELSE 3 "
                 "  END, "
                 "  priority DESC, pub_date ASC"
             ).fetchall()
+        # Preserve the user's row selection across this periodic rebuild — the
+        # table is wiped + repopulated, which would otherwise silently drop it
+        # after a few seconds even though the user hasn't clicked away.
+        selected_guids = set(self._selected_guids())
         # Sorting must be off during repopulation — Qt re-sorts on every
         # setItem when enabled, scrambling row indices and leaving cells
         # past column 0 empty. Restore at the end.
@@ -500,6 +569,27 @@ class QueueTab(QWidget):
                 self.table.setItem(row, 7, _SortKeyItem("—", float("inf")))
         # Restore click-to-sort after the bulk insertion completes.
         self.table.setSortingEnabled(was_sorting)
+        empty = self.table.rowCount() == 0
+        self.empty_state.setVisible(empty)
+        self.table.setVisible(not empty)
+        if selected_guids:
+            self._reselect_guids(selected_guids)
+
+    def _reselect_guids(self, guids: set[str]) -> None:
+        """Re-apply a row selection (by guid) after the table was rebuilt."""
+        model = self.table.model()
+        last_col = self.table.columnCount() - 1
+        sel = QItemSelection()
+        for row in range(self.table.rowCount()):
+            it = self.table.item(row, 0)
+            g = it.data(Qt.ItemDataRole.UserRole) if it is not None else None
+            if g in guids:
+                sel.select(model.index(row, 0), model.index(row, last_col))
+        if not sel.isEmpty():
+            self.table.selectionModel().select(
+                sel,
+                QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+            )
 
     # ── status column 3-way sort ──────────────────────────────
 
@@ -535,6 +625,18 @@ class QueueTab(QWidget):
 
     # ── context menu ──────────────────────────────────────────
 
+    def _selected_guids(self) -> list[str]:
+        """Guids of every selected row (stashed on the col-0 item's UserRole)."""
+        guids: list[str] = []
+        seen: set[str] = set()
+        for idx in self.table.selectionModel().selectedRows():
+            it = self.table.item(idx.row(), 0)
+            g = it.data(Qt.ItemDataRole.UserRole) if it is not None else None
+            if g and g not in seen:
+                seen.add(g)
+                guids.append(g)
+        return guids
+
     def _on_context_menu(self, pos) -> None:
         index = self.table.indexAt(pos)
         if not index.isValid():
@@ -545,29 +647,111 @@ class QueueTab(QWidget):
         guid = item.data(Qt.ItemDataRole.UserRole)
         if not guid:
             return
+        # Act on the WHOLE selection when the right-clicked row is part of it;
+        # otherwise act on just the row under the cursor.
+        selected = self._selected_guids()
+        guids = selected if guid in selected else [guid]
         status_item = self.table.item(index.row(), 4)
         status = status_item.text() if status_item is not None else ""
+        is_paused = status.lower().startswith("paused")
+        sfx = f" ({len(guids)})" if len(guids) > 1 else ""
         menu = QMenu(self)
         menu.addAction(
-            "Re-transcribe this episode",
-            lambda g=guid: self._retranscribe(g),
+            f"Re-transcribe{sfx}",
+            lambda gs=guids: self._retranscribe(gs),
         )
         if can_bump(status):
             menu.addSeparator()
+            menu.addAction(f"Run next{sfx}", lambda gs=guids: self._bump(gs, PRIORITY_RUN_NEXT))
+            menu.addAction(f"Run now{sfx}", lambda gs=guids: self._bump(gs, PRIORITY_RUN_NOW))
+            menu.addAction(f"Move to top of queue{sfx}", lambda gs=guids: self._move_to_top(gs))
             menu.addAction(
-                "Run next",
-                lambda g=guid: self._bump(g, PRIORITY_RUN_NEXT),
+                f"Move to bottom of queue{sfx}", lambda gs=guids: self._move_to_bottom(gs)
             )
+        menu.addSeparator()
+        if is_paused:
             menu.addAction(
-                "Run now",
-                lambda g=guid: self._bump(g, PRIORITY_RUN_NOW),
+                f"Activate (resume in queue){sfx}",
+                lambda gs=guids: self._set_episode_status(gs, EpisodeStatus.PENDING),
             )
+        else:
+            menu.addAction(
+                f"Deactivate (keep in queue, don't process){sfx}",
+                lambda gs=guids: self._set_episode_status(gs, EpisodeStatus.PAUSED),
+            )
+        menu.addSeparator()
+        menu.addAction(f"Pause download{sfx}", lambda gs=guids: self._set_download_paused(gs, True))
+        menu.addAction(
+            f"Resume download{sfx}", lambda gs=guids: self._set_download_paused(gs, False)
+        )
+        menu.addAction(
+            f"Remove from queue{sfx}",
+            lambda gs=guids: self._remove_from_queue(gs),
+        )
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
-    def _retranscribe(self, guid: str) -> None:
-        retranscribe_episode(self.ctx, guid)
-        # Kick the worker so the bumped re-transcribe runs next instead
-        # of waiting for the next scheduled pass.
+    def _set_download_paused(self, guids: list[str], paused: bool) -> None:
+        """Set/clear the per-download pause flag (2.4). A paused in-flight
+        download halts (leaving a .part) and parks the episode as PAUSED; resume
+        clears the flag and re-queues it (PENDING) so it continues from the .part."""
+        for g in guids:
+            self.ctx.state.set_meta(f"download_paused:{g}", "1" if paused else "0")
+            if not paused:
+                # Only un-park episodes parked by a pause; never disturb others.
+                ep = self.ctx.state.get_episode(g)
+                if ep and ep.get("status") == EpisodeStatus.PAUSED.value:
+                    self.ctx.state.set_status(g, EpisodeStatus.PENDING)
+        verb = "Paused" if paused else "Resumed"
+        log_activity(f"{verb} download for {len(guids)} episode(s)")
+        self._last_table_refresh = 0.0
+        self.refresh()
+
+    def _move_to_top(self, guids: list[str]) -> None:
+        """Persist a stable manual order for the selected episodes at the top of
+        the queue (2.1) via priority, then refresh."""
+        self.ctx.state.set_priorities(list(guids))
+        log_activity(f"Moved {len(guids)} episode(s) to the top of the queue")
+        self._last_table_refresh = 0.0
+        self.refresh()
+
+    def _move_to_bottom(self, guids: list[str]) -> None:
+        """Sink the selected episodes below everything else in the queue (2.1)."""
+        self.ctx.state.move_to_bottom(list(guids))
+        log_activity(f"Moved {len(guids)} episode(s) to the bottom of the queue")
+        self._last_table_refresh = 0.0
+        self.refresh()
+
+    def _set_episode_status(self, guids: list[str], status: EpisodeStatus) -> None:
+        """Flip status (e.g. pending↔paused) on every given episode; refresh once."""
+        for g in guids:
+            self.ctx.state.set_status(g, status)
+        if status == EpisodeStatus.PAUSED:
+            verb = "Deactivated"
+        elif status == EpisodeStatus.PENDING:
+            verb = "Reactivated"
+        else:
+            verb = f"Set to {status.value}:"
+        log_activity(f"{verb} {len(guids)} episode(s) in the queue")
+        self._last_table_refresh = 0.0
+        self.refresh()
+
+    def _remove_from_queue(self, guids: list[str]) -> None:
+        """Soft-delete from the queue: mark each episode ``skipped`` so it leaves
+        the active queue and the daily feed-poll won't re-queue it (upsert
+        preserves status). They stay in the per-show episode browser as
+        ``skipped`` and can be re-queued from there."""
+        for g in guids:
+            self.ctx.state.set_status(g, EpisodeStatus.SKIPPED)
+        log_activity(f"Removed {len(guids)} episode(s) from the queue")
+        self._last_table_refresh = 0.0
+        self.refresh()
+
+    def _retranscribe(self, guids: list[str]) -> None:
+        for g in guids:
+            retranscribe_episode(self.ctx, g)
+        log_activity(f"Re-queued {len(guids)} episode(s) for transcription")
+        # Kick the worker so the bumped re-transcribes run next instead of
+        # waiting for the next scheduled pass.
         try:
             self._shows_tab().start_check(force=True)
         except Exception:
@@ -575,8 +759,9 @@ class QueueTab(QWidget):
         self._last_table_refresh = 0.0
         self.refresh()
 
-    def _bump(self, guid: str, priority: int) -> None:
-        bump_priority(self.ctx, guid, priority)
+    def _bump(self, guids: list[str], priority: int) -> None:
+        for g in guids:
+            bump_priority(self.ctx, g, priority)
         # Kick the worker so the bump takes effect immediately. Without
         # this, the priority is set in SQL but the worker only re-queries
         # on its next scheduled pass.

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -36,6 +37,22 @@ class _NoScrollFilter(QObject):
         if event.type() == QEvent.Type.Wheel:
             return True  # consumed; don't step the value
         return False
+
+
+class _SmartTimeEdit(QTimeEdit):
+    """QTimeEdit that selects the whole clicked section (both hour digits or
+    both minute digits) on click, so the user can overwrite it immediately —
+    and on focus selects the hour section by default."""
+
+    def mousePressEvent(self, event):  # noqa: N802 — Qt API
+        super().mousePressEvent(event)
+        # currentSection() reflects where the click landed → select all of it.
+        self.setSelectedSection(self.currentSection())
+
+    def focusInEvent(self, event):  # noqa: N802 — Qt API
+        super().focusInEvent(event)
+        self.setCurrentSection(QTimeEdit.Section.HourSection)
+        self.setSelectedSection(QTimeEdit.Section.HourSection)
 
 
 class _FieldContainer(QWidget):
@@ -202,6 +219,7 @@ class SettingsPane(QWidget):
         wf_pick = QPushButton("Browse…")
         wf_pick.clicked.connect(self._pick_watch_folder)
         wf_row.addWidget(wf_pick)
+        wf_row.addWidget(self._finder_button(self.watch_folder_root.text))
         self._add_field(
             f_local,
             "Folder path",
@@ -223,7 +241,10 @@ class SettingsPane(QWidget):
             if self.watch_folder_post_combo.itemData(i) == _cur_post:
                 self.watch_folder_post_combo.setCurrentIndex(i)
                 break
-        self.watch_folder_post_combo.currentIndexChanged.connect(self._schedule_save)
+        # Remember the prior value so switching → "move" can offer a one-time
+        # retroactive sweep of already-transcribed sources.
+        self._prev_watch_post = _cur_post
+        self.watch_folder_post_combo.currentIndexChanged.connect(self._on_watch_post_changed)
         self._add_field(
             f_local,
             "After transcribing",
@@ -259,6 +280,7 @@ class SettingsPane(QWidget):
         pick = QPushButton("Browse…")
         pick.clicked.connect(self._pick_dir)
         pick_row.addWidget(pick)
+        pick_row.addWidget(self._finder_button(self.output.text))
         self._add_field(
             f1,
             "Output root",
@@ -274,6 +296,7 @@ class SettingsPane(QWidget):
         exp_pick = QPushButton("Browse…")
         exp_pick.clicked.connect(self._pick_export)
         exp_row.addWidget(exp_pick)
+        exp_row.addWidget(self._finder_button(self.export_root.text))
         self._add_field(f1, "Export ZIP target", self._row_widget(exp_row))
 
         self.obsidian_path = QLineEdit(self.ctx.settings.obsidian_vault_path)
@@ -291,6 +314,7 @@ class SettingsPane(QWidget):
         kb_pick = QPushButton("Browse…")
         kb_pick.clicked.connect(self._pick_kb_root)
         kb_row.addWidget(kb_pick)
+        kb_row.addWidget(self._finder_button(self.kb_root.text))
         kb_hint, kb_kind = self._kb_root_hint(self.kb_root.text())
         self._add_field(
             f1,
@@ -312,12 +336,16 @@ class SettingsPane(QWidget):
         _pick = QPushButton("Pick…")
         _pick.clicked.connect(self._pick_obsidian)
         obs_row.addWidget(_pick)
+        obs_row.addWidget(self._finder_button(self.obsidian_path.text))
         self._add_field(obsidian_form, "Vault path", self._row_widget(obs_row))
         self._add_field(obsidian_form, "Vault name", self.obsidian_name)
         self.obsidian_preview = QLabel("")
         self.obsidian_preview.setObjectName("obsidian_preview")
         self.obsidian_preview.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
         self.obsidian_preview.setWordWrap(True)
+        self.obsidian_preview.setTextFormat(Qt.TextFormat.RichText)
+        self.obsidian_preview.setOpenExternalLinks(False)
+        self.obsidian_preview.linkActivated.connect(self._on_path_link)
         self._add_field(obsidian_form, "", self.obsidian_preview)
         root.addLayout(obsidian_form)
 
@@ -352,6 +380,179 @@ class SettingsPane(QWidget):
         formats_hint.setWordWrap(True)
         root.addWidget(formats_hint)
 
+        # ── Processing & reliability (roadmap) ─────────────────
+        root.addWidget(_section("Processing & reliability"))
+
+        self.confidence_marking_cb = QCheckBox("Mark low-confidence words in transcripts")
+        self.confidence_marking_cb.setObjectName("confidence_marking_checkbox")
+        self.confidence_marking_cb.setChecked(
+            bool(getattr(self.ctx.settings, "confidence_marking_enabled", False))
+        )
+        self.confidence_marking_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.confidence_marking_cb)
+
+        self.diarization_cb = QCheckBox("Label speakers (diarization — needs sherpa-onnx + models)")
+        self.diarization_cb.setObjectName("diarization_checkbox")
+        self.diarization_cb.setChecked(
+            bool(getattr(self.ctx.settings, "diarization_enabled", False))
+        )
+        self.diarization_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.diarization_cb)
+
+        conf_hint = QLabel(
+            "<span style='color: palette(placeholder-text); font-size: 11px;'>"
+            "Asks whisper for per-word confidence and wraps shaky words in "
+            "<code>==highlight==</code> (Obsidian) so you can spot likely "
+            "mis-hearings. Slightly slower; off by default.</span>"
+        )
+        conf_hint.setWordWrap(True)
+        root.addWidget(conf_hint)
+
+        self.use_etag_cache_cb = QCheckBox(
+            "Use conditional feed fetches (ETag / If-Modified-Since)"
+        )
+        self.use_etag_cache_cb.setObjectName("use_etag_cache_checkbox")
+        self.use_etag_cache_cb.setChecked(bool(getattr(self.ctx.settings, "use_etag_cache", True)))
+        self.use_etag_cache_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.use_etag_cache_cb)
+
+        etag_hint = QLabel(
+            "<span style='color: palette(placeholder-text); font-size: 11px;'>"
+            "Skips re-downloading a feed the server says is unchanged. Turn off "
+            "to always re-fetch in full (useful when a feed mis-reports caching)."
+            "</span>"
+        )
+        etag_hint.setWordWrap(True)
+        root.addWidget(etag_hint)
+
+        self.disk_guard_cb = QCheckBox("Auto-pause the queue when free disk space runs low")
+        self.disk_guard_cb.setObjectName("disk_guard_checkbox")
+        self.disk_guard_cb.setChecked(bool(getattr(self.ctx.settings, "disk_guard_enabled", True)))
+        self.disk_guard_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.disk_guard_cb)
+
+        _dg_form = QFormLayout()
+        self.disk_guard_min_gb = QSpinBox()
+        self.disk_guard_min_gb.setRange(1, 500)
+        self.disk_guard_min_gb.setSuffix(" GB")
+        self.disk_guard_min_gb.setValue(
+            int(getattr(self.ctx.settings, "disk_guard_min_free_gb", 5))
+        )
+        self.disk_guard_min_gb.valueChanged.connect(self._schedule_save)
+        self._add_field(
+            _dg_form,
+            "Minimum free space",
+            self.disk_guard_min_gb,
+            hint="The queue auto-pauses before work when free space drops below this.",
+            hint_kind="info",
+        )
+        _dg_holder = QWidget()
+        _dg_holder.setLayout(_dg_form)
+        root.addWidget(_dg_holder)
+
+        # Processing windows (2.3): only run inside these time windows.
+        self.processing_windows_cb = QCheckBox("Only process during set time windows")
+        self.processing_windows_cb.setObjectName("processing_windows_checkbox")
+        self.processing_windows_cb.setChecked(
+            bool(getattr(self.ctx.settings, "processing_windows_enabled", False))
+        )
+        self.processing_windows_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.processing_windows_cb)
+
+        _pw_form = QFormLayout()
+        self.processing_windows_edit = QLineEdit(
+            ", ".join(getattr(self.ctx.settings, "processing_windows", []) or [])
+        )
+        self.processing_windows_edit.setPlaceholderText("e.g. 22:00-06:00, 13:00-14:00")
+        self.processing_windows_edit.textChanged.connect(self._schedule_save)
+        self._add_field(
+            _pw_form,
+            "Windows",
+            self.processing_windows_edit,
+            hint="Comma-separated HH:MM-HH:MM ranges (midnight wrap allowed). Empty = always.",
+            hint_kind="info",
+        )
+        _pw_holder = QWidget()
+        _pw_holder.setLayout(_pw_form)
+        root.addWidget(_pw_holder)
+
+        # Battery budget (8.4): drop to a gentler load level on battery.
+        self.whisper_metal_cb = QCheckBox("Use GPU (Metal) acceleration for whisper")
+        self.whisper_metal_cb.setObjectName("whisper_metal_checkbox")
+        self.whisper_metal_cb.setChecked(
+            bool(getattr(self.ctx.settings, "whisper_metal_enabled", True))
+        )
+        self.whisper_metal_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.whisper_metal_cb)
+
+        metal_hint = QLabel(
+            "<span style='color: palette(placeholder-text); font-size: 11px;'>"
+            "Metal is built into whisper.cpp and on by default; turn off to force "
+            "CPU-only (slower, but useful for debugging GPU issues).</span>"
+        )
+        metal_hint.setWordWrap(True)
+        root.addWidget(metal_hint)
+
+        # Parallel transcription cap (2.2). >1 runs that many whisper workers.
+        _tc_form = QFormLayout()
+        self.transcribe_concurrency_spin = QSpinBox()
+        self.transcribe_concurrency_spin.setRange(1, 8)
+        self.transcribe_concurrency_spin.setValue(
+            int(getattr(self.ctx.settings, "transcribe_concurrency", 1) or 1)
+        )
+        self.transcribe_concurrency_spin.valueChanged.connect(self._schedule_save)
+        self._add_field(
+            _tc_form,
+            "Parallel transcriptions",
+            self.transcribe_concurrency_spin,
+            hint=(
+                "How many episodes to transcribe at once. 1 is safest; raise only "
+                "on a many-core Mac with plenty of RAM (whisper is already "
+                "multi-threaded, so >1 can oversubscribe the CPU/GPU)."
+            ),
+            hint_kind="info",
+        )
+        _tc_holder = QWidget()
+        _tc_holder.setLayout(_tc_form)
+        root.addWidget(_tc_holder)
+
+        self.pause_queue_on_battery_cb = QCheckBox(
+            "Pause the whole queue while on battery (resume when plugged in)"
+        )
+        self.pause_queue_on_battery_cb.setObjectName("pause_queue_on_battery_checkbox")
+        self.pause_queue_on_battery_cb.setChecked(
+            bool(getattr(self.ctx.settings, "pause_queue_on_battery", False))
+        )
+        self.pause_queue_on_battery_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.pause_queue_on_battery_cb)
+
+        self.pause_on_battery_cb = QCheckBox("Ease off CPU/RAM when running on battery")
+        self.pause_on_battery_cb.setObjectName("pause_on_battery_checkbox")
+        self.pause_on_battery_cb.setChecked(
+            bool(getattr(self.ctx.settings, "pause_on_battery", False))
+        )
+        self.pause_on_battery_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.pause_on_battery_cb)
+
+        _bat_form = QFormLayout()
+        self.battery_load_combo = QComboBox()
+        for _lbl, _val in (("Quiet", "quiet"), ("Balanced", "balanced"), ("Full", "full")):
+            self.battery_load_combo.addItem(_lbl, _val)
+        _cur_bat = getattr(self.ctx.settings, "battery_load_level", "quiet")
+        _bat_idx = self.battery_load_combo.findData(_cur_bat)
+        self.battery_load_combo.setCurrentIndex(_bat_idx if _bat_idx >= 0 else 0)
+        self.battery_load_combo.currentIndexChanged.connect(self._schedule_save)
+        self._add_field(
+            _bat_form,
+            "Load level on battery",
+            self.battery_load_combo,
+            hint="Used while unplugged when the option above is on.",
+            hint_kind="info",
+        )
+        _bat_holder = QWidget()
+        _bat_holder.setLayout(_bat_form)
+        root.addWidget(_bat_holder)
+
         # ── YouTube ────────────────────────────────────────────
         # Visible only when Sources → YouTube channels is checked. The
         # whole group hides/shows live as the Sources toggle flips.
@@ -379,6 +580,28 @@ class SettingsPane(QWidget):
                 "Used when adding a new YouTube channel — pre-fills the show's "
                 "language. Caption fetch tries this language first, then English, "
                 "then any other manual sub the video has."
+            ),
+            hint_kind="info",
+        )
+        # Caption fallback mode (3.4): how the YouTube caption chain resolves.
+        self.caption_fallback_combo = QComboBox()
+        self.caption_fallback_combo.setObjectName("caption_fallback_combo")
+        self.caption_fallback_combo.addItem("Manual captions → whisper", "manual_whisper")
+        self.caption_fallback_combo.addItem(
+            "Manual → auto captions → whisper", "manual_auto_whisper"
+        )
+        _cur_cfb = getattr(self.ctx.settings, "caption_fallback_mode", "manual_whisper")
+        _cfb_idx = self.caption_fallback_combo.findData(_cur_cfb)
+        self.caption_fallback_combo.setCurrentIndex(_cfb_idx if _cfb_idx >= 0 else 0)
+        self.caption_fallback_combo.currentIndexChanged.connect(self._schedule_save)
+        self._add_field(
+            yt_form,
+            "Caption fallback",
+            self.caption_fallback_combo,
+            hint=(
+                "How a YouTube transcript is sourced. Auto captions are machine-"
+                "generated and lower quality, but avoid a full whisper run. A "
+                "show set to 'Always whisper' ignores this."
             ),
             hint_kind="info",
         )
@@ -413,7 +636,15 @@ class SettingsPane(QWidget):
         # ── Schedule & monitoring ──────────────────────────────
         root.addWidget(_section("Schedule & monitoring"))
         f2 = QFormLayout()
-        self.time = QTimeEdit(QTime.fromString(self.ctx.settings.daily_check_time, "HH:mm"))
+        self.time = _SmartTimeEdit(QTime.fromString(self.ctx.settings.daily_check_time, "HH:mm"))
+        # Display follows the OS clock style (12h AM/PM vs 24h); stored value
+        # stays canonical HH:mm. The AM/PM marker is editable in 12h mode.
+        from PyQt6.QtCore import QLocale
+
+        from core.timefmt import display_format, uses_ampm
+
+        _ampm = uses_ampm(QLocale.system().timeFormat(QLocale.FormatType.ShortFormat))
+        self.time.setDisplayFormat(display_format(_ampm))
         self.time.timeChanged.connect(self._schedule_save)
         time_row = QHBoxLayout()
         time_row.addWidget(self.time)
@@ -513,6 +744,24 @@ class SettingsPane(QWidget):
         self.notify_mode.setCurrentIndex(idx)
         self.notify_mode.currentIndexChanged.connect(self._schedule_save)
         self._add_field(f3, "Notification frequency", self.notify_mode)
+
+        # Quiet hours (7.4): suppress notifications within a daily window.
+        self.quiet_hours_cb = QCheckBox("Silence notifications during quiet hours")
+        self.quiet_hours_cb.setChecked(
+            bool(getattr(self.ctx.settings, "notify_quiet_hours_enabled", False))
+        )
+        self.quiet_hours_cb.toggled.connect(self._schedule_save)
+        self._add_field(f3, "Quiet hours", self.quiet_hours_cb)
+        self.quiet_start = QLineEdit(
+            getattr(self.ctx.settings, "notify_quiet_hours_start", "22:00")
+        )
+        self.quiet_start.setPlaceholderText("HH:MM")
+        self.quiet_start.textChanged.connect(self._schedule_save)
+        self._add_field(f3, "Quiet from", self.quiet_start)
+        self.quiet_end = QLineEdit(getattr(self.ctx.settings, "notify_quiet_hours_end", "08:00"))
+        self.quiet_end.setPlaceholderText("HH:MM")
+        self.quiet_end.textChanged.connect(self._schedule_save)
+        self._add_field(f3, "Quiet until", self.quiet_end)
         root.addLayout(f3)
 
         # ── Transcription engine ───────────────────────────────
@@ -525,6 +774,11 @@ class SettingsPane(QWidget):
         self.model.setCurrentText(self.ctx.settings.whisper_model)
         self.model.currentTextChanged.connect(self._on_model_changed)
         model_row.addWidget(self.model)
+        # Model auto-pick (8.1): suggest a model for this machine's class.
+        _autopick = QPushButton("Auto-pick")
+        _autopick.setToolTip("Pick a whisper model suited to this Mac's RAM + cores")
+        _autopick.clicked.connect(self._autopick_model)
+        model_row.addWidget(_autopick)
         self.model_status = QLabel()
         self.model_status.setStyleSheet(f"color: {_theme_tokens()['ink_3']}; font-style: italic;")
         model_row.addWidget(self.model_status, stretch=1)
@@ -699,6 +953,35 @@ class SettingsPane(QWidget):
         copy_btn.clicked.connect(lambda: self._copy_agent_prompt_with_feedback(copy_btn))
         root.addWidget(copy_btn)
 
+        # Webhooks (10.1): one per line as `events|kind|target`
+        # (events comma-separated; kind = command|post). Edited in the GUI here;
+        # the same list is what `settings.yaml`/the bus dispatcher consume.
+        self.webhooks_enabled_cb = QCheckBox("Enable event webhooks")
+        self.webhooks_enabled_cb.setChecked(
+            bool(getattr(self.ctx.settings, "webhooks_enabled", False))
+        )
+        self.webhooks_enabled_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.webhooks_enabled_cb)
+        self.webhooks_edit = QPlainTextEdit()
+        self.webhooks_edit.setPlaceholderText(
+            "episode.transcribed,episode.failed|post|https://example.com/hook\n"
+            "run.finished|command|/path/to/script.sh"
+        )
+        self.webhooks_edit.setPlainText(
+            self._webhooks_to_text(getattr(self.ctx.settings, "webhooks", []))
+        )
+        self.webhooks_edit.setFixedHeight(80)
+        self.webhooks_edit.textChanged.connect(self._schedule_save)
+        root.addWidget(
+            QLabel(
+                "<span style='color: palette(placeholder-text); font-size: 11px;'>"
+                "One webhook per line: <code>events|kind|target</code> — events "
+                "comma-separated (or blank = all), kind = command|post. POST "
+                "targets are SSRF-guarded.</span>"
+            )
+        )
+        root.addWidget(self.webhooks_edit)
+
         # ── Setup guide ────────────────────────────────────────
         # Mirrors the Help → Re-run setup guide… menu entry. Two entry
         # points because users go looking in Settings for "change my
@@ -774,6 +1057,58 @@ class SettingsPane(QWidget):
         if d:
             self.watch_folder_root.setText(d)
 
+    def _on_watch_post_changed(self) -> None:
+        """Persist the new 'After transcribing' choice and, when switching TO
+        'move', offer to retroactively move sources transcribed so far."""
+        new_post = self.watch_folder_post_combo.currentData() or "keep"
+        prev = getattr(self, "_prev_watch_post", "keep")
+        self._prev_watch_post = new_post
+        self._schedule_save()
+        if new_post == "move" and prev != "move":
+            self._offer_retroactive_move()
+
+    def _offer_retroactive_move(self) -> None:
+        """Ask whether to move already-transcribed sources into done/ now."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        root = (self.watch_folder_root.text() or "").strip()
+        if not root:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Move existing sources?")
+        box.setText(
+            "Move files that were already transcribed into the <code>done/</code> folder as well?"
+        )
+        box.setInformativeText(
+            "Yes — tidy up everything transcribed so far.\n"
+            "No — only move files transcribed from now on."
+        )
+        yes = box.addButton("Move existing (recommended)", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Only new", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(yes)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        self._run_retroactive_move(root)
+
+    def _run_retroactive_move(self, root: str) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        from core.watch_post import apply_post_action, collect_retroactive
+
+        slugs = [s.slug for s in getattr(self.ctx.watchlist, "shows", [])]
+        pairs = collect_retroactive(self.ctx.state, slugs, root)
+        moved = 0
+        for _guid, path in pairs:
+            if apply_post_action(path, "move", root) is not None:
+                moved += 1
+        QMessageBox.information(
+            self,
+            "Done",
+            f"Moved {moved} already-transcribed source file(s) into done/.",
+        )
+
     def _pick_obsidian(self):
         start = self._default_picker_dir(self.obsidian_path.text())
         d = QFileDialog.getExistingDirectory(self, "Pick Obsidian vault", start)
@@ -781,12 +1116,32 @@ class SettingsPane(QWidget):
             self.obsidian_path.setText(d)
             self.obsidian_name.setText(Path(d).name)
 
+    def _on_path_link(self, href: str) -> None:
+        """linkActivated handler for any displayed-path link → reveal in Finder."""
+        from core.reveal import reveal_in_finder
+
+        reveal_in_finder(href)
+
+    def _path_link_html(self, path: str) -> str:
+        """A clickable Finder link for a displayed path (rich-text anchor)."""
+        import html
+
+        safe = html.escape(path)
+        return f'<a href="{safe}" style="color: palette(link);">{safe}</a>'
+
     def _refresh_obsidian_preview(self) -> None:
         """Update the 'where transcripts land' preview line under the
         Obsidian group box. Keeps the user anchored when they flip
-        between paths / vault names."""
-        path = self.output.text() or "<no output folder set>"
-        self.obsidian_preview.setText(f"Transcripts will be written to: {path}")
+        between paths / vault names. The path is a clickable Finder link."""
+        path = self.output.text() or ""
+        if path:
+            self.obsidian_preview.setText(
+                f"Transcripts will be written to: {self._path_link_html(path)}"
+            )
+        else:
+            self.obsidian_preview.setText(
+                "Transcripts will be written to: &lt;no output folder set&gt;"
+            )
 
     def _pick_export(self):
         start = self._default_picker_dir(self.export_root.text())
@@ -945,6 +1300,14 @@ class SettingsPane(QWidget):
         self._drift_label.setStyleSheet(f"color: {tokens['ok']}; font-size: 11px;")
         self._drift_button.setVisible(False)
 
+    def _autopick_model(self) -> None:
+        """Set the model combo to the recommendation for this machine (8.1)."""
+        from core.hw import detect, recommend_model
+
+        mem_gb, cores = detect()
+        rec = recommend_model(cores=cores or 4, ram_gb=mem_gb or 8.0)
+        self.model.setCurrentText(rec)
+
     def _on_model_changed(self, text: str) -> None:
         self._schedule_save()
         self._update_model_status()
@@ -1077,10 +1440,30 @@ class SettingsPane(QWidget):
         s.notify_mode = self.notify_mode.currentData() or "per_episode"
         s.log_retention_days = self.log_retention.value()
         s.save_srt = self.save_srt_cb.isChecked()
+        s.confidence_marking_enabled = self.confidence_marking_cb.isChecked()
+        s.diarization_enabled = self.diarization_cb.isChecked()
+        s.use_etag_cache = self.use_etag_cache_cb.isChecked()
+        s.disk_guard_enabled = self.disk_guard_cb.isChecked()
+        s.disk_guard_min_free_gb = int(self.disk_guard_min_gb.value())
+        s.whisper_metal_enabled = self.whisper_metal_cb.isChecked()
+        s.transcribe_concurrency = int(self.transcribe_concurrency_spin.value())
+        s.pause_on_battery = self.pause_on_battery_cb.isChecked()
+        s.pause_queue_on_battery = self.pause_queue_on_battery_cb.isChecked()
+        s.battery_load_level = self.battery_load_combo.currentData() or "quiet"
+        s.notify_quiet_hours_enabled = self.quiet_hours_cb.isChecked()
+        s.notify_quiet_hours_start = self.quiet_start.text().strip() or "22:00"
+        s.notify_quiet_hours_end = self.quiet_end.text().strip() or "08:00"
+        s.webhooks_enabled = self.webhooks_enabled_cb.isChecked()
+        s.webhooks = self._text_to_webhooks(self.webhooks_edit.toPlainText())
+        s.processing_windows_enabled = self.processing_windows_cb.isChecked()
+        s.processing_windows = [
+            w.strip() for w in self.processing_windows_edit.text().split(",") if w.strip()
+        ]
         s.sources_podcasts = self.podcasts_checkbox.isChecked()
         s.sources_youtube = self.youtube_checkbox.isChecked()
         s.show_log_dock = self.show_log_dock_cb.isChecked()
         s.youtube_default_language = self.yt_default_lang_combo.currentData() or "de"
+        s.caption_fallback_mode = self.caption_fallback_combo.currentData() or "manual_whisper"
         s.watch_folder_enabled = self.watch_folder_enabled_cb.isChecked()
         s.watch_folder_root = self.watch_folder_root.text()
         s.watch_folder_post = self.watch_folder_post_combo.currentData() or "keep"
@@ -1137,12 +1520,53 @@ class SettingsPane(QWidget):
         v.addWidget(h)
         form.addRow(label, container)
 
+    @staticmethod
+    def _webhooks_to_text(webhooks: list) -> str:
+        """Render the webhooks list as one `events|kind|target` line each."""
+        lines = []
+        for wh in webhooks or []:
+            events = ",".join(wh.get("events", []) or [])
+            lines.append(f"{events}|{wh.get('kind', 'post')}|{wh.get('target', '')}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _text_to_webhooks(text: str) -> list:
+        """Parse `events|kind|target` lines back into the webhooks list."""
+        out = []
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("|")
+            if len(parts) < 3:
+                continue
+            events = [e.strip() for e in parts[0].split(",") if e.strip()]
+            out.append(
+                {
+                    "events": events,
+                    "kind": parts[1].strip() or "post",
+                    "target": parts[2].strip(),
+                    "enabled": True,
+                }
+            )
+        return out
+
     def _row_widget(self, layout) -> QWidget:
         """Wrap an HBox layout in a QWidget so it can be added via _add_field."""
         w = QWidget()
         layout.setContentsMargins(0, 0, 0, 0)
         w.setLayout(layout)
         return w
+
+    def _finder_button(self, getter) -> QPushButton:
+        """An 'Open in Finder' button that reveals the path returned by ``getter``
+        (a callable, e.g. ``line_edit.text``) — sits next to every Browse button."""
+        from core.reveal import reveal_in_finder
+
+        btn = QPushButton("Open in Finder")
+        btn.setToolTip("Reveal this folder in Finder")
+        btn.clicked.connect(lambda: reveal_in_finder(getter() if callable(getter) else getter))
+        return btn
 
     def _kb_root_hint(self, path: str):
         """Return (hint, kind) for the knowledge-hub root field."""
@@ -1213,6 +1637,11 @@ class SettingsPane(QWidget):
             "&nbsp;• <b>priority &lt;guid&gt; &lt;N&gt;</b> — set explicit priority<br>"
             "&nbsp;• <b>run-next &lt;guid&gt;</b> — bump to priority=100<br>"
             "&nbsp;• <b>retranscribe &lt;guid&gt;</b> — status=pending + priority=100<br>"
+            "&nbsp;• <b>deactivate &lt;guid&gt;</b> / <b>activate &lt;guid&gt;</b> — "
+            "pause one episode (status=paused: stays in the queue but is never "
+            "processed) / reactivate it<br>"
+            "&nbsp;• <b>dequeue &lt;guid&gt;</b> — remove one episode from the queue "
+            "(status=skipped; the feed-poll won't re-queue it)<br>"
             "&nbsp;• <b>retry-failed [--show X] [--all-time] [--window-hours N]</b> — "
             "re-queue failed eps<br><br>"
             "<b>Show management</b>:<br>"
@@ -1220,6 +1649,29 @@ class SettingsPane(QWidget):
             "&lt;all|recent|last:N|since:YYYY-MM-DD&gt; [--yes]</b> — add a show; "
             "<b>--backlog is required</b> (how much history to transcribe). Never edit "
             "watchlist.yaml directly — the running app overwrites raw file edits.<br>"
+            "&nbsp;&nbsp;&nbsp;Any YouTube URL form is auto-detected "
+            "(<code>source=youtube</code>): <code>/channel/UC…</code>, "
+            "<code>/@handle</code>, <code>/c/Name</code>, <code>/user/Name</code>, a "
+            "bare <code>@handle</code>, or a video URL (adds its channel). The same "
+            "channel can't be added twice. <code>--backlog</code> drives a <b>deep</b> "
+            "channel backfill (the whole archive, not just the RSS window); new "
+            "uploads are then picked up from the channel feed on every check. Each "
+            "video imports the uploader's own subtitle when present (manual only — "
+            "auto-generated captions are never used) and falls back to whisper. "
+            "YouTube-only flags: <code>--captions</code>/<code>--whisper</code> "
+            "(transcript pref) and <code>--skip-shorts</code>/"
+            "<code>--include-shorts</code> (Shorts are excluded by default). Shorts "
+            "are marked <code>skipped</code>; live/premiere videos <code>deferred</code> "
+            "(re-probed on the next daily check); members-only / age-restricted / "
+            "region-locked <code>failed</code> with a specific message. In the GUI, "
+            "the Shows tab has a dedicated <b>Add YouTube Channel…</b> button, and "
+            "double-clicking any show opens the <b>episode browser</b> — every "
+            "episode with status pills, multi-select + Queue selected, Queue all "
+            "since a date, status filters, and (for YouTube) the full back-catalogue "
+            "streamed in as triggerable <b>available</b> rows.<br>"
+            "&nbsp;• <b>backlog &lt;slug&gt; --backlog "
+            "&lt;all|recent|last:N|since:YYYY-MM-DD&gt;</b> — deepen an existing "
+            "YouTube show's history beyond the RSS window and queue the new videos<br>"
             "&nbsp;• <b>enable &lt;slug&gt;</b> / <b>disable &lt;slug&gt;</b><br>"
             "&nbsp;• <b>remove &lt;slug&gt; [-y] [--purge-state]</b> — drop from "
             "watchlist + mark eps done<br>"
@@ -1242,6 +1694,26 @@ class SettingsPane(QWidget):
             "<b>Feed retry</b>:<br>"
             "&nbsp;• <b>retry-feed &lt;slug&gt;</b> — clear backoff + immediate fetch<br>"
             "&nbsp;• <b>retry-all-feeds</b> — same for every feed marked fail<br><br>"
+            "<b>Observability &amp; automation</b>:<br>"
+            "&nbsp;• <b>stats [--json]</b> — throughput / realtime-factor / "
+            "success-rate dashboard<br>"
+            "&nbsp;• <b>logs [--limit N] [--type X] [--json]</b> — query the "
+            "structured event log<br>"
+            "&nbsp;• <b>health</b> — startup self-check (deps / model / disk / data dir)<br>"
+            "&nbsp;• <b>bug-report &lt;file.zip&gt;</b> — redacted diagnostics bundle<br>"
+            "&nbsp;• <b>serve [--port N] [--token T]</b> — localhost JSON API "
+            "(read + queue control)<br>"
+            "&nbsp;• <b>mcp</b> — MCP server over stdio so an LLM client can drive "
+            "the app over the same tool surface (needs the optional "
+            "<code>mcp</code> package)<br>"
+            "&nbsp;• <b>publish &lt;dir&gt;</b> — static searchable transcript site + RSS<br>"
+            "&nbsp;• <b>export &lt;slug&gt; [--format md|json|pdf]</b> — bulk export<br>"
+            "&nbsp;• <b>find-duplicates &lt;slug&gt;</b> — report likely re-upload "
+            "duplicates (auto-skipped at ingest when detected)<br>"
+            "&nbsp;• <b>backfill-dates &lt;slug&gt;</b> — re-resolve real YouTube "
+            "upload dates<br>"
+            "&nbsp;• <b>import-opml &lt;file&gt;</b> — import podcast subscriptions "
+            "from OPML<br><br>"
             "<b>Settings</b>:<br>"
             "&nbsp;• <b>set-setting &lt;key&gt; &lt;value&gt;</b> — type-coerced from the "
             "Settings model<br>"
@@ -1264,9 +1736,12 @@ class SettingsPane(QWidget):
             "\n"
             "Paragraphos is a local audio → whisper.cpp transcription pipeline\n"
             "for podcasts (RSS) AND YouTube channels. Both sources run side-by-\n"
-            "side; YouTube tries uploader captions first (requested language →\n"
-            "en → any available) and falls back to whisper-cli when none are\n"
-            "usable. yt-dlp is lazy-installed to\n"
+            "side. New YouTube uploads are discovered from the channel feed,\n"
+            "then each video is handled individually: an uploader-provided\n"
+            "(manual) subtitle in the chosen language is imported straight into\n"
+            "the library — auto-generated captions are never used — and any\n"
+            "video without one falls back to whisper-cli. yt-dlp is lazy-\n"
+            "installed to\n"
             "  ~/Library/Application Support/Paragraphos/bin/yt-dlp\n"
             "on first YouTube use, and self-updates weekly.\n"
             "\n"
@@ -1315,6 +1790,15 @@ class SettingsPane(QWidget):
             "                                       priority DESC, pub_date ASC)\n"
             "  run-next <guid>                      Shortcut: priority=100\n"
             "  retranscribe <guid>                  status=pending + priority=100\n"
+            "  deactivate <guid>                    Pause ONE episode: stays in\n"
+            "                                       the queue but the worker\n"
+            "                                       never claims it\n"
+            "                                       (status=paused)\n"
+            "  activate <guid>                      Reactivate a paused episode\n"
+            "                                       (status=pending)\n"
+            "  dequeue <guid>                       Remove ONE episode from the\n"
+            "                                       queue (status=skipped; the\n"
+            "                                       feed-poll won't re-queue it)\n"
             "  retry-failed [--show X]              Re-queue failed eps from\n"
             "    [--all-time] [--window-hours N]    last N hours (default 24)\n"
             "\n"
@@ -1323,8 +1807,26 @@ class SettingsPane(QWidget):
             "    --backlog <all|recent|             RSS / YouTube URL). --backlog\n"
             "      last:N|since:YYYY-MM-DD>          is REQUIRED: how much history\n"
             "    [--yes]                            to transcribe. NEVER edit\n"
-            "                                       watchlist.yaml directly — the\n"
-            "                                       running app overwrites raw edits.\n"
+            "    [--captions | --whisper]           watchlist.yaml directly — the\n"
+            "    [--skip-shorts |                   running app overwrites raw edits.\n"
+            "      --include-shorts]                Any YouTube URL form is auto-\n"
+            "                                       detected → source=youtube (a video\n"
+            "                                       URL adds its channel; the same\n"
+            "                                       channel can't be added twice).\n"
+            "                                       --backlog does a DEEP backfill\n"
+            "                                       (whole archive, not just the RSS\n"
+            "                                       window). YouTube flags: --captions/\n"
+            "                                       --whisper (transcript pref),\n"
+            "                                       --skip-shorts/--include-shorts\n"
+            "                                       (Shorts excluded by default).\n"
+            "                                       GUI: 'Add YouTube Channel…' button\n"
+            "                                       + double-click a show for the\n"
+            "                                       episode browser (multi-select,\n"
+            "                                       Queue selected / Queue all since,\n"
+            "                                       status filters, full back-catalogue).\n"
+            "  backlog <slug>                       Deepen an existing YouTube show's\n"
+            "    --backlog <all|recent|             history beyond the RSS window and\n"
+            "      last:N|since:YYYY-MM-DD>          queue the new videos.\n"
             "  enable <slug> / disable <slug>       Toggle a show\n"
             "  remove <slug> [-y] [--purge-state]   Drop show; mark eps done\n"
             "                                       (or delete eps with --purge-state)\n"
@@ -1366,6 +1868,29 @@ class SettingsPane(QWidget):
             "  retry-all-feeds                      Same for every feed marked\n"
             "                                       fail\n"
             "\n"
+            "Observability & automation:\n"
+            "  stats [--json]                       Throughput / realtime-factor\n"
+            "                                       / success-rate dashboard\n"
+            "  logs [--limit N] [--type X]          Query the structured event\n"
+            "    [--json]                           log (bus events, persisted)\n"
+            "  health                               Self-check: deps, model,\n"
+            "                                       disk, data dir\n"
+            "  bug-report <file.zip>                Redacted diagnostics bundle\n"
+            "  serve [--port N] [--token T]         Localhost JSON API (read +\n"
+            "                                       queue control)\n"
+            "  mcp                                  MCP server over stdio so an\n"
+            "                                       LLM client can drive the app\n"
+            "                                       over the same tools (needs\n"
+            "                                       the optional `mcp` package)\n"
+            "  publish <dir>                        Static searchable transcript\n"
+            "                                       site + RSS\n"
+            "  export <slug> [--format md|json|pdf] Bulk-export a show\n"
+            "  find-duplicates <slug>               Report likely re-upload dups\n"
+            "                                       (also auto-skipped at ingest)\n"
+            "  backfill-dates <slug>                Re-resolve YouTube upload\n"
+            "                                       dates\n"
+            "  import-opml <file>                   Import subscriptions (OPML)\n"
+            "\n"
             "Top-level settings:\n"
             "  set-setting <key> <value>            Type-coerced from the\n"
             "                                       Settings model. Examples:\n"
@@ -1381,10 +1906,24 @@ class SettingsPane(QWidget):
             "\n"
             "Settings of interest (settings.yaml — read with `settings --json`):\n"
             "  sources_podcasts / sources_youtube              source toggles\n"
-            "  youtube_default_transcript_source               captions | whisper | auto-captions\n"
-            "  youtube_default_language                        de | en | …\n"
+            "  youtube_default_transcript_source               captions | whisper\n"
+            "  youtube_default_language                        de | en | auto | …\n"
+            "  youtube_skip_shorts_default                     exclude Shorts (default true)\n"
             "  load_level / background_priority               quiet | balanced | full\n"
             "  whisper_fast_mode                               beam=1/best=1, ~2-3× faster\n"
+            "  transcribe_concurrency                          parallel whisper workers\n"
+            "                                                  (RAM-capped; 1 = serial)\n"
+            "  confidence_marking_enabled                      mark low-confidence words\n"
+            "                                                  in transcripts (default on)\n"
+            "  diarization_enabled                             speaker labels A/B/C\n"
+            "                                                  (default on; needs the\n"
+            "                                                  optional sherpa-onnx backend)\n"
+            "  caption_fallback_mode                           manual_whisper |\n"
+            "                                                  manual_auto_whisper\n"
+            "  pause_queue_on_battery                          hold the queue while on\n"
+            "                                                  battery; resume on AC power\n"
+            "  watch_folder_post                               keep | move (→ done/) |\n"
+            "                                                  delete after transcribing\n"
             "  save_srt / mp3_retention_days                   output / cleanup\n"
             "  auto_start_queue / auto_start_delay_seconds     launch behaviour\n"
             "  connectivity_monitor_enabled                    offline banner +\n"
@@ -1403,7 +1942,10 @@ class SettingsPane(QWidget):
             "`set <slug> key=value`):\n"
             "  enabled                  bool — skip in checks when false\n"
             "  language                 whisper lang code; 'auto' = detect\n"
-            "  youtube_transcript_pref  '' | captions | whisper | auto-captions\n"
+            "  youtube_transcript_pref  '' (inherit Settings default) | captions\n"
+            "                           (import manual uploader subs per video,\n"
+            "                           whisper fallback) | whisper (always\n"
+            "                           transcribe)\n"
             "  whisper_prompt           bias domain vocabulary\n"
             "  output_override          custom transcript dir\n"
             "\n"
@@ -1423,6 +1965,10 @@ class SettingsPane(QWidget):
             "     via `ingest folder --show zoom`, then tail `status\n"
             "     --json` until the queue drains.'\n"
             "  · 'Ingest the Vimeo URL <url> and run-next once it lands.'\n"
+            "  · 'Run `stats --json` and `health`, then summarise the pipeline's\n"
+            "     throughput and flag anything unhealthy.'\n"
+            "  · 'Publish a static site of all transcripts into ~/Sites/pods and\n"
+            "     tell me the index URL.'\n"
             "\n"
             "Task: <describe what you want the agent to do>\n"
         )

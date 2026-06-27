@@ -8,6 +8,62 @@ from pathlib import Path
 from typing import Optional
 
 
+def throughput_per_day(events: list[dict], *, days: int = 7) -> float:
+    """Episodes transcribed per day over the last ``days`` (7.1).
+
+    ``events`` are event-log dicts (``type``, ``ts``). Counts
+    ``episode.transcribed`` events whose timestamp is within the window."""
+    from datetime import datetime, timedelta, timezone
+
+    if days <= 0:
+        return 0.0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    n = 0
+    for ev in events:
+        if ev.get("type") != "episode.transcribed":
+            continue
+        try:
+            if datetime.fromisoformat(ev["ts"]) >= cutoff:
+                n += 1
+        except (ValueError, TypeError, KeyError):
+            continue
+    return n / days
+
+
+def success_rate(events: list[dict]) -> float:
+    """Fraction of finished episodes that succeeded: transcribed / (transcribed
+    + failed) over the supplied events. 0.0 when there's nothing finished."""
+    transcribed = sum(1 for e in events if e.get("type") == "episode.transcribed")
+    failed = sum(1 for e in events if e.get("type") == "episode.failed")
+    total = transcribed + failed
+    return transcribed / total if total else 0.0
+
+
+def dashboard_summary(state, *, window_days: int = 7) -> dict:
+    """Bundle the headline dashboard metrics (7.1) from state + events.
+
+    Uses COUNT(*) queries rather than loading the whole events table — the table
+    grows between prunes, so materialising it just to count was wasteful."""
+    from datetime import datetime, timedelta, timezone
+
+    g = compute_global_stats(state)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(window_days, 1))).isoformat(
+        timespec="seconds"
+    )
+    transcribed_window = state.count_events(type_exact="episode.transcribed", since=cutoff)
+    transcribed_all = state.count_events(type_exact="episode.transcribed")
+    failed_all = state.count_events(type_exact="episode.failed")
+    finished = transcribed_all + failed_all
+    return {
+        "throughput_per_day": transcribed_window / max(window_days, 1),
+        "success_rate": (transcribed_all / finished) if finished else 0.0,
+        "realtime_factor": realtime_factor(state),
+        "done": g.episodes_done,
+        "pending": g.episodes_pending,
+        "failed": g.episodes_failed,
+    }
+
+
 def _parse_duration(s: Optional[str]) -> int:
     """RSS duration may be 'SSSS', 'MM:SS', or 'HH:MM:SS'. Returns seconds."""
     if not s:

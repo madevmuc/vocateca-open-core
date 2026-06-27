@@ -39,7 +39,7 @@ def _seed_local_episode(ctx: PipelineContext, src: Path, *, guid: str = "sha256:
 
 def test_local_episode_copies_source_and_transcribes(tmp_path: Path):
     src = tmp_path / "a.wav"
-    src.write_bytes(b"fake wav bytes")
+    src.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt fake wav bytes")
 
     ctx = _local_ctx(tmp_path)
     _seed_local_episode(ctx, src)
@@ -68,7 +68,7 @@ def test_local_episode_copies_source_and_transcribes(tmp_path: Path):
 
 def test_local_episode_records_mp3_path_for_orphan_recovery(tmp_path: Path):
     src = tmp_path / "a.wav"
-    src.write_bytes(b"fake wav bytes")
+    src.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt fake wav bytes")
 
     ctx = _local_ctx(tmp_path)
     _seed_local_episode(ctx, src)

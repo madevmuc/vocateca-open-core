@@ -1,5 +1,244 @@
 # Paragraphos Changelog
 
+## Unreleased — Reliability, observability & power-user tooling
+
+A large roadmap pass on top of the YouTube hardening + per-show episode browser:
+an internal event backbone, smarter transcription, reliability guards, and a
+deep CLI/automation surface.
+
+**Highlights**
+- **Smarter transcription** — per-episode language auto-detect, auto-vocabulary
+  prompts from past transcripts, optional low-confidence word marking, and a
+  Metal toggle + model auto-pick.
+- **Reliability** — error taxonomy with automatic retry of transient failures,
+  pre-transcribe integrity checks, a disk guard, self-healing startup + health
+  check, crash logging, and time-boxed **Undo** for destructive actions.
+- **Control & flow** — queue order toggle, move-to-top, processing windows,
+  pause/resume individual downloads, per-show duration filters, and battery-aware
+  load.
+- **Observability** — an internal event bus persisted to SQLite, granular
+  notifications + quiet hours, webhooks, a per-episode timeline, and
+  filterable/exportable logs + a stats dashboard (CLI).
+- **Ingestion & sharing** — YouTube playlists, back-catalogue date backfill,
+  re-upload detection, OPML import, bulk export (md/json/pdf), and a static
+  searchable transcript site + RSS.
+- **Automation** — a localhost JSON API, a ⌘K command palette, and an expanded
+  CLI (`stats`, `logs`, `health`, `bug-report`, `serve`, `publish`, `export`, …).
+- **Full GUI/CLI parity** — a new **Tools** menu (Statistics, Event Log,
+  Health Check, Bulk Export, Publish Site, Backfill Dates, Find Duplicates,
+  Start Local API, Export Bug Report), Settings controls for quiet hours, a
+  webhook editor and a parallel-transcription cap, YouTube **playlist** add in
+  the Add dialog, library multi-select export, and queue move-to-top/bottom — so
+  every CLI capability is reachable from the GUI too. Stats/Health are
+  structured panels, and the YouTube date backfill runs off the GUI thread.
+
+### Built out (2026-06-27 follow-up)
+- **Speaker diarization (1.5)** — real sherpa-onnx backend (optional dep) labels
+  speakers (A/B/C) in the SRT after transcribe; off by default, best-effort.
+- **MCP server (10.3)** — a real stdio transport (`cli.py mcp`, optional `mcp`
+  dep) lets an LLM client drive the app over the existing tool surface.
+- **Parallel transcription (2.2)** — finished: RAM-aware worker cap + a
+  concurrency-safe atomic claim (proven no double-claim under contention).
+- **Confidence marking now defaults ON.**
+- **Re-upload dedupe now acts** — near-duplicate episodes are auto-skipped at
+  feed-ingest (one keeper per cluster), not just reported.
+- **Transient download failures retry in-loop with backoff** instead of being
+  re-queued for a later pass.
+- **Fix:** the connectivity monitor's online/offline signal ran its handler off
+  the GUI thread (touching widgets + the DB); now marshalled onto the GUI thread.
+
+Streaming transcription (8.2) was intentionally dropped: a live stream is
+deferred until it finishes, then processed as a normal video.
+
+### Platform & reliability (roadmap)
+- **Expanded settings + per-show schema** — new tunables (queue order,
+  duration filters, caption-fallback mode, confidence marking, quiet hours,
+  granular notifications, webhooks, scheduling windows, battery budget,
+  Metal/model auto-pick, disk guard, event retention) plus per-show
+  `auto_vocab` / `min_duration_sec` / `max_duration_sec` / `notify`. All
+  additive with safe defaults — existing `settings.yaml` / `watchlist.yaml`
+  load unchanged. Settable from the CLI (`set` / `set-setting`); saving
+  settings now emits a `settings.changed` event.
+- **Internal event bus** — a typed, in-process event bus (`core/events.py`)
+  publishes episode/run/feed/show/settings lifecycle events. Synchronous
+  dispatch, subscriber failures isolated, no GUI dependency. Every event is
+  persisted to a new `events` SQLite table and pruned on launch to
+  `event_retention_days` (default 90). Backbone for the notifications,
+  webhooks, timeline, logs and stats features below. Episode status changes,
+  check run start/finish, queue sizing and feed checks now publish events, and
+  a curated subset is mirrored into the activity-log dock.
+
+### Added
+- **Stats dashboard.** `cli.py stats` reports throughput (episodes/day),
+  success rate, whisper realtime-factor, and done/pending/failed counts.
+- **Structured, filterable event log + export.** `cli.py logs` queries the
+  event log by type/show/since and exports matching rows to JSON or CSV.
+- **Episode timeline.** Right-click an episode in the Library → **Show
+  timeline…** to see how long each phase took (queue wait, download,
+  transcribe, total), computed from the recorded events.
+- **Webhooks / on-event hooks.** Configure webhooks in `settings.yaml` to run a
+  local script (event JSON on stdin) or HTTP POST the event JSON when matching
+  events fire. Command targets may include arguments; each event's hooks fire
+  concurrently; dispatch is non-blocking and failure-isolated; POST targets are
+  SSRF-guarded (no private/loopback hosts).
+- **Granular notifications.** Desktop notifications now fire on transcription
+  failures and when a check finishes (in addition to the existing per-episode
+  success notices), gated by a per-event toggle, a per-show opt-out
+  (`notify=false`), and an optional quiet-hours window that respects midnight
+  wrap.
+- **Friendly empty states.** The Queue, Library, Failed and Shows tabs now show
+  a clear placeholder (with a helpful hint, and an "Add show" button on Shows)
+  when there's nothing to display yet, instead of a blank table.
+- **Undo for destructive actions.** Deleting a transcript now moves it to a
+  trash folder (recoverable) instead of an irreversible unlink, and clearing
+  the queue snapshots the affected episodes — both undoable for 60 seconds via
+  **⌘Z**. The activity log notes when an undo is available.
+- **Pre-transcribe integrity checks.** Before whisper runs, the audio file is
+  verified non-empty with a valid container header and the model file's
+  SHA-256 is checked against its Trust-On-First-Use pin; a truncated download
+  or a drifted model fails the episode fast with a clear reason instead of a
+  cryptic whisper error.
+- **YouTube caption fallback mode.** Choose, in Settings → YouTube, whether a
+  YouTube transcript comes from manual captions then whisper, or manual → auto
+  captions → whisper (auto captions skip a whisper run at lower quality). A
+  show set to "Always whisper" still overrides.
+- **Per-show duration filters.** Set a min/max episode length in Show Details →
+  episodes whose known duration falls outside the range are skipped
+  (`duration-out-of-range`); unknown lengths always pass. Defaults come from
+  the new settings-level defaults. Also settable via `cli.py set <slug>
+  min_duration_sec=… / max_duration_sec=…`.
+- **Queue order toggle.** A control in the Queue toolbar picks **oldest first**,
+  **newest first**, or **shortest first**; the worker honours it on the next
+  claim (priority bumps still win). Also settable via
+  `cli.py set-setting queue_order …`.
+- **Low-confidence word marking (opt-in).** Enable it in Settings → Processing
+  & reliability and whisper reports per-word confidence; words below the
+  threshold are wrapped in `==highlight==` (Obsidian-compatible) and the
+  episode's mean confidence is stored and exposed via `cli.py episodes --json`.
+- **Auto-vocabulary prompt.** Toggle **Auto-vocabulary** on a show and
+  Paragraphos seeds whisper's `--prompt` with recurring proper nouns mined
+  from that show's past transcripts, so names and jargon spell consistently.
+  A manual prompt always overrides; the vocabulary is cached and rebuilt only
+  when the show gains new transcripts.
+- **Per-episode language auto-detect.** Set a show's language to **Auto-detect**
+  and whisper picks the language per episode; the detected ISO code is captured,
+  stored, written to the transcript frontmatter (`detected_language`), surfaced
+  in `cli.py episodes --json`, and carried on the `episode.transcribed` event.
+- **Add a channel by any URL form.** `/channel/UC…`, `/@handle`, `/c/Name`,
+  `/user/Name`, and a bare `@handle` all resolve to the right channel. Paste a
+  single **video** URL and Paragraphos offers to add the channel that posted
+  it instead of rejecting it. Adding the **same channel twice** — even under a
+  different slug or a different URL form — is refused, naming the show it
+  already lives under. The Shows tab keeps its dedicated **"Add YouTube
+  Channel…"** button: paste the link, the channel name + avatar + video count
+  resolve, the slug pre-fills (editable), and you pick how much history to
+  pull (only-new / last 5·20·100 / since a date).
+- **Per-show episode browser** — double-click a show to open a resizable,
+  maximizable window. It keeps everything Show Details had (artwork, settings,
+  feed health) and lists **every** episode with status pills, plus:
+  **multi-select** + **Queue selected**, a date picker + **Queue all since
+  <date>**, and a **status filter** (pending / failed / skipped / deferred /
+  done). YouTube shows stream their **entire back-catalogue** in paced
+  background batches — not-yet-fetched videos appear as **"available"** rows
+  you can trigger to seed + queue (capped, with **Load more**). YouTube
+  language / caption preference / skip-Shorts are editable inline.
+- **Expanded language picker** in the Add dialog — a curated list plus a new
+  **Auto** option, seeded from the `youtube_default_language` setting.
+- **Channel avatar** is now shown (og:image → yt-dlp thumbnail →
+  latest-video-frame fallback) instead of a generic placeholder.
+- **`cli.py backlog <slug> --backlog …`** deepens an existing YouTube show's
+  history beyond the RSS window and queues the newly fetched videos.
+
+### Added
+- **Local JSON API.** `cli.py serve` exposes a token-guarded, loopback-only
+  HTTP API (shows / status / queue read, plus queue pause/resume) for local
+  automation — stdlib only, no new dependency.
+- **Re-upload duplicate detection.** `cli.py find-duplicates <slug>` reports
+  likely re-uploads within a show by title similarity (non-destructive); an
+  audio-fingerprint follow-up is designed in `docs/plans/`.
+- **Command palette (⌘K).** Press ⌘K for a fuzzy-searchable list of actions —
+  jump between tabs, start/stop the queue, undo, toggle the log panel.
+- **OPML subscription import.** `cli.py import-opml subs.opml --backlog …`
+  imports podcast subscriptions from an OPML export (XXE-safe via defusedxml),
+  seeding each feed as a show.
+- **Transcript publishing.** `cli.py publish` generates a self-contained static
+  site — an index with client-side full-text search, one page per transcript,
+  and an RSS feed — ready to host anywhere static.
+- **Bulk export.** `cli.py export <slug> --format md|json|pdf` writes all of a
+  show's transcripts to one file. Markdown/JSON need no extra dependency; PDF
+  uses the optional `fpdf2` package (cleanly reported if absent).
+- **Playlist support.** Add a YouTube **playlist** URL like a channel —
+  `cli.py add "https://www.youtube.com/playlist?list=…" --backlog …` seeds the
+  playlist's videos and polls its RSS feed for new entries.
+- **Back-catalogue date backfill.** `cli.py backfill-dates <slug>` re-resolves
+  real YouTube upload dates for a channel's episodes (the fast enumeration path
+  leaves them approximate), so the library sorts/dates correctly.
+- **GPU/Metal toggle + model auto-pick.** A Settings toggle can force CPU-only
+  whisper (Metal is on by default), and an **Auto-pick** button suggests a
+  whisper model suited to the Mac's RAM and core count.
+- **Battery-aware load.** When enabled, transcription drops to a gentler load
+  level while the Mac runs on battery, then returns to the configured level on
+  AC power.
+- **Pause/resume individual downloads.** Right-click a queued episode → Pause
+  download to halt its in-flight download (the partial is kept); Resume to
+  continue from where it left off.
+- **Processing windows.** Restrict transcription to set time windows (e.g.
+  overnight) in Settings → Processing & reliability; outside them the worker
+  idles until the next window.
+- **Move episodes to the top of the queue.** A new Queue context-menu action
+  persists a stable manual order (via priority) for the selected episodes.
+- **Crash visibility + bug-report bundle.** Uncaught exceptions are routed to
+  the activity log (and log file) instead of vanishing, and `cli.py bug-report`
+  writes a shareable zip with recent logs, redacted settings, recent events,
+  and version info.
+- **Disk guard.** Before each run the queue auto-pauses if free space is below
+  a configurable threshold (Settings → Processing & reliability), so a long
+  back-catalogue run can't fill the disk mid-transcribe.
+- **Self-healing startup + health self-check.** Stale in-flight rows are reset
+  to a resumable state on launch (existing behaviour), and a new health check
+  (dependencies, model hash, data-dir writable, free disk) logs any problems at
+  startup and is runnable via `cli.py health`.
+- **Error taxonomy + automatic retry.** Pipeline failures are now classified
+  (`network`, `not_found`, `too_large`, `format`, `whisper`, `disk`, `unknown`);
+  transient ones (network/disk) auto-retry with a capped attempt count instead
+  of failing outright, and the Failed tab shows the category + attempt count.
+  Exposed via `cli.py episodes --json` (`error_category`, `attempts`).
+
+### Changed
+- **The `use_etag_cache` setting is now honoured.** When off, feeds are always
+  re-fetched in full instead of sending conditional `ETag` /
+  `If-Modified-Since` headers. Toggle in Settings → Processing & reliability.
+- **Shorts, live, and restricted videos are handled deliberately, not as
+  generic failures.** Shorts are excluded by default (enumeration uses the
+  channel's `/videos` tab); an **Include Shorts** per-show option opts in, and
+  a Short that slips through is marked **skipped** (terminal, not a failure).
+  Live / premiere / upcoming videos are **deferred** and re-probed on the
+  daily check — once the stream finishes they auto-queue. Members-only /
+  age-restricted / region-locked videos **fail with a specific, friendly
+  message** instead of a raw error dump. `skipped` and `deferred` are
+  first-class episode states with their own pills and filters.
+- **Strict captions.** Only a manual/uploader subtitle in the chosen language
+  is imported (auto-generated captions are never used); otherwise whisper. The
+  new **Auto** language accepts the channel's default manual track, else
+  whisper.
+- **`cli.py add <youtube-url> --backlog …` does a deep channel backfill** —
+  the whole archive honouring `--backlog`, not just the ~15-video RSS window —
+  with new flags `--captions`/`--whisper` and `--skip-shorts`/
+  `--include-shorts`. New settings `youtube_skip_shorts_default`,
+  `youtube_default_language`, and `youtube_default_transcript_source` hold the
+  global defaults.
+- **The selectable "use auto-captions if no manual" transcript option is
+  gone** (auto-generated captions were never actually used). Legacy stored
+  values still load, but there is no UI or CLI path to set it.
+
+### Fixed
+- **New YouTube uploads are now actually discovered.** Channel feeds are
+  Atom with no audio enclosure, so the feed poll had been yielding zero
+  episodes — only the initial backfill ever ran. The manifest builder now
+  recognises YouTube channel entries (keyed by the bare video id, pointing at
+  the watch URL), so new uploads are picked up, downloaded, and transcribed
+  on the regular check like any podcast episode.
+
 ## v1.5.0 — 2026-06-25 (AI-operator guardrails & background-load levels)
 
 ### Added

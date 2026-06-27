@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from core import events
 from core.library import LibraryIndex, start_watching
 from core.models import Settings, Watchlist
 from core.state import StateStore
@@ -72,6 +73,29 @@ class AppContext:
         state = StateStore(data_dir / "state.sqlite")
         state.init_schema()
         state.recover_in_flight()
+        # Wire the event bus persister and prune old events on launch.
+        events.install_persistence(state)
+        state.prune_events(getattr(settings, "event_retention_days", 90))
+        # Self-healing recovery already ran above; now log any health issues so
+        # they surface in the activity log / log file on launch (6.2).
+        try:
+            import logging
+
+            from core import health
+
+            class _HCtx:
+                pass
+
+            _hc = _HCtx()
+            _hc.data_dir = data_dir
+            _hc.settings = settings
+            for _row in health.run_health_check(_hc):
+                if not _row["ok"]:
+                    logging.getLogger("paragraphos.health").warning(
+                        "health check %s: %s", _row["check"], _row["detail"]
+                    )
+        except Exception:
+            pass
         # One-time grandfathering of pre-existing shows + baseline content-hash
         # so the new backlog gate never ambushes shows that predate it and we
         # can later detect external edits to watchlist.yaml.

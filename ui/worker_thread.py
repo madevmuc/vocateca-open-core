@@ -32,6 +32,8 @@ from urllib.parse import parse_qs, urlparse
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
+from core import events
+from core.events import Event, EventType
 from core.hw import detect as hw_detect
 from core.load import resolve_load_profile
 from core.models import Settings, Watchlist
@@ -43,12 +45,16 @@ from core.pipeline import (
     process_episode,
     transcribe_phase,
 )
-from core.rss import build_manifest_with_url
-from core.state import EpisodeStatus
+from core.rss import build_manifest_with_url, conditional_validators
+from core.state import EpisodeStatus, claim_order_by
 from core.watchlist_io import save_watchlist
 
 # Sentinel pushed onto the queue to tell the transcribe worker "no more work".
 _SHUTDOWN = object()
+
+# Bound per-show per-check so a channel with many parked premieres can't
+# hammer yt-dlp by re-probing every deferred video on a single pass.
+_DEFERRED_REPROBE_CAP = 25
 
 
 def show_is_gated(state, slug: str) -> bool:
@@ -104,9 +110,11 @@ class _DownloadPool(QThread):
         stop_flag: threading.Event,
         workers: int,
         orphan_guids: list | None = None,
+        queue_order: str = "oldest_first",
     ):
         super().__init__()
         self._ctx = ctx
+        self._queue_order = queue_order
         self._show_by_slug = show_by_slug  # slug -> Show
         self._ep_num_map = ep_num_map  # guid -> "0042" / "0000"
         self._scope_slugs = list(scope_slugs)  # which shows this pass touches
@@ -165,19 +173,14 @@ class _DownloadPool(QThread):
         # Two-step claim: try pending first (cheapest path forward),
         # fall back to downloaded (orphan recovery). Each step is a
         # single atomic UPDATE…RETURNING.
+        order_by = claim_order_by(self._queue_order)
         with self._claim_lock, self._ctx.state._conn() as c:
-            row = c.execute(
-                "UPDATE episodes SET status='downloading' "
-                "WHERE guid = ("
-                "  SELECT guid FROM episodes "
-                f"  WHERE status='pending' AND show_slug IN ({placeholders}) "
-                "  ORDER BY priority DESC, pub_date ASC LIMIT 1"
-                ") "
-                "RETURNING *",
-                tuple(self._scope_slugs),
-            ).fetchone()
-            if row is not None:
-                return dict(row), "pending"
+            # Pending step uses the shared atomic claim helper (also unit-tested
+            # for concurrency safety). It runs on its own connection inside this
+            # lock; the orphan step below shares `c`.
+            pending = self._ctx.state.claim_one_pending(self._scope_slugs, order_by)
+            if pending is not None:
+                return pending, "pending"
             # Orphan branch: only claim rows that were ALREADY 'downloaded'
             # at run-start (the snapshot in _orphan_guids). Without this
             # filter the branch races with the in-pass staging usage of
@@ -449,24 +452,31 @@ class _TranscribeWorker(QThread):
                     # should turn errors into PipelineResult, but guard.
                     r = PipelineResult("failed", outcome.guid, str(e))
 
-            with self._done_lock:
-                self._done_counter[0] += 1
-                done_idx = self._done_counter[0]
-            if r.action == "failed":
-                self.progress.emit(f"    [{r.action}]")
-                for line in r.detail.splitlines():
-                    self.progress.emit(f"        {line}")
+            # A "deferred" outcome (transient retry / paused download) leaves the
+            # episode PENDING for a later attempt — it is NOT done, so it must
+            # not advance the done counter (else done_idx overshoots total and a
+            # re-processed episode is double-counted). Just log progress.
+            if r.action == "deferred":
+                self.progress.emit(f"    [deferred] {r.detail[:160]}")
             else:
-                self.progress.emit(f"    [{r.action}] {r.detail[:160]}")
-            self.episode_done.emit(
-                show.slug,
-                ep["guid"],
-                r.action,
-                done_idx,
-                self._total,
-                show.title,
-                ep["title"],
-            )
+                with self._done_lock:
+                    self._done_counter[0] += 1
+                    done_idx = self._done_counter[0]
+                if r.action == "failed":
+                    self.progress.emit(f"    [{r.action}]")
+                    for line in r.detail.splitlines():
+                        self.progress.emit(f"        {line}")
+                else:
+                    self.progress.emit(f"    [{r.action}] {r.detail[:160]}")
+                self.episode_done.emit(
+                    show.slug,
+                    ep["guid"],
+                    r.action,
+                    done_idx,
+                    self._total,
+                    show.title,
+                    ep["title"],
+                )
 
             if self._stop.is_set():
                 # Drain without processing further work items, but keep
@@ -506,8 +516,18 @@ class CheckAllThread(QThread):
         # scheduling tier (see core/load.py). detect() shells out to sysctl,
         # so do it once here rather than per-episode.
         _mem, _perf = hw_detect()
-        self._load_profile = resolve_load_profile(
+        self._ram_gb = _mem  # cached for the transcribe-worker RAM cap in run()
+        # Battery budget (8.4): on battery + pause_on_battery → gentler level.
+        from core.power import effective_load_level, on_battery
+
+        _level = effective_load_level(
             self.settings.load_level,
+            on_battery=on_battery(),
+            pause_on_battery=bool(getattr(self.settings, "pause_on_battery", False)),
+            battery_level=getattr(self.settings, "battery_load_level", "quiet"),
+        )
+        self._load_profile = resolve_load_profile(
+            _level,
             perf_cores=_perf or (os.cpu_count() or 4),
             background_priority=self.settings.background_priority,
         )
@@ -525,13 +545,52 @@ class CheckAllThread(QThread):
         self._stop = True
         self._stop_event.set()
 
+    def _resolve_prompt(self, show) -> str:
+        """Effective whisper prompt: manual wins, else auto-vocab (1.2), else ""."""
+        from core import vocab
+
+        output_root = Path(self.settings.output_root).expanduser()
+        show_dir = (
+            Path(show.output_override).expanduser()
+            if getattr(show, "output_override", None)
+            else output_root / show.slug
+        )
+
+        def _read_transcripts() -> list[str]:
+            texts: list[str] = []
+            try:
+                mds = sorted(show_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[
+                    :30
+                ]
+            except Exception:
+                return texts
+            for p in mds:
+                try:
+                    texts.append(p.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    pass
+            return texts
+
+        auto_vocab = bool(getattr(show, "auto_vocab", False))
+        count = 0
+        if auto_vocab and not (show.whisper_prompt or "").strip():
+            count = len(self.ctx.state.list_by_status(show.slug, EpisodeStatus.DONE))
+        return vocab.resolve_whisper_prompt(
+            whisper_prompt=show.whisper_prompt or "",
+            auto_vocab=auto_vocab,
+            slug=show.slug,
+            state=self.ctx.state,
+            transcript_count=count,
+            build=_read_transcripts,
+        )
+
     def _pctx_for(self, show) -> PipelineContext:
         """Build a PipelineContext customised for a specific show."""
         kwargs = dict(
             state=self.ctx.state,
             library=self.ctx.library,
             output_root=Path(self.settings.output_root).expanduser(),
-            whisper_prompt=show.whisper_prompt,
+            whisper_prompt=self._resolve_prompt(show),
             retention_days=self.settings.mp3_retention_days,
             delete_mp3_after=self.settings.delete_mp3_after_transcribe,
             language=show.language,
@@ -541,6 +600,35 @@ class CheckAllThread(QThread):
             threads=self._load_profile.threads,
             launch_prefix=tuple(self._load_profile.command_prefix()),
             save_srt=self.settings.save_srt,
+            confidence_marking=bool(getattr(self.settings, "confidence_marking_enabled", False)),
+            confidence_threshold=float(getattr(self.settings, "confidence_threshold", 0.5)),
+            metal_enabled=bool(getattr(self.settings, "whisper_metal_enabled", True)),
+        )
+        from core.filters import resolve_duration_bounds
+
+        emin, emax = resolve_duration_bounds(
+            show_min=int(getattr(show, "min_duration_sec", 0) or 0),
+            show_max=int(getattr(show, "max_duration_sec", 0) or 0),
+            def_min=int(getattr(self.settings, "default_min_duration_sec", 0) or 0),
+            def_max=int(getattr(self.settings, "default_max_duration_sec", 0) or 0),
+        )
+        kwargs["min_duration_sec"] = emin
+        kwargs["max_duration_sec"] = emax
+        # 'After transcribing' action for locally-ingested files (move/delete).
+        kwargs["watch_folder_post"] = getattr(self.settings, "watch_folder_post", "keep") or "keep"
+        kwargs["watch_folder_root"] = getattr(self.settings, "watch_folder_root", "") or ""
+        # Speaker diarization (1.5): off by default. Resolve the model dir to
+        # <data_dir>/models/diarize when the setting is blank.
+        if bool(getattr(self.settings, "diarization_enabled", False)):
+            kwargs["diarization_enabled"] = True
+            mdir = getattr(self.settings, "diarization_model_dir", "") or ""
+            kwargs["diarization_model_dir"] = mdir or str(self.ctx.data_dir / "models" / "diarize")
+        # Per-download pause (2.4): honour a per-guid pause flag in state.meta.
+        # Lazy (accesses state inside the call) so a stub ctx without a real
+        # state still builds a PipelineContext; the context is per-run/short-
+        # lived so the captured self is not a meaningful retention concern.
+        kwargs["download_pause_check"] = lambda g: (
+            self.ctx.state.get_meta(f"download_paused:{g}") == "1"
         )
         if getattr(show, "source", "podcast") == "youtube":
             # Pull the channel id straight off the canonical channel-RSS URL
@@ -560,19 +648,113 @@ class CheckAllThread(QThread):
             kwargs["youtube_default_transcript_source"] = getattr(
                 self.settings, "youtube_default_transcript_source", "captions"
             )
+            kwargs["caption_fallback_mode"] = getattr(
+                self.settings, "caption_fallback_mode", "manual_whisper"
+            )
+            # Per-show Shorts policy: prefer the show's own skip_shorts, else
+            # the global Settings default. The getattr fallbacks keep legacy
+            # shows/settings (written before these fields existed) working.
+            kwargs["skip_shorts"] = bool(
+                getattr(
+                    show,
+                    "skip_shorts",
+                    getattr(self.settings, "youtube_skip_shorts_default", True),
+                )
+            )
         return PipelineContext(**kwargs)
+
+    def _skip_duplicates(self, slug: str) -> int:
+        """Mark pending re-upload duplicates SKIPPED (3.5). Keeps one episode per
+        near-duplicate cluster; never skips a done/in-flight one. Returns count."""
+        from core.dedupe import resolve_duplicates
+
+        eps = self.ctx.state.list_by_status(
+            slug, EpisodeStatus.PENDING
+        ) + self.ctx.state.list_by_status(slug, EpisodeStatus.DONE)
+        to_skip = resolve_duplicates(eps)
+        for guid in to_skip:
+            self.ctx.state.set_status(guid, EpisodeStatus.SKIPPED, error_text="duplicate-reupload")
+        if to_skip:
+            self.progress.emit(f"{slug}: skipped {len(to_skip)} re-upload duplicate(s)")
+        return len(to_skip)
+
+    def _reprobe_deferred(self, show) -> int:
+        """Re-classify a youtube show's DEFERRED episodes; promote any that are
+        no longer live/premiere back to PENDING so this same check processes
+        them. Bounded by _DEFERRED_REPROBE_CAP per call. Returns promoted count."""
+        if getattr(show, "source", "podcast") != "youtube":
+            return 0
+        from core.youtube import parse_youtube_url
+        from core.youtube_audio import probe_video_meta
+        from core.youtube_classify import classify_video
+
+        deferred = self.ctx.state.list_by_status(show.slug, EpisodeStatus.DEFERRED)
+        promoted = 0
+        for ep in deferred[:_DEFERRED_REPROBE_CAP]:
+            if self._stop:
+                break
+            try:
+                parsed = parse_youtube_url(ep["mp3_url"])
+                if parsed.kind != "video":
+                    continue
+                meta = probe_video_meta(parsed.value)
+            except Exception:  # noqa: BLE001 — leave deferred; retry next check
+                continue
+            category, _msg = classify_video(meta)
+            if category != "live":
+                self.ctx.state.set_status(ep["guid"], EpisodeStatus.PENDING)
+                promoted += 1
+        if promoted:
+            self.progress.emit(f"{show.slug}: {promoted} deferred video(s) now ready")
+        return promoted
+
+    def _finish(self) -> None:
+        """Emit the run.finished event then the Qt finished signal."""
+        events.emit(Event(type=EventType.RUN_FINISHED, ts=events.now_iso()))
+        self.finished_all.emit()
 
     def run(self) -> None:
         wl: Watchlist = self.ctx.watchlist
         targets = [
             s for s in wl.shows if s.enabled and (not self.only_slug or s.slug == self.only_slug)
         ]
+        events.emit(
+            Event(
+                type=EventType.RUN_STARTED,
+                ts=events.now_iso(),
+                payload={"scope": self.only_slug or "all", "shows": len(targets)},
+            )
+        )
 
         # Respect a persisted "paused" flag — if set, bail out cleanly.
         if self.ctx.state.get_meta("queue_paused") == "1":
             self.progress.emit("queue is paused — click Resume in Shows tab")
-            self.finished_all.emit()
+            self._finish()
             return
+
+        # Battery gate: when enabled and the laptop is unplugged, idle this
+        # cycle. The next scheduled/manual check resumes once on AC power.
+        from core.power import should_pause_for_battery
+
+        if should_pause_for_battery(
+            pause_queue_on_battery=bool(getattr(self.settings, "pause_queue_on_battery", False))
+        ):
+            self.progress.emit("on battery — queue paused (resumes when plugged in)")
+            self._finish()
+            return
+
+        # Processing windows (2.3): outside the configured windows the worker
+        # idles (does nothing this cycle) and waits for the next scheduled run.
+        if getattr(self.settings, "processing_windows_enabled", False):
+            from datetime import datetime
+
+            from core.schedule_windows import within_windows
+
+            windows = list(getattr(self.settings, "processing_windows", []) or [])
+            if not within_windows(datetime.now().strftime("%H:%M"), windows):
+                self.progress.emit("outside processing window — idling until the next window")
+                self._finish()
+                return
 
         from core import backoff
 
@@ -597,8 +779,11 @@ class CheckAllThread(QThread):
                 for show in fetch_targets:
                     if self._stop:
                         break
-                    stored_etag = self.ctx.state.get_meta(f"feed_etag:{show.slug}")
-                    stored_modified = self.ctx.state.get_meta(f"feed_modified:{show.slug}")
+                    stored_etag, stored_modified = conditional_validators(
+                        self.ctx.state.get_meta(f"feed_etag:{show.slug}"),
+                        self.ctx.state.get_meta(f"feed_modified:{show.slug}"),
+                        use_cache=bool(getattr(self.settings, "use_etag_cache", True)),
+                    )
                     future_to_show[
                         ex.submit(
                             build_manifest_with_url,
@@ -617,6 +802,14 @@ class CheckAllThread(QThread):
                     except Exception as e:
                         fails = backoff.on_failure(self.ctx.state, show.slug, exc=e)
                         self.progress.emit(f"feed error {show.slug} (fail #{fails}): {e}")
+                        events.emit(
+                            Event(
+                                type=EventType.FEED_ERROR,
+                                ts=events.now_iso(),
+                                show_slug=show.slug,
+                                payload={"error": str(e), "fails": fails},
+                            )
+                        )
                         continue
                     backoff.on_success(self.ctx.state, show.slug)
                     if manifest is None:
@@ -624,8 +817,23 @@ class CheckAllThread(QThread):
                         # still hold pending episodes from an earlier run;
                         # pass 1b picks those up via list_by_status(PENDING).
                         self.progress.emit(f"{show.slug}: feed unchanged")
+                        events.emit(
+                            Event(
+                                type=EventType.FEED_UNCHANGED,
+                                ts=events.now_iso(),
+                                show_slug=show.slug,
+                            )
+                        )
                         fetch_results[show.slug] = (show, canonical, None)
                         continue
+                    events.emit(
+                        Event(
+                            type=EventType.FEED_CHECKED,
+                            ts=events.now_iso(),
+                            show_slug=show.slug,
+                            payload={"episodes": len(manifest)},
+                        )
+                    )
                     if new_etag:
                         self.ctx.state.set_meta(f"feed_etag:{show.slug}", new_etag)
                     if new_modified:
@@ -662,6 +870,13 @@ class CheckAllThread(QThread):
                 ep_num_map = {e["guid"]: e["episode_number"] for e in manifest}
             else:
                 ep_num_map = {}
+            # Re-probe parked live/premiere videos: any that have finished get
+            # promoted to PENDING *before* we gather pending below, so a
+            # just-finished stream is picked up by this very pass.
+            self._reprobe_deferred(show)
+            # Re-upload dedupe (3.5): skip pending episodes that near-duplicate
+            # another (done or earlier) episode of this show, keeping one.
+            self._skip_duplicates(show.slug)
             pending = self.ctx.state.list_by_status(show.slug, EpisodeStatus.PENDING)
             if self.limit:
                 pending = pending[-self.limit :]
@@ -703,19 +918,40 @@ class CheckAllThread(QThread):
 
         total = len(all_pending) + orphan_count
         self.queue_sized.emit(total)
+        events.emit(
+            Event(
+                type=EventType.QUEUE_SIZED,
+                ts=events.now_iso(),
+                payload={"total": total, "pending": len(all_pending), "orphan": orphan_count},
+            )
+        )
         self.progress.emit(
             f"queue sized: {len(all_pending)} pending + {orphan_count} orphan-downloaded"
         )
 
         if total == 0 or self._stop:
-            self.finished_all.emit()
+            self._finish()
             return
 
         # Check the persisted pause flag one more time before kicking
         # off the pipeline (matches pre-existing behaviour).
         if self.ctx.state.get_meta("queue_paused") == "1":
             self.progress.emit("queue paused mid-run — halting before pipeline")
-            self.finished_all.emit()
+            self._finish()
+            return
+
+        # Disk guard (6.3): if free space is below the threshold, auto-pause the
+        # queue rather than filling the disk mid-transcribe.
+        from core import diskguard
+
+        if diskguard.should_pause(self.settings, Path(self.settings.output_root).expanduser()):
+            self.ctx.state.set_meta("queue_paused", "1")
+            free = diskguard.free_gb(Path(self.settings.output_root).expanduser())
+            self.progress.emit(
+                f"⚠ low disk: {free:.1f} GB free — queue auto-paused "
+                f"(guard {self.settings.disk_guard_min_free_gb} GB)"
+            )
+            self._finish()
             return
 
         # Pass 2: parallel download + transcribe.
@@ -747,6 +983,7 @@ class CheckAllThread(QThread):
             stop_flag=self._stop_event,
             workers=dl_conc,
             orphan_guids=orphan_guids,
+            queue_order=getattr(self.settings, "queue_order", "oldest_first"),
         )
         # Spawn the load profile's transcribe-worker count (default 1).
         # Pre-2026-04-23 only one was created regardless of the setting,
@@ -755,7 +992,15 @@ class CheckAllThread(QThread):
         # workers share the same in_q (queue.Queue is thread-safe) and
         # the same stop_event; shutdown sends N _SHUTDOWN sentinels via
         # the download pool's existing terminator (one per consumer).
-        n_tr = max(self._load_profile.parallel, 1)
+        # transcribe_concurrency (2.2) is a user override: >1 raises the cap;
+        # the default (1) keeps the load profile's choice (never reduces it).
+        from core.load import resolve_transcribe_workers
+
+        n_tr = resolve_transcribe_workers(
+            self._load_profile.parallel,
+            getattr(self.settings, "transcribe_concurrency", 1),
+            ram_gb=getattr(self, "_ram_gb", None),
+        )
         # Shared atomic counter so the UI sees a coherent done_idx
         # across all parallel workers (workers race to increment).
         shared_done_counter = [0]
@@ -791,12 +1036,28 @@ class CheckAllThread(QThread):
         # set we trip the shared stop event, draining both workers.
         pause_watch_stop = threading.Event()
 
+        _bat_gate = bool(getattr(self.settings, "pause_queue_on_battery", False))
+
         def _watch_pause():
+            from core.power import should_pause_for_battery
+
+            i = 0
             while not pause_watch_stop.is_set():
                 if self.ctx.state.get_meta("queue_paused") == "1":
                     self.progress.emit("queue paused mid-run — halting between episodes")
                     self._stop_event.set()
                     return
+                # Battery probe is coarser (~15 s) so we don't shell out to
+                # pmset every second.
+                if (
+                    _bat_gate
+                    and i % 15 == 0
+                    and should_pause_for_battery(pause_queue_on_battery=True)
+                ):
+                    self.progress.emit("on battery — halting between episodes")
+                    self._stop_event.set()
+                    return
+                i += 1
                 pause_watch_stop.wait(1.0)
 
         pw = threading.Thread(target=_watch_pause, name="pause-watch", daemon=True)
@@ -810,4 +1071,4 @@ class CheckAllThread(QThread):
             tr.wait()
         pause_watch_stop.set()
 
-        self.finished_all.emit()
+        self._finish()

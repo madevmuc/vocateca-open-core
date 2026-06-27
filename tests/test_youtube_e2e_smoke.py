@@ -44,15 +44,31 @@ def test_add_youtube_channel_writes_watchlist_and_enqueues(tmp_path, monkeypatch
             "artwork_url": "https://example.com/x.jpg",
         },
     )
+    _vids = [
+        {
+            "id": f"v{i:02d}",
+            "title": f"Ep {i}",
+            "upload_date": f"202601{i + 1:02d}",
+        }
+        for i in range(20)
+    ]
     monkeypatch.setattr(
         "core.youtube_meta.enumerate_channel_videos",
-        lambda c, limit=None: [
+        lambda c, *, limit=None, date_after=None, include_shorts=False, full=False: list(_vids),
+    )
+    # The enumerate worker now also fetches the RSS feed window and merges it in;
+    # mock it as the same 20 dated entries (total overlap → 20 unique guids).
+    monkeypatch.setattr(
+        "core.rss.build_manifest",
+        lambda url, **kw: [
             {
-                "id": f"v{i:02d}",
-                "title": f"Ep {i}",
-                "upload_date": f"2026010{i % 10}",
+                "guid": v["id"],
+                "title": v["title"],
+                "pubDate": f"2026-01-{int(v['upload_date'][-2:]):02d}",
+                "mp3_url": f"https://www.youtube.com/watch?v={v['id']}",
+                "description": "",
             }
-            for i in range(20)
+            for v in _vids
         ],
     )
 
@@ -61,20 +77,21 @@ def test_add_youtube_channel_writes_watchlist_and_enqueues(tmp_path, monkeypatch
     dlg.youtube_url_input.setText(f"https://www.youtube.com/channel/{cid}")
     dlg._on_youtube_url_resolve()
 
-    # Resolve runs on a worker thread now — pump the event loop until done.
+    # Resolve runs on a worker thread. Block until it truly finishes
+    # (``wait`` is immune to the just-started ``isRunning()==False`` race),
+    # then pump the event loop so the queued ``done`` signal is delivered.
     import time
 
+    from PyQt6.QtWidgets import QApplication
+
+    t = getattr(dlg, "_yt_resolve_thread", None)
+    if t is not None:
+        t.wait(5000)
     _start = time.monotonic()
-    while time.monotonic() - _start < 3.0:
-        t = getattr(dlg, "_yt_resolve_thread", None)
-        if t is None or not t.isRunning():
-            from PyQt6.QtWidgets import QApplication
-
-            QApplication.instance().processEvents()
-            break
-        from PyQt6.QtWidgets import QApplication
-
+    while time.monotonic() - _start < 5.0:
         QApplication.instance().processEvents()
+        if dlg._loaded_yt_preview:
+            break
         time.sleep(0.01)
 
     # Pick "Last 20" so all 20 mocked videos stay pending.
@@ -84,6 +101,17 @@ def test_add_youtube_channel_writes_watchlist_and_enqueues(tmp_path, monkeypatch
             break
 
     dlg._add_from_youtube()
+
+    # Enumeration also runs on a worker thread now; block on it then pump the
+    # event loop so the queued ``done`` slot performs the save.
+    et = getattr(dlg, "_yt_enumerate_thread", None)
+    if et is not None:
+        et.wait(5000)
+    _start = time.monotonic()
+    while getattr(dlg, "_yt_enumerating", False) and time.monotonic() - _start < 5.0:
+        QApplication.instance().processEvents()
+        time.sleep(0.01)
+    QApplication.instance().processEvents()
 
     # 1. watchlist.yaml on disk has the YouTube show.
     wl_path = ctx.data_dir / "watchlist.yaml"

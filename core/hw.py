@@ -40,3 +40,17 @@ def recommended_multiproc_split() -> int:
     if ncpu is None:
         return 1
     return max(1, min(ncpu // 2, 4))
+
+
+def recommend_model(*, cores: int, ram_gb: float) -> str:
+    """Suggest a whisper model for the machine class (8.1).
+
+    Heuristic by RAM (primary) + core count: plenty of RAM/cores → the fast
+    turbo large model; mid machines → medium; small machines → small/base."""
+    if ram_gb >= 16 and cores >= 8:
+        return "large-v3-turbo"
+    if ram_gb >= 8 and cores >= 6:
+        return "medium"
+    if ram_gb >= 4:
+        return "small"
+    return "base"

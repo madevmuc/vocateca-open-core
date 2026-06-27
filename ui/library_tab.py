@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -68,6 +69,8 @@ class LibraryTab(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setRootIsDecorated(False)
         self.tree.itemSelectionChanged.connect(self._on_tree_select)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         self._splitter.addWidget(self.tree)
 
         # ── Panel 2 — list ───────────────────────────────────────
@@ -85,7 +88,9 @@ class LibraryTab(QWidget):
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Date", "Title", "Source", "Show"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Extended selection so 'Export selected…' can act on multiple rows;
+        # the preview still follows the current row.
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         hdr = self.table.horizontalHeader()
@@ -102,6 +107,15 @@ class LibraryTab(QWidget):
         self.table.setSortingEnabled(True)
         hdr.setSortIndicatorShown(True)
         lp.addWidget(self.table)
+
+        from ui.widgets.empty_state import EmptyState
+
+        self.empty_state = EmptyState(
+            title="No transcripts yet",
+            hint="They'll appear here after the first run completes.",
+        )
+        lp.addWidget(self.empty_state)
+        self.empty_state.setVisible(False)
         self._splitter.addWidget(list_panel)
 
         # ── Panel 3 — preview ─────────────────────────────────────
@@ -397,6 +411,9 @@ class LibraryTab(QWidget):
             self._set_action_buttons_enabled(False)
         # Restore click-to-sort after the bulk insertion completes.
         self.table.setSortingEnabled(was_sorting)
+        empty = self.table.rowCount() == 0
+        self.empty_state.setVisible(empty)
+        self.table.setVisible(not empty)
         # Auto-select the top row (most recent episode by pub_date DESC)
         # when nothing is currently selected. Gives the user an immediate
         # preview when they switch shows, instead of an empty right pane.
@@ -434,6 +451,54 @@ class LibraryTab(QWidget):
             if r["guid"] == guid:
                 return r
         return None
+
+    def _selected_guids(self) -> list[str]:
+        sel = self.table.selectionModel()
+        if sel is None:
+            return []
+        out = []
+        for idx in sel.selectedRows():
+            item = self.table.item(idx.row(), 0)
+            g = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+            if g:
+                out.append(g)
+        return out
+
+    def _export_selected(self) -> None:
+        """Bulk-export the selected transcripts to md/json/pdf (4.1, GUI)."""
+        from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+
+        guids = self._selected_guids()
+        items = []
+        for g in guids:
+            row = self._row_for_guid(g)
+            md = row.get("md_path") if row else None
+            if md and Path(md).exists():
+                items.append(
+                    {
+                        "title": Path(md).stem,
+                        "text": Path(md).read_text(encoding="utf-8", errors="replace"),
+                    }
+                )
+        if not items:
+            QMessageBox.information(self, "Export", "Select one or more transcripts first.")
+            return
+        fmt, ok = QInputDialog.getItem(
+            self, "Export selected", "Format:", ["md", "json", "pdf"], 0, False
+        )
+        if not ok:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export to", f"transcripts.{fmt}")
+        if not path:
+            return
+        from core.bulk_export import BulkExportError, export
+
+        try:
+            export(items, fmt, path)
+        except BulkExportError as e:
+            QMessageBox.warning(self, "Export failed", str(e))
+            return
+        QMessageBox.information(self, "Exported", f"Wrote {len(items)} transcript(s) → {path}")
 
     def _render_preview(self, guid: str) -> None:
         r = self._row_for_guid(guid)
@@ -546,12 +611,147 @@ class LibraryTab(QWidget):
         a_retr.triggered.connect(lambda: self._do_retranscribe(guid))
         menu.addAction(a_retr)
 
+        a_timeline = QAction("Show timeline…", self)
+        a_timeline.triggered.connect(lambda: self._show_timeline(guid))
+        menu.addAction(a_timeline)
+
+        a_export = QAction("Export selected…", self)
+        a_export.triggered.connect(self._export_selected)
+        menu.addAction(a_export)
+
+        menu.addSeparator()
+        a_del = QAction("Delete transcript…", self)
+        a_del.triggered.connect(lambda: self._delete_transcript(guid))
+        menu.addAction(a_del)
+
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def _do_retranscribe(self, guid: str) -> None:
         from ui.retranscribe import retranscribe_episode
 
         retranscribe_episode(self.ctx, guid)
+        self.refresh()
+
+    def _show_timeline(self, guid: str) -> None:
+        """Read-only per-episode phase timeline from the events table (7.2)."""
+        from core.timeline import format_timeline
+
+        events = self.ctx.state.query_events(guid=guid)
+        QMessageBox.information(self, "Episode timeline", format_timeline(events))
+
+    # --- Tree (folder) context menu + deletions --------------------------
+
+    def _on_tree_context_menu(self, pos) -> None:
+        item = self.tree.itemAt(pos)
+        if item is None:
+            return
+        slug = item.data(0, Qt.ItemDataRole.UserRole)
+        if not slug or slug == _ALL_KEY:
+            return  # the "All episodes" node has no folder of its own
+        folder = Path(self.ctx.settings.output_root).expanduser() / slug
+        menu = QMenu(self)
+        a_reveal = QAction("Reveal folder in Finder", self)
+        a_reveal.setEnabled(folder.is_dir())
+        a_reveal.triggered.connect(lambda: macopen.reveal_in_finder(folder))
+        menu.addAction(a_reveal)
+        menu.addSeparator()
+        a_del = QAction("Delete folder (all transcripts)…", self)
+        a_del.setEnabled(folder.is_dir())
+        # NB: QAction.triggered emits a `checked` bool — capture slug via the
+        # enclosing scope (no default arg) so the bool can't shadow it.
+        a_del.triggered.connect(lambda: self._delete_show_folder(slug))
+        menu.addAction(a_del)
+        menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _confirm_once(self, title: str, text: str) -> bool:
+        """A single Abort/Confirm prompt — Abort is the default (pre-selected)
+        button, so a stray Return/Escape cancels rather than deletes."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(title)
+        box.setText(text)
+        abort = box.addButton("Abort", QMessageBox.ButtonRole.RejectRole)
+        confirm = box.addButton("Confirm", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(abort)
+        box.setEscapeButton(abort)
+        box.exec()
+        return box.clickedButton() is confirm
+
+    def _confirm_delete(self, title: str, body: str, second: str) -> bool:
+        """Two-step confirmation — a deliberate guard for irreversible deletes:
+        proceeds only when the user clicks Confirm on BOTH prompts."""
+        return self._confirm_once(title, body) and self._confirm_once("Final confirmation", second)
+
+    def _delete_transcript(self, guid: str) -> None:
+        r = self._row_for_guid(guid)
+        if r is None:
+            return
+        md: Path = r["md_path"]
+        files = [p for p in (md, md.with_suffix(".srt")) if p.exists()]
+        if not files:
+            return
+        names = "\n".join(f"  • {p.name}" for p in files)
+        if not self._confirm_delete(
+            "Delete transcript",
+            f"Permanently delete this episode's transcript file(s)?\n\n{names}\n\n"
+            "This cannot be undone.",
+            f"Really delete {len(files)} file(s)? This is final.",
+        ):
+            return
+        # Soft-delete: move to trash so the action is undoable (9.5) rather than
+        # an irreversible unlink. Each file's restore is captured for undo.
+        from ui.undo import manager as undo_manager
+        from ui.undo import trash_file
+
+        restores = []
+        for p in files:
+            try:
+                restores.append(trash_file(p, data_dir=self.ctx.data_dir))
+            except OSError:
+                pass
+
+        def _undo() -> None:
+            for restore in restores:
+                try:
+                    restore()
+                except OSError:
+                    pass
+            self.refresh()
+
+        undo_manager.push(f"Deleted transcript: {md.name}", _undo)
+        from ui.activity_log import log as log_activity
+
+        log_activity(f"Deleted transcript: {md.name} — Undo available (⌘Z, 60s)")
+        self.refresh()
+
+    def _delete_show_folder(self, slug: str) -> None:
+        import shutil
+
+        output_root = Path(self.ctx.settings.output_root).expanduser().resolve()
+        folder = (output_root / slug).resolve()
+        # Safety: refuse to delete the output root itself or anything outside it.
+        if not slug or folder == output_root or output_root not in folder.parents:
+            return
+        if not folder.is_dir():
+            return
+        n_md = len(list(folder.glob("*.md")))
+        if not self._confirm_delete(
+            "Delete folder",
+            f"Permanently delete the entire transcript folder for {slug!r}?\n\n"
+            f"{folder}\n\n"
+            f"This removes {n_md} transcript(s) and everything else inside it. "
+            "This cannot be undone.",
+            f"Really delete the folder and its {n_md} transcript(s)? This is final.",
+        ):
+            return
+        try:
+            shutil.rmtree(folder)
+        except OSError as e:
+            QMessageBox.warning(self, "Delete failed", str(e))
+            return
+        from ui.activity_log import log as log_activity
+
+        log_activity(f"Deleted folder '{slug}' ({n_md} transcript(s))")
         self.refresh()
 
     @staticmethod

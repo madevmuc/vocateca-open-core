@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from core import events
 from core.discovery import find_rss_from_url, search_itunes
 from core.library import LibraryIndex
 from core.models import Settings, Show, Watchlist
@@ -59,6 +60,7 @@ def _watchlist() -> Watchlist:
 def _state() -> StateStore:
     s = StateStore(DATA / "state.sqlite")
     s.init_schema()
+    events.install_persistence(s)
     return s
 
 
@@ -85,13 +87,36 @@ def _episode_dict(row: dict) -> dict:
         "status": row.get("status"),
         "priority": row.get("priority", 0),
         "duration_sec": row.get("duration_sec"),
+        "detected_language": row.get("detected_language"),
+        "mean_confidence": row.get("mean_confidence"),
         "word_count": row.get("word_count"),
         "mp3_path": row.get("mp3_path"),
         "transcript_path": row.get("transcript_path"),
         "attempted_at": row.get("attempted_at"),
         "completed_at": row.get("completed_at"),
         "error_text": row.get("error_text"),
+        "error_category": row.get("error_category"),
+        "attempts": row.get("attempts", 0),
     }
+
+
+def _collect_show_transcripts(show_dir: Path) -> list[dict]:
+    """Read a show's transcript .md files into ``[{title, date, text}, ...]``
+    (skips index.md). Shared by ``publish`` and ``export``."""
+    items: list[dict] = []
+    if not show_dir.is_dir():
+        return items
+    for md in sorted(show_dir.glob("*.md")):
+        if md.name == "index.md":
+            continue
+        items.append(
+            {
+                "title": md.stem,
+                "date": md.stem[:10],
+                "text": md.read_text(encoding="utf-8", errors="replace"),
+            }
+        )
+    return items
 
 
 def _coerce_value(default: Any, raw: str) -> Any:
@@ -131,7 +156,55 @@ def cmd_add(args: argparse.Namespace) -> int:
         return 2
 
     inp = args.name_or_url.strip()
-    if inp.startswith("http"):
+    yt_source = False
+    if inp.startswith("http") and ("youtube.com" in inp or "youtu.be" in inp):
+        # YouTube channel/handle URL — resolve to the canonical channel feed
+        # and tag the show source=youtube, exactly like the GUI's dedicated
+        # "Add YouTube Channel…" flow (captions-first, whisper fallback).
+        from core.youtube import (
+            YoutubeUrlError,
+            parse_youtube_url,
+            rss_url_for_channel_id,
+        )
+
+        try:
+            parsed = parse_youtube_url(inp)
+        except YoutubeUrlError as e:
+            print(f"not a usable YouTube URL: {e}", file=sys.stderr)
+            return 2
+        if parsed.kind == "video":
+            print(
+                "paste a YouTube channel or @handle URL, not a single video",
+                file=sys.stderr,
+            )
+            return 2
+        playlist_id = None
+        if parsed.kind == "playlist":
+            from core.youtube import rss_url_for_playlist_id
+
+            playlist_id = parsed.value
+            rss = rss_url_for_playlist_id(playlist_id)
+            yt_source = True
+        else:
+            if parsed.kind == "handle":
+                from core import youtube_meta
+
+                cid = youtube_meta.resolve_handle_to_channel_id(parsed.value)
+            elif parsed.kind == "channel_url":
+                from core import youtube_meta
+
+                cid = youtube_meta.resolve_channel_url_to_id(parsed.value)
+            elif parsed.kind == "channel_id":
+                cid = parsed.value
+            else:
+                print(f"unsupported YouTube URL kind: {parsed.kind}", file=sys.stderr)
+                return 2
+            if not cid:
+                print("couldn't resolve that URL to a YouTube channel", file=sys.stderr)
+                return 2
+            rss = rss_url_for_channel_id(cid)
+            yt_source = True
+    elif inp.startswith("http"):
         rss = find_rss_from_url(inp) or inp
     else:
         matches = search_itunes(inp)
@@ -147,23 +220,84 @@ def cmd_add(args: argparse.Namespace) -> int:
             rss = matches[int(choice)].feed_url
 
     meta = feed_metadata(rss)
-    manifest = build_manifest(rss)
+    transcript_pref = getattr(args, "youtube_transcript_pref", "") or ""
+    skip_shorts = bool(getattr(args, "skip_shorts", True))
+    # YouTube seeds from a DEEP channel enumeration (honouring --backlog), not
+    # the ~15-entry RSS feed; podcasts keep the RSS manifest path.
+    if yt_source and playlist_id:
+        # Playlist: enumerate the playlist's entries (3.2). Shorts filtering and
+        # the /videos-tab distinction don't apply to an explicit playlist.
+        from core.youtube import manifest_from_videos
+        from core.youtube_meta import enumerate_playlist_videos
+
+        kind, arg = mode
+        if kind == "last":
+            videos = enumerate_playlist_videos(playlist_id, limit=arg)
+        elif kind == "since":
+            videos = enumerate_playlist_videos(playlist_id, date_after=arg)
+        elif kind == "recent":
+            videos = enumerate_playlist_videos(playlist_id, limit=15)
+        else:  # "all"
+            videos = enumerate_playlist_videos(playlist_id)
+        manifest = manifest_from_videos(videos)
+    elif yt_source:
+        from core.youtube import channel_id_from_feed_url, manifest_from_videos
+        from core.youtube_meta import enumerate_channel_videos
+
+        cid = channel_id_from_feed_url(rss)
+        kind, arg = mode
+        if kind == "last":
+            videos = enumerate_channel_videos(cid, limit=arg, include_shorts=not skip_shorts)
+        elif kind == "since":
+            videos = enumerate_channel_videos(cid, date_after=arg, include_shorts=not skip_shorts)
+        elif kind == "recent":
+            videos = enumerate_channel_videos(cid, limit=15, include_shorts=not skip_shorts)
+        else:  # "all"
+            videos = enumerate_channel_videos(cid, include_shorts=not skip_shorts)
+        manifest = manifest_from_videos(videos)
+    else:
+        manifest = build_manifest(rss)
     slug = args.slug or slugify(meta["title"])
     if not args.yes:
         slug = input(f"slug [{slug}]: ").strip() or slug
 
-    prompt = suggest_whisper_prompt(
-        title=meta["title"],
-        author=meta["author"],
-        episodes=[{"title": e["title"], "description": e["description"]} for e in manifest[-20:]],
-    )
-    if not args.yes:
-        print(f"suggested prompt:\n  {prompt}")
-        custom = input("override prompt (enter to keep): ").strip()
-        if custom:
-            prompt = custom
+    # YouTube transcripts come from captions or whisper-on-audio, so the
+    # podcast-style whisper-prompt suggestion is meaningless there.
+    if yt_source:
+        prompt = ""
+    else:
+        prompt = suggest_whisper_prompt(
+            title=meta["title"],
+            author=meta["author"],
+            episodes=[
+                {"title": e["title"], "description": e["description"]} for e in manifest[-20:]
+            ],
+        )
+        if not args.yes:
+            print(f"suggested prompt:\n  {prompt}")
+            custom = input("override prompt (enter to keep): ").strip()
+            if custom:
+                prompt = custom
 
     wl = _watchlist()
+    # Dedup YouTube channels by the channel id embedded in the feed URL, so the
+    # same channel can't be re-added under a different slug.
+    if yt_source:
+        from core.youtube import channel_id_from_feed_url
+
+        new_cid = channel_id_from_feed_url(rss)
+        if new_cid:
+            existing = next(
+                (
+                    s
+                    for s in wl.shows
+                    if s.source == "youtube" and channel_id_from_feed_url(s.rss) == new_cid
+                ),
+                None,
+            )
+            if existing is not None:
+                print(f"channel already in watchlist as {existing.slug!r}", file=sys.stderr)
+                return 3
     if any(s.slug == slug for s in wl.shows):
         print(f"show {slug!r} already in watchlist", file=sys.stderr)
         return 3
@@ -174,6 +308,9 @@ def cmd_add(args: argparse.Namespace) -> int:
             rss=rss,
             whisper_prompt=prompt,
             language=(args.lang or "de"),
+            source=("youtube" if yt_source else "podcast"),
+            youtube_transcript_pref=transcript_pref,
+            skip_shorts=skip_shorts,
         )
     )
     wl.save_atomic(DATA / "watchlist.yaml")
@@ -190,7 +327,78 @@ def cmd_add(args: argparse.Namespace) -> int:
         )
     apply_backlog(state, slug, mode, manifest)
     mark_decided(state, slug)
+    events.emit(
+        events.Event(
+            type=events.EventType.SHOW_ADDED,
+            ts=events.now_iso(),
+            show_slug=slug,
+            payload={"episodes": len(manifest), "source": "youtube" if yt_source else "podcast"},
+        )
+    )
     print(f"added '{slug}' ({len(manifest)} episodes, backlog={args.backlog})")
+    return 0
+
+
+def cmd_backlog(args: argparse.Namespace) -> int:
+    """Deepen an existing YouTube show's back-catalogue: re-enumerate the
+    channel's uploads (depth from --backlog) and SEED + QUEUE the new ones
+    (new rows land pending; pre-existing rows keep their status via upsert).
+
+    Unlike ``add`` this never calls ``apply_backlog`` — the point is to queue
+    everything fetched. ``--backlog`` here means DEPTH (how far back to fetch),
+    reusing ``parse_backlog`` for a consistent CLI surface."""
+    from core.backlog import BacklogError, parse_backlog
+    from core.youtube import channel_id_from_feed_url, manifest_from_videos
+    from core.youtube_meta import enumerate_channel_videos
+
+    try:
+        mode = parse_backlog(args.backlog)
+    except BacklogError as e:
+        print(e, file=sys.stderr)
+        return 2
+
+    wl = _watchlist()
+    show = next((s for s in wl.shows if s.slug == args.slug), None)
+    if show is None:
+        print(f"no show with slug {args.slug!r}", file=sys.stderr)
+        return 2
+    if getattr(show, "source", "podcast") != "youtube":
+        print(
+            f"backlog only supports YouTube shows (got source={show.source!r})",
+            file=sys.stderr,
+        )
+        return 2
+
+    cid = channel_id_from_feed_url(show.rss)
+    if not cid:
+        print(f"could not derive a channel id from {show.rss!r}", file=sys.stderr)
+        return 2
+
+    include_shorts = not getattr(show, "skip_shorts", True)
+    kind, arg = mode
+    if kind == "last":
+        videos = enumerate_channel_videos(cid, limit=arg, include_shorts=include_shorts)
+    elif kind == "since":
+        videos = enumerate_channel_videos(cid, date_after=arg, include_shorts=include_shorts)
+    elif kind == "recent":
+        videos = enumerate_channel_videos(cid, limit=15, include_shorts=include_shorts)
+    else:  # "all"
+        videos = enumerate_channel_videos(cid, include_shorts=include_shorts)
+
+    manifest = manifest_from_videos(videos)
+    state = _state()
+    seeded = 0
+    for ep in manifest:
+        if state.get_episode(ep["guid"]) is None:
+            seeded += 1
+        state.upsert_episode(
+            show_slug=show.slug,
+            guid=ep["guid"],
+            title=ep["title"],
+            pub_date=ep["pubDate"],
+            mp3_url=ep["mp3_url"],
+        )
+    print(f"backlog {show.slug!r}: {seeded} new episode(s) queued ({len(manifest)} fetched)")
     return 0
 
 
@@ -250,6 +458,10 @@ def cmd_check(args: argparse.Namespace) -> int:
     wl = _watchlist()
     state = _state()
     state.recover_in_flight()
+    # Event-driven webhooks (10.1) — fire during a CLI check too.
+    from core import webhooks
+
+    webhooks.install(lambda: settings)
     out_root = Path(settings.output_root).expanduser()
     lib = LibraryIndex(out_root)
     lib.scan()
@@ -294,6 +506,57 @@ def cmd_check(args: argparse.Namespace) -> int:
         for ep in pending:
             r = process_episode(ep["guid"], ctx, episode_number=ep_num_map.get(ep["guid"], "0000"))
             print(f"  [{r.action:11s}] {ep['title'][:70]} — {r.detail[:60]}")
+    return 0
+
+
+def cmd_import_opml(args: argparse.Namespace) -> int:
+    """Import podcast subscriptions from an OPML file (9.1)."""
+    from core.backlog import BacklogError, apply_backlog, parse_backlog
+    from core.opml import parse_opml
+    from core.stats import _parse_duration as _pd
+    from core.watchlist_guard import mark_decided
+
+    try:
+        mode = parse_backlog(args.backlog)
+    except BacklogError as e:
+        print(e, file=sys.stderr)
+        return 2
+    try:
+        feeds = parse_opml(Path(args.file))
+    except Exception as e:  # noqa: BLE001
+        print(f"could not parse OPML: {e}", file=sys.stderr)
+        return 2
+
+    wl = _watchlist()
+    state = _state()
+    added = 0
+    for feed in feeds:
+        slug = slugify(feed["title"])
+        if any(s.slug == slug for s in wl.shows):
+            continue
+        try:
+            manifest = build_manifest(feed["xmlUrl"], timeout=60)
+        except Exception as e:  # noqa: BLE001
+            print(f"  skip {slug}: feed error: {e}", file=sys.stderr)
+            continue
+        wl.shows.append(
+            Show(slug=slug, title=feed["title"], rss=feed["xmlUrl"], language=args.lang or "de")
+        )
+        for ep in manifest:
+            state.upsert_episode(
+                show_slug=slug,
+                guid=ep["guid"],
+                title=ep["title"],
+                pub_date=ep["pubDate"],
+                mp3_url=ep["mp3_url"],
+                duration_sec=_pd(ep.get("duration", "")),
+            )
+        apply_backlog(state, slug, mode, manifest)
+        mark_decided(state, slug)
+        added += 1
+        print(f"  + {slug} ({len(manifest)} episodes)")
+    wl.save_atomic(DATA / "watchlist.yaml")
+    print(f"imported {added} show(s) from {args.file}")
     return 0
 
 
@@ -676,6 +939,44 @@ def cmd_retranscribe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_deactivate(args: argparse.Namespace) -> int:
+    """Deactivate an episode: status → paused. It stays VISIBLE in the queue
+    but the worker never claims it (the claim query is status='pending'), and
+    the daily feed-poll preserves it. Reactivate with `activate`."""
+    state = _state()
+    if state.get_episode(args.guid) is None:
+        print(f"unknown guid: {args.guid}", file=sys.stderr)
+        return 2
+    state.set_status(args.guid, EpisodeStatus.PAUSED)
+    print(f"deactivate: {args.guid} → paused (kept in queue, not processed)")
+    return 0
+
+
+def cmd_activate(args: argparse.Namespace) -> int:
+    """Reactivate a paused episode: status → pending."""
+    state = _state()
+    if state.get_episode(args.guid) is None:
+        print(f"unknown guid: {args.guid}", file=sys.stderr)
+        return 2
+    state.set_status(args.guid, EpisodeStatus.PENDING)
+    print(f"activate: {args.guid} → pending")
+    return 0
+
+
+def cmd_dequeue(args: argparse.Namespace) -> int:
+    """Remove an episode from the queue: status → skipped. It leaves the active
+    queue and the feed-poll won't re-queue it (upsert preserves status); it
+    stays in the show's episode list as `skipped` and can be re-queued with
+    `retranscribe`."""
+    state = _state()
+    if state.get_episode(args.guid) is None:
+        print(f"unknown guid: {args.guid}", file=sys.stderr)
+        return 2
+    state.set_status(args.guid, EpisodeStatus.SKIPPED)
+    print(f"dequeue: {args.guid} → skipped (removed from queue)")
+    return 0
+
+
 def cmd_retry_failed(args: argparse.Namespace) -> int:
     """Re-queue failed episodes. Without --show, retries everything; with
     --show <slug>, only that show. Without --all-time, only retries
@@ -715,6 +1016,13 @@ def _toggle_enabled(slug: str, enabled: bool) -> int:
         return 2
     show.enabled = enabled
     wl.save(DATA / "watchlist.yaml")
+    events.emit(
+        events.Event(
+            type=events.EventType.SHOW_ENABLED if enabled else events.EventType.SHOW_DISABLED,
+            ts=events.now_iso(),
+            show_slug=slug,
+        )
+    )
     print(f"{slug}: enabled={enabled}")
     return 0
 
@@ -758,6 +1066,9 @@ def cmd_remove(args: argparse.Namespace) -> int:
                 (args.slug,),
             )
             print(f"marked {cur.rowcount or 0} episode(s) as done")
+    events.emit(
+        events.Event(type=events.EventType.SHOW_REMOVED, ts=events.now_iso(), show_slug=args.slug)
+    )
     print(f"removed '{args.slug}' from watchlist")
     return 0
 
@@ -772,6 +1083,11 @@ _SHOW_SETTABLE = {
     "title": "",
     "rss": "",
     "artwork_url": "",
+    # roadmap per-show fields (0.2)
+    "auto_vocab": False,
+    "min_duration_sec": 0,
+    "max_duration_sec": 0,
+    "notify": True,
 }
 
 
@@ -799,6 +1115,14 @@ def cmd_set(args: argparse.Namespace) -> int:
         coerced = _coerce_value(_SHOW_SETTABLE[key], raw)
     except ValueError as e:
         print(f"bad value: {e}", file=sys.stderr)
+        return 2
+    # auto-captions is no longer user-selectable (legacy stored values are
+    # still tolerated on read by the pipeline, but never freshly set here).
+    if key == "youtube_transcript_pref" and coerced not in ("", "captions", "whisper"):
+        print(
+            f"bad value for youtube_transcript_pref: {coerced!r}; allowed: captions, whisper",
+            file=sys.stderr,
+        )
         return 2
     setattr(show, key, coerced)
     wl.save(DATA / "watchlist.yaml")
@@ -1009,6 +1333,207 @@ def cmd_watch_list(args: argparse.Namespace) -> int:
 # ────────────────────────────────────────────────────────────────────────
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the localhost JSON API server (10.2)."""
+    import secrets
+
+    from core.api_server import serve
+
+    class _Ctx:
+        pass
+
+    ctx = _Ctx()
+    ctx.watchlist = _watchlist()
+    ctx.state = _state()
+    ctx.settings = _settings()
+    token = args.token or ctx.state.get_meta("api_token") or secrets.token_urlsafe(16)
+    ctx.state.set_meta("api_token", token)
+    server = serve(ctx, token=token, host="127.0.0.1", port=args.port)
+    print(f"Paragraphos API → http://127.0.0.1:{args.port}  (token: {token})")
+    print("Ctrl-C to stop.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+    return 0
+
+
+def cmd_mcp(_args: argparse.Namespace) -> int:
+    """Run the MCP server over stdio (10.3) so an LLM client can drive the app."""
+    from core.mcp_server import McpUnavailable, serve_stdio
+
+    class _Ctx:
+        pass
+
+    ctx = _Ctx()
+    ctx.watchlist = _watchlist()
+    ctx.state = _state()
+    ctx.settings = _settings()
+    try:
+        serve_stdio(ctx)
+    except McpUnavailable as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_find_duplicates(args: argparse.Namespace) -> int:
+    """Report likely re-upload duplicates within a show, by title similarity (3.5)."""
+    from core.dedupe import find_near_duplicates
+
+    state = _state()
+    rows = state.list_by_status(args.slug, EpisodeStatus.PENDING)
+    rows += state.list_by_status(args.slug, EpisodeStatus.DONE)
+    items = [(r["guid"], r["title"]) for r in rows]
+    pairs = find_near_duplicates(items, threshold=args.threshold)
+    titles = {r["guid"]: r["title"] for r in rows}
+    payload = [
+        {"a": a, "b": b, "title_a": titles.get(a), "title_b": titles.get(b)} for a, b in pairs
+    ]
+    human = (
+        "\n".join(f"~ {titles.get(a)!r}  ≈  {titles.get(b)!r}" for a, b in pairs)
+        or "no near-duplicates found"
+    )
+    _emit(payload, as_json=args.json, human=human)
+    return 0
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    """Generate a static searchable transcript site + RSS (10.4)."""
+    from core.publish import publish_site
+
+    settings = _settings()
+    root = Path(settings.output_root).expanduser()
+    if not root.is_dir():
+        print(f"no transcripts root: {root}", file=sys.stderr)
+        return 2
+    slugs = [args.slug] if args.slug else [p.name for p in root.iterdir() if p.is_dir()]
+    items = []
+    for slug in slugs:
+        for t in _collect_show_transcripts(root / slug):
+            items.append({**t, "slug": f"{slug}--{t['title']}"})
+    if not items:
+        print("no transcripts to publish")
+        return 1
+    dest = Path(args.out) if args.out else (DATA / "published-site")
+    publish_site(items, dest, site_title=args.title or "Paragraphos Transcripts")
+    print(f"published {len(items)} transcript(s) → {dest}/index.html")
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Bulk-export a show's transcripts to md/json/pdf (4.1)."""
+    from core.bulk_export import BulkExportError, export
+
+    settings = _settings()
+    show_dir = Path(settings.output_root).expanduser() / args.slug
+    if not show_dir.is_dir():
+        print(f"no transcripts dir for {args.slug}: {show_dir}", file=sys.stderr)
+        return 2
+    items = _collect_show_transcripts(show_dir)
+    if not items:
+        print(f"no transcripts found in {show_dir}")
+        return 1
+    dest = Path(args.out) if args.out else (DATA / f"{args.slug}-export.{args.format}")
+    try:
+        export(items, args.format, dest)
+    except BulkExportError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    print(f"exported {len(items)} transcript(s) → {dest}")
+    return 0
+
+
+def cmd_backfill_dates(args: argparse.Namespace) -> int:
+    """Re-resolve real YouTube upload dates for a show's back-catalogue (3.1)."""
+    wl = _watchlist()
+    show = _find_show(wl, args.slug)
+    if not show:
+        print(f"unknown slug: {args.slug}", file=sys.stderr)
+        return 2
+    if getattr(show, "source", "podcast") != "youtube":
+        print("backfill-dates only applies to YouTube shows", file=sys.stderr)
+        return 2
+    from core.backcat_dates import backfill_show_dates
+    from core.youtube import channel_id_from_feed_url
+    from core.youtube_meta import enumerate_channel_videos
+
+    cid = channel_id_from_feed_url(show.rss)
+    if not cid:
+        print("couldn't resolve channel id from feed url", file=sys.stderr)
+        return 2
+
+    def _enum(channel_id, *, full):
+        return enumerate_channel_videos(channel_id, include_shorts=True, full=full)
+
+    changed = backfill_show_dates(_state(), cid, enumerate_fn=_enum)
+    print(f"updated {changed} episode date(s) for {args.slug}")
+    return 0
+
+
+def cmd_bug_report(args: argparse.Namespace) -> int:
+    """Build a redacted bug-report bundle zip (6.4)."""
+    from core.bugbundle import build_bundle
+
+    dest = Path(args.out) if args.out else (DATA / "bug-report.zip")
+    build_bundle(settings=_settings(), state=_state(), dest=dest, log_dir=DATA / "logs")
+    print(f"bug report written → {dest}")
+    return 0
+
+
+def cmd_health(args: argparse.Namespace) -> int:
+    """Run the startup health self-check (6.2)."""
+    from core import health
+
+    class _Ctx:
+        data_dir = DATA
+        settings = _settings()
+
+    rows = health.run_health_check(_Ctx())
+    human = "\n".join(f"{'✓' if r['ok'] else '✗'} {r['check']}: {r['detail']}" for r in rows)
+    _emit(rows, as_json=args.json, human=human)
+    return 0 if all(r["ok"] for r in rows) else 1
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    """Headline throughput / realtime-factor / success-rate dashboard (7.1)."""
+    from core.stats import dashboard_summary
+
+    summary = dashboard_summary(_state(), window_days=args.window)
+    human = (
+        f"throughput: {summary['throughput_per_day']:.2f} episodes/day "
+        f"(last {args.window}d)\n"
+        f"success rate: {summary['success_rate'] * 100:.0f}%\n"
+        f"realtime factor: {summary['realtime_factor']:.2f}×\n"
+        f"done/pending/failed: {summary['done']}/{summary['pending']}/{summary['failed']}"
+    )
+    _emit(summary, as_json=args.json, human=human)
+    return 0
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    """Query (and optionally export) the structured event log (7.3)."""
+    state = _state()
+    rows = state.query_events(
+        type_prefix=args.type,
+        show_slug=args.show,
+        since=args.since,
+        limit=args.limit or 1000,
+    )
+    if args.export:
+        from core.log_export import export_events
+
+        fmt = "csv" if str(args.export).lower().endswith(".csv") else "json"
+        export_events(rows, fmt, args.export)
+        print(f"exported {len(rows)} event(s) → {args.export}")
+        return 0
+    human = "\n".join(f"{r['ts']}  {r['type']}  {r.get('show_slug') or ''}".rstrip() for r in rows)
+    _emit(rows, as_json=args.json, human=human or "(no events)")
+    return 0
+
+
 def cmd_set_setting(args: argparse.Namespace) -> int:
     """Set a top-level setting in settings.yaml. Type-coerced from the
     Settings model default."""
@@ -1052,7 +1577,42 @@ def main() -> int:
         action="store_true",
         help="non-interactive: accept the first iTunes match / derived slug",
     )
-    a.set_defaults(fn=cmd_add)
+    pref = a.add_mutually_exclusive_group()
+    pref.add_argument(
+        "--captions",
+        dest="youtube_transcript_pref",
+        action="store_const",
+        const="captions",
+        help="(YouTube) import uploader captions, whisper fallback",
+    )
+    pref.add_argument(
+        "--whisper",
+        dest="youtube_transcript_pref",
+        action="store_const",
+        const="whisper",
+        help="(YouTube) always transcribe audio with whisper",
+    )
+    shorts = a.add_mutually_exclusive_group()
+    shorts.add_argument(
+        "--skip-shorts",
+        dest="skip_shorts",
+        action="store_true",
+        help="(YouTube) exclude Shorts (default)",
+    )
+    shorts.add_argument(
+        "--include-shorts",
+        dest="skip_shorts",
+        action="store_false",
+        help="(YouTube) include Shorts",
+    )
+    a.set_defaults(fn=cmd_add, youtube_transcript_pref="", skip_shorts=True)
+
+    bk = sub.add_parser(
+        "backlog", help="fetch more history for an existing YouTube show + queue it"
+    )
+    bk.add_argument("slug")
+    bk.add_argument("--backlog", required=True, help="all | recent | last:N | since:YYYY-MM-DD")
+    bk.set_defaults(fn=cmd_backlog)
 
     s_shows = sub.add_parser("shows", help="list all shows in the watchlist")
     s_shows.add_argument("--json", action="store_true")
@@ -1071,10 +1631,74 @@ def main() -> int:
         fn=cmd_import_feeds
     )
 
+    s_opml = sub.add_parser("import-opml", help="import podcast subscriptions from an OPML file")
+    s_opml.add_argument("file")
+    s_opml.add_argument("--backlog", required=True, help="all | recent | last:N | since:YYYY-MM-DD")
+    s_opml.add_argument("--lang", default=None, help="whisper language code (default de)")
+    s_opml.set_defaults(fn=cmd_import_opml)
+
     # — inspection
     s_status = sub.add_parser("status", help="snapshot: queue depth, in-flight, by-status counts")
     s_status.add_argument("--json", action="store_true")
     s_status.set_defaults(fn=cmd_status)
+
+    s_serve = sub.add_parser("serve", help="run the localhost JSON API (read + queue control)")
+    s_serve.add_argument("--port", type=int, default=8723)
+    s_serve.add_argument(
+        "--token", default=None, help="auth token (default: generated + persisted)"
+    )
+    s_serve.set_defaults(fn=cmd_serve)
+
+    s_mcp = sub.add_parser("mcp", help="run the MCP server over stdio (needs the 'mcp' package)")
+    s_mcp.set_defaults(fn=cmd_mcp)
+
+    s_dup = sub.add_parser("find-duplicates", help="report likely re-upload duplicates in a show")
+    s_dup.add_argument("slug")
+    s_dup.add_argument("--threshold", type=float, default=0.85)
+    s_dup.add_argument("--json", action="store_true")
+    s_dup.set_defaults(fn=cmd_find_duplicates)
+
+    s_publish = sub.add_parser("publish", help="generate a static searchable transcript site + RSS")
+    s_publish.add_argument("--slug", default=None, help="only this show (default: all)")
+    s_publish.add_argument(
+        "--out", default=None, help="output dir (default: <data>/published-site)"
+    )
+    s_publish.add_argument("--title", default=None, help="site title")
+    s_publish.set_defaults(fn=cmd_publish)
+
+    s_export = sub.add_parser("export", help="bulk-export a show's transcripts (md/json/pdf)")
+    s_export.add_argument("slug")
+    s_export.add_argument("--format", choices=["md", "json", "pdf"], default="md")
+    s_export.add_argument(
+        "--out", default=None, help="output path (default: <data>/<slug>-export.*)"
+    )
+    s_export.set_defaults(fn=cmd_export)
+
+    s_bfd = sub.add_parser("backfill-dates", help="re-resolve real YouTube upload dates for a show")
+    s_bfd.add_argument("slug")
+    s_bfd.set_defaults(fn=cmd_backfill_dates)
+
+    s_bug = sub.add_parser("bug-report", help="write a redacted diagnostics bundle (zip)")
+    s_bug.add_argument("--out", default=None, help="output path (default: <data>/bug-report.zip)")
+    s_bug.set_defaults(fn=cmd_bug_report)
+
+    s_health = sub.add_parser("health", help="startup health self-check (deps/model/disk/data dir)")
+    s_health.add_argument("--json", action="store_true")
+    s_health.set_defaults(fn=cmd_health)
+
+    s_stats = sub.add_parser("stats", help="throughput / realtime-factor / success-rate dashboard")
+    s_stats.add_argument("--window", type=int, default=7, help="throughput window in days")
+    s_stats.add_argument("--json", action="store_true")
+    s_stats.set_defaults(fn=cmd_stats)
+
+    s_logs = sub.add_parser("logs", help="query/export the structured event log")
+    s_logs.add_argument("--type", default=None, help="exact type or prefix (e.g. 'episode.')")
+    s_logs.add_argument("--show", default=None, help="filter by show slug")
+    s_logs.add_argument("--since", default=None, help="ISO-8601 lower bound on timestamp")
+    s_logs.add_argument("--limit", type=int, default=200)
+    s_logs.add_argument("--export", default=None, help="write rows to FILE (.json or .csv)")
+    s_logs.add_argument("--json", action="store_true")
+    s_logs.set_defaults(fn=cmd_logs)
 
     s_eps = sub.add_parser("episodes", help="list episodes for a show")
     s_eps.add_argument("slug")
@@ -1137,6 +1761,20 @@ def main() -> int:
     s_rt = sub.add_parser("retranscribe", help="set status=pending + priority=100")
     s_rt.add_argument("guid")
     s_rt.set_defaults(fn=cmd_retranscribe)
+
+    s_da = sub.add_parser(
+        "deactivate", help="deactivate an episode (paused: stays in queue, not processed)"
+    )
+    s_da.add_argument("guid")
+    s_da.set_defaults(fn=cmd_deactivate)
+
+    s_ac = sub.add_parser("activate", help="reactivate a paused episode (back to pending)")
+    s_ac.add_argument("guid")
+    s_ac.set_defaults(fn=cmd_activate)
+
+    s_dq = sub.add_parser("dequeue", help="remove an episode from the queue (mark skipped)")
+    s_dq.add_argument("guid")
+    s_dq.set_defaults(fn=cmd_dequeue)
 
     s_rf = sub.add_parser("retry-failed", help="re-queue failed episodes")
     s_rf.add_argument("--show", type=str, default=None)

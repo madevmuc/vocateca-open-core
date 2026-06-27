@@ -35,8 +35,25 @@ class Show(BaseModel):
     # watchlist.yaml files.
     source: str = "podcast"
     # Per-show YouTube transcript preference. Empty string = inherit from
-    # Settings default. Otherwise one of: "captions" | "whisper" | "auto-captions".
+    # Settings default. Otherwise one of: "captions" | "whisper". A legacy
+    # "auto-captions" value is still tolerated on read (pipeline routes it
+    # down the captions path) but is no longer user-selectable.
     youtube_transcript_pref: str = ""
+    # YouTube: skip Shorts on backfill + as a per-video pipeline safety net.
+    # Default True. include_shorts on enumeration is the inverse.
+    skip_shorts: bool = True
+    # ── roadmap additions (all default to a no-op so old YAML loads clean) ──
+    # Auto-vocabulary prompt (1.2): when True and no explicit whisper_prompt,
+    # seed --prompt from frequent proper nouns mined from past transcripts.
+    auto_vocab: bool = False
+    # Per-show duration filters (3.3): episodes whose known duration falls
+    # outside [min, max] are SKIPPED. 0 = no limit; falls back to the
+    # settings-level defaults when 0.
+    min_duration_sec: int = 0
+    max_duration_sec: int = 0
+    # Per-show notification opt-out (7.4): False silences desktop
+    # notifications for this show.
+    notify: bool = True
 
 
 class Watchlist(BaseModel):
@@ -141,8 +158,9 @@ class Settings(BaseModel):
     # than 7 days. See ui.main_window.maybe_self_update_ytdlp.
     ytdlp_last_self_update_at: str = ""
     # Default YouTube transcript source for shows that don't override
-    # via Show.youtube_transcript_pref. One of:
-    # "captions" | "whisper" | "auto-captions".
+    # via Show.youtube_transcript_pref. One of: "captions" | "whisper".
+    # A legacy "auto-captions" value is still tolerated on read but is no
+    # longer user-selectable.
     youtube_default_transcript_source: str = "captions"
     # Default expected caption language (whisper.cpp + yt-dlp lang code)
     # for newly-added YouTube channels. The Add-YouTube dialog seeds the
@@ -150,6 +168,10 @@ class Settings(BaseModel):
     # German-podcast default; pick "en" if you mostly track English
     # YouTube channels.
     youtube_default_language: str = "de"
+    # Global fallback for a YouTube show's Shorts policy: the pipeline uses
+    # this when a Show has no own ``skip_shorts`` (e.g. a legacy show written
+    # before that field existed). True = exclude Shorts.
+    youtube_skip_shorts_default: bool = True
     # Whether the bottom log dock is visible across all pages. Off by
     # default — power-user diagnostic, surfaced by the Logs sidebar
     # entry and the Ctrl+L shortcut for everyone else.
@@ -182,6 +204,59 @@ class Settings(BaseModel):
     watch_folder_root: str = "~/Paragraphos/to-be-transcribed"
     watch_folder_post: str = "keep"
     local_max_duration_hours: int = 4
+
+    # ── roadmap additions (0.2) — additive, defaults keep old YAML valid ──
+    # events / observability
+    event_retention_days: int = 90
+    # granular notifications (7.4)
+    notify_events: dict[str, bool] = Field(
+        default_factory=lambda: {
+            "episode.transcribed": True,
+            "run.finished": True,
+            "episode.failed": True,
+        }
+    )
+    notify_quiet_hours_enabled: bool = False
+    notify_quiet_hours_start: str = "22:00"
+    notify_quiet_hours_end: str = "08:00"
+    # webhooks (10.1) — each entry: {events:[..], kind:"command"|"post",
+    # target:str, enabled:bool}
+    webhooks_enabled: bool = False
+    webhooks: list[dict] = Field(default_factory=list)
+    # queue ordering (2.5)
+    queue_order: Literal["oldest_first", "newest_first", "shortest_first"] = "oldest_first"
+    # duration filter defaults (3.3) — 0 = no limit
+    default_min_duration_sec: int = 0
+    default_max_duration_sec: int = 0
+    # caption fallback (3.4)
+    caption_fallback_mode: Literal["manual_whisper", "manual_auto_whisper"] = "manual_whisper"
+    # confidence marking (1.3)
+    confidence_marking_enabled: bool = True
+    confidence_threshold: float = 0.5
+    # scheduling windows (2.3)
+    processing_windows_enabled: bool = False
+    processing_windows: list[str] = Field(default_factory=list)  # ["HH:MM-HH:MM", ...]
+    # power / battery budget (8.4)
+    pause_on_battery: bool = False
+    battery_load_level: Literal["quiet", "balanced", "full"] = "quiet"
+    # When on, the whole queue is held while the laptop runs on battery (no
+    # downloads/transcribes start) and resumes automatically once plugged in.
+    # Distinct from pause_on_battery, which only eases the load level.
+    pause_queue_on_battery: bool = False
+    # parallel transcription cap (2.2) — 1 = serial (safe default)
+    transcribe_concurrency: int = 1
+    # metal / model auto-pick (8.1)
+    whisper_metal_enabled: bool = True
+    whisper_model_autopick: bool = False
+    # diarization (1.5) — on by default; needs the optional sherpa-onnx backend
+    # + models to actually run (otherwise it's a silently-skipped no-op)
+    diarization_enabled: bool = True
+    # Directory holding segmentation.onnx + embedding.onnx for sherpa-onnx
+    # diarization. Empty → resolved to <data_dir>/models/diarize at runtime.
+    diarization_model_dir: str = ""
+    # disk guard (6.3)
+    disk_guard_enabled: bool = True
+    disk_guard_min_free_gb: int = 5
 
     @field_validator("daily_check_time")
     @classmethod
@@ -217,6 +292,15 @@ class Settings(BaseModel):
             yaml.safe_dump(self.model_dump(), allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
+        # Announce the change on the bus (no-op when nothing subscribes, e.g.
+        # the fresh-install auto-save during load). Import locally to keep the
+        # core models import-light and avoid any cycle.
+        try:
+            from core import events
+
+            events.emit(events.Event(type=events.EventType.SETTINGS_CHANGED, ts=events.now_iso()))
+        except Exception:
+            pass
 
 
 def _migrate_load_level(data: dict) -> None:

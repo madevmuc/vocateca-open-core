@@ -10,11 +10,13 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from PyQt6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import QDate, QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
     QFormLayout,
     QFrame,
@@ -31,8 +33,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core import rss as _rss
 from core import youtube_meta as _youtube_meta
 from core import ytdlp as _ytdlp
+from core.backlog import apply_backlog
 from core.discovery import find_rss_from_url, search_itunes
 from core.models import Show
 from core.prompt_gen import suggest_whisper_prompt
@@ -42,10 +46,13 @@ from core.sources import youtube_enabled
 from core.watchlist_io import save_watchlist
 from core.youtube import (
     YoutubeUrlError,
+    channel_id_from_feed_url,
+    manifest_from_videos,
     parse_youtube_url,
     rss_url_for_channel_id,
 )
 from ui.feed_probe import FeedProbeWorker
+from ui.languages import YOUTUBE_LANGUAGES
 from ui.themes import current_tokens
 from ui.widgets.pill import Pill
 from ui.widgets.show_results_table import ShowResultsTable
@@ -128,14 +135,181 @@ class _YoutubeResolveThread(QThread):
             self.step.emit(1, 2, "Resolving channel ID…")
             if self.parsed_kind == "handle":
                 cid = _youtube_meta.resolve_handle_to_channel_id(self.parsed_value)
-            else:  # "channel_id"
+            elif self.parsed_kind == "channel_url":
+                cid = _youtube_meta.resolve_channel_url_to_id(self.parsed_value)
+            elif self.parsed_kind == "channel_id":
                 cid = self.parsed_value
+            elif self.parsed_kind == "video":
+                cid = _youtube_meta.resolve_video_to_channel_id(self.parsed_value)
+            elif self.parsed_kind == "playlist":
+                # Playlists have no channel id — build a minimal preview from a
+                # one-entry flat enumeration (title) and mark it a playlist (3.2).
+                self.step.emit(2, 2, "Fetching playlist info…")
+                vids = _youtube_meta.enumerate_playlist_videos(self.parsed_value, limit=1)
+                title = "Playlist"
+                if vids:
+                    title = vids[0].get("playlist_title") or vids[0].get("playlist") or "Playlist"
+                out.update(
+                    {
+                        "ok": True,
+                        "preview": {
+                            "title": title,
+                            "channel_id": "",
+                            "is_playlist": True,
+                            "playlist_id": self.parsed_value,
+                            "artwork_url": "",
+                        },
+                    }
+                )
+                self.done.emit(out)
+                return
+            else:
+                raise ValueError(f"unsupported YouTube URL kind: {self.parsed_kind!r}")
+            if not cid:
+                raise ValueError("Couldn't resolve that URL to a YouTube channel.")
             self.step.emit(2, 2, "Fetching channel info…")
             preview = _youtube_meta.fetch_channel_preview(cid)
             out.update({"ok": True, "preview": preview})
         except Exception as e:  # noqa: BLE001
             out["error"] = str(e)
         self.done.emit(out)
+
+
+class _YtFirstVideoThread(QThread):
+    """Fetch a channel's oldest upload date + total video count off-thread.
+
+    yt-dlp has to walk the channel's video listing to find the last (oldest)
+    item, which can take a few seconds — so it runs off the GUI thread. The
+    same walk also yields the total video count, so both come back together
+    and feed the channel card ("Active since" / "Total videos") + the
+    'since a specific date' default.
+    """
+
+    done = pyqtSignal(str, int)  # ("YYYY-MM-DD" or "", total_count or 0)
+
+    def __init__(self, channel_id: str, parent=None):
+        super().__init__(parent)
+        self.channel_id = channel_id
+
+    def run(self) -> None:
+        try:
+            iso, count = _youtube_meta.fetch_channel_first_video_and_count(self.channel_id)
+        except Exception:  # noqa: BLE001
+            iso, count = "", 0
+        self.done.emit(iso, count)
+
+
+def _merge_window_and_deep(window: list[dict], deep: list[dict]) -> list[dict]:
+    """Merge the RSS feed window with the deep full-extraction backfill by guid.
+
+    The window (``core.rss.build_manifest`` of the channel feed) is the exact
+    set the daily feed-poll sees and carries authoritative dates; the deep list
+    (``manifest_from_videos(enumerate(..., full=True))``) carries the chosen
+    backfill depth plus per-video ``duration_sec``. For overlapping guids the
+    window's date/title/url win, but the deep entry's ``duration_sec`` is kept
+    when the window has none (YouTube feeds carry no duration). Deep-only
+    entries are preserved so the chosen depth is fully seeded.
+    """
+    by_guid: dict[str, dict] = {}
+    order: list[str] = []
+    for ep in deep:
+        g = ep.get("guid")
+        if not g:
+            continue
+        by_guid[g] = dict(ep)
+        order.append(g)
+    for ep in window:
+        g = ep.get("guid")
+        if not g:
+            continue
+        merged = dict(ep)
+        if g in by_guid:
+            if merged.get("duration_sec") is None:
+                merged["duration_sec"] = by_guid[g].get("duration_sec")
+        else:
+            order.append(g)
+        by_guid[g] = merged
+    return [by_guid[g] for g in order]
+
+
+class _YoutubeEnumerateThread(QThread):
+    """Build a dated backfill manifest off-thread.
+
+    Off the GUI thread (``enumerate_channel_videos`` shells out to yt-dlp and
+    can take many seconds; running it on the GUI thread freezes the app and
+    macOS SIGTERMs the unresponsive process), this fetches BOTH:
+
+    - the RSS feed window (``core.rss.build_manifest`` — the ~15 dated episodes
+      the daily poll will later see), and
+    - the deep, dated, duration-bearing backfill at the chosen depth
+      (``enumerate_channel_videos(..., full=True)`` → ``manifest_from_videos``).
+
+    It merges them by guid and emits the finished manifest (not raw videos), so
+    the feed window is always part of the seeded baseline and the daily poll can
+    never queue beyond the chosen depth.
+    """
+
+    done = pyqtSignal(list)  # merged manifest (list[dict])
+    error = pyqtSignal(str)  # message on failure
+
+    def __init__(
+        self,
+        channel_id: str,
+        limit,
+        date_after=None,
+        include_shorts=False,
+        parent=None,
+        playlist_id: str | None = None,
+    ):
+        super().__init__(parent)
+        self.channel_id = channel_id
+        self.limit = limit
+        self.date_after = date_after
+        self.include_shorts = include_shorts
+        self.playlist_id = playlist_id
+
+    def run(self) -> None:
+        try:
+            from core.youtube import rss_url_for_playlist_id
+
+            feed_url = (
+                rss_url_for_playlist_id(self.playlist_id)
+                if self.playlist_id
+                else rss_url_for_channel_id(self.channel_id)
+            )
+            try:
+                window = _rss.build_manifest(feed_url)
+            except Exception:  # noqa: BLE001
+                window = []
+            # limit == 0 ("Only new") needs no deep extraction — the RSS window
+            # IS the daily-poll set; skip the (potentially whole-channel) yt-dlp
+            # full extraction entirely.
+            if self.limit == 0:
+                deep = []
+            elif self.playlist_id:
+                deep = manifest_from_videos(
+                    _youtube_meta.enumerate_playlist_videos(
+                        self.playlist_id,
+                        limit=self.limit,
+                        date_after=self.date_after,
+                        full=True,
+                    )
+                )
+            else:
+                deep = manifest_from_videos(
+                    _youtube_meta.enumerate_channel_videos(
+                        self.channel_id,
+                        limit=self.limit,
+                        date_after=self.date_after,
+                        include_shorts=self.include_shorts,
+                        full=True,
+                    )
+                )
+            manifest = _merge_window_and_deep(window, deep)
+        except Exception as e:  # noqa: BLE001
+            self.error.emit(str(e))
+            return
+        self.done.emit(manifest)
 
 
 class _CoverSignals(QObject):
@@ -181,7 +355,7 @@ def _shorten(url: str, n: int = 48) -> str:
 
 
 class AddShowDialog(QDialog):
-    def __init__(self, ctx, parent=None):
+    def __init__(self, ctx, parent=None, *, initial_mode: Optional[str] = None):
         super().__init__(parent)
         self.ctx = ctx
         self.updated_watchlist = ctx.watchlist
@@ -208,7 +382,12 @@ class AddShowDialog(QDialog):
         root = QVBoxLayout(self)
 
         # --- Segmented mode switcher -------------------------------------- #
-        mode_row = QHBoxLayout()
+        # Wrapped in a container so it can be hidden when the dialog is
+        # launched in a single, focused mode (e.g. the dedicated
+        # "Add YouTube Channel…" button — no podcast tabs to distract).
+        self._mode_switcher = QWidget()
+        mode_row = QHBoxLayout(self._mode_switcher)
+        mode_row.setContentsMargins(0, 0, 0, 0)
         self._mode_buttons = QButtonGroup(self)
         self._mode_buttons.setExclusive(True)
         modes = [
@@ -229,7 +408,7 @@ class AddShowDialog(QDialog):
         mode_row.addStretch(1)
         self._mode_buttons.buttons()[0].setChecked(True)
         self._mode_buttons.buttonToggled.connect(self._on_mode_change)
-        root.addLayout(mode_row)
+        root.addWidget(self._mode_switcher)
 
         # --- Stacked pages ------------------------------------------------- #
         self._pages = QStackedWidget()
@@ -243,6 +422,15 @@ class AddShowDialog(QDialog):
         for p in pages:
             self._pages.addWidget(p)
         root.addWidget(self._pages, 1)
+
+        # Focused launch: jump straight to one mode and drop the switcher so
+        # the dialog reads as a single-purpose popup. Only "youtube" is wired
+        # for now (the dedicated Shows-tab button); unknown modes fall back to
+        # the default multi-tab dialog.
+        if initial_mode == "youtube" and self._yt_enabled:
+            self.setWindowTitle("Add YouTube Channel")
+            self._mode_switcher.setVisible(False)
+            self._activate_youtube_mode()
 
     # ------------------------------------------------------------------ #
     # Mode switching                                                     #
@@ -935,10 +1123,12 @@ class AddShowDialog(QDialog):
         v.addWidget(QLabel("Paste a YouTube channel URL or video URL:"))
         row = QHBoxLayout()
         self.youtube_url_input = QLineEdit()
-        self.youtube_url_input.setPlaceholderText("Paste YouTube channel URL or video URL")
+        self.youtube_url_input.setPlaceholderText(
+            "Paste a YouTube channel URL (or a video — we'll offer its channel)"
+        )
         self.youtube_url_input.editingFinished.connect(self._on_youtube_url_resolve)
         row.addWidget(self.youtube_url_input, 1)
-        self._yt_resolve_btn = QPushButton("Resolve")
+        self._yt_resolve_btn = QPushButton("Analyze")
         self._yt_resolve_btn.clicked.connect(self._on_youtube_url_resolve)
         row.addWidget(self._yt_resolve_btn)
         v.addLayout(row)
@@ -947,26 +1137,47 @@ class AddShowDialog(QDialog):
         self.yt_status.setVisible(False)
         v.addWidget(self.yt_status, 0, Qt.AlignmentFlag.AlignLeft)
 
-        # Indeterminate marquee — visible only while a resolve is in flight,
-        # so the user can see the app isn't frozen during the yt-dlp wait.
+        # Indeterminate marquee — visible only while a resolve OR an off-thread
+        # channel enumeration is in flight, so the user can see the app isn't
+        # frozen during the yt-dlp wait. The Cancel button rides alongside it
+        # and is only shown while enumeration is running (the user can bail).
+        prog_row = QHBoxLayout()
         self.yt_progress = QProgressBar()
         self.yt_progress.setRange(0, 0)
         self.yt_progress.setTextVisible(False)
         self.yt_progress.setVisible(False)
-        v.addWidget(self.yt_progress)
+        prog_row.addWidget(self.yt_progress, 1)
+        self._yt_enum_cancel_btn = QPushButton("Cancel")
+        self._yt_enum_cancel_btn.setVisible(False)
+        self._yt_enum_cancel_btn.clicked.connect(self._cancel_yt_enumerate)
+        prog_row.addWidget(self._yt_enum_cancel_btn, 0)
+        v.addLayout(prog_row)
+
+        # Off-thread channel-enumeration state.
+        self._yt_enumerate_thread: Optional[QThread] = None
+        self._yt_pending: dict = {}
+        self._yt_enumerating: bool = False
 
         # Live-tick state for the resolve progress UI.
         self._yt_resolve_timer: Optional[QTimer] = None
         self._yt_resolve_started_at: float = 0.0
+        # Re-entrancy guard for _on_youtube_url_resolve (see the comment there).
+        self._yt_resolving: bool = False
         self._yt_resolve_step_label: str = ""
         self._yt_resolve_step_idx: tuple = (0, 2)
 
-        # Preview card.
+        # Preview card — channel thumbnail (auto-loaded) on the left,
+        # title + meta on the right.
         self.yt_card = QFrame()
         self.yt_card.setObjectName("YoutubePreviewCard")
         self.yt_card.setFrameShape(QFrame.Shape.StyledPanel)
         self.yt_card.setVisible(False)
-        card_v = QVBoxLayout(self.yt_card)
+        card_h = QHBoxLayout(self.yt_card)
+        self.yt_card_thumb = QLabel("")
+        self.yt_card_thumb.setFixedSize(48, 48)
+        self.yt_card_thumb.setVisible(False)
+        card_h.addWidget(self.yt_card_thumb, 0, Qt.AlignmentFlag.AlignTop)
+        card_v = QVBoxLayout()
         self.yt_card_title = QLabel("")
         f = self.yt_card_title.font()
         f.setPointSize(f.pointSize() + 4)
@@ -977,36 +1188,67 @@ class AddShowDialog(QDialog):
         self.yt_card_meta = QLabel("")
         self.yt_card_meta.setStyleSheet(f"color: {current_tokens()['ink_3']};")
         card_v.addWidget(self.yt_card_meta)
+        card_h.addLayout(card_v, 1)
         v.addWidget(self.yt_card)
+
+        # Slug — editable; defaults to the channel name on resolve. This is
+        # the on-disk show folder + watchlist key, so let the user tidy it.
+        slug_row = QHBoxLayout()
+        slug_row.addWidget(QLabel("Slug:"))
+        self._yt_slug_input = QLineEdit()
+        self._yt_slug_input.setPlaceholderText("auto-filled from the channel name")
+        slug_row.addWidget(self._yt_slug_input, 1)
+        v.addLayout(slug_row)
 
         # Per-show transcript language. Pre-filled from the YouTube
         # default in Settings → YouTube. Used as the lang code passed to
-        # both yt-dlp's caption fetch (with a fallback chain inside
-        # core.youtube_captions) and whisper-cli (when audio fallback
-        # fires).
+        # both yt-dlp's caption fetch and whisper-cli (when audio fallback
+        # fires). A specific language is STRICT for captions (only that
+        # language → otherwise whisper); "auto" accepts the channel's
+        # default manual track and lets whisper auto-detect.
         lang_row = QHBoxLayout()
         lang_row.addWidget(QLabel("Transcript language:"))
         self._yt_lang_combo = QComboBox()
-        self._yt_lang_combo.addItem("German (de)", userData="de")
-        self._yt_lang_combo.addItem("English (en)", userData="en")
+        for label, code in YOUTUBE_LANGUAGES:
+            self._yt_lang_combo.addItem(label, userData=code)
         _seed_lang = getattr(self.ctx.settings, "youtube_default_language", "de") or "de"
         for i in range(self._yt_lang_combo.count()):
             if self._yt_lang_combo.itemData(i) == _seed_lang:
                 self._yt_lang_combo.setCurrentIndex(i)
                 break
+        else:
+            self._yt_lang_combo.setCurrentIndex(0)
         lang_row.addWidget(self._yt_lang_combo)
         lang_row.addStretch(1)
         v.addLayout(lang_row)
 
-        # Backfill choice (default: Only new).
-        # Two rows: count-based radios + a time-range dropdown. Picking a
-        # time range clears the radios; picking a radio clears the time
-        # range — mutually exclusive on the user's intent.
+        # Caption import. When checked, each video is checked individually
+        # for an uploader-provided (manual) subtitle in the chosen language;
+        # if one exists it's moved straight into the library with no whisper
+        # pass, otherwise that video falls back to whisper transcription.
+        # Auto-generated captions are never used. Maps to the show's
+        # youtube_transcript_pref ("captions" when checked, "whisper" when not).
+        self._yt_captions_chk = QCheckBox(
+            "Use uploader-provided subtitles when available "
+            "(skip transcription; checked per video — auto-generated captions are never used)"
+        )
+        self._yt_captions_chk.setToolTip(
+            "Per video: if the channel uploaded a real subtitle track in the chosen "
+            "language, import it directly into the library. Videos without a manual "
+            "subtitle are transcribed with whisper. Auto-generated captions are ignored."
+        )
+        _seed_src = getattr(self.ctx.settings, "youtube_default_transcript_source", "captions")
+        self._yt_captions_chk.setChecked(_seed_src in ("captions", "auto-captions"))
+        v.addWidget(self._yt_captions_chk)
+
+        # Backfill choice (default: Only new). Count radios OR a specific
+        # "since" date — mutually exclusive. "Only new" seeds the current
+        # feed window as a done baseline so only future uploads transcribe.
         bf_row = QHBoxLayout()
         bf_row.addWidget(QLabel("Backfill:"))
         self._yt_backfill_grp = QButtonGroup(self)
         self._yt_backfill_grp.setExclusive(True)
-        for label in ("All", "Only new", "Most recent", "Last 20", "Last 50"):
+        for label in ("Only new", "Last 5", "Last 20", "Last 100"):
             b = QRadioButton(label)
             if label == "Only new":
                 b.setChecked(True)
@@ -1015,25 +1257,35 @@ class AddShowDialog(QDialog):
         bf_row.addStretch(1)
         v.addLayout(bf_row)
 
-        time_row = QHBoxLayout()
-        time_row.addWidget(QLabel("Or by time:"))
-        self._yt_time_combo = QComboBox()
-        self._yt_time_combo.addItem("— none —", userData=None)
-        for label, days in (
-            ("Last 7 days", 7),
-            ("Last 30 days", 30),
-            ("Last 6 months", 183),
-            ("Last 12 months", 365),
-        ):
-            self._yt_time_combo.addItem(label, userData=days)
-        # Mutual exclusion: picking a time range deselects radios; picking
-        # a radio resets the dropdown to "— none —".
-        self._yt_time_combo.currentIndexChanged.connect(self._on_yt_time_changed)
+        # Or: transcribe everything published on/after a specific date.
+        # The default is the channel's first upload (fetched lazily on enable),
+        # i.e. "the whole channel" unless the user narrows it.
+        self._yt_first_video_date: str = ""  # cached oldest-upload ISO date
+        self._yt_first_video_thread: Optional[QThread] = None
+        date_row = QHBoxLayout()
+        self._yt_since_chk = QCheckBox("Or since a specific date:")
+        date_row.addWidget(self._yt_since_chk)
+        self._yt_since_date = QDateEdit()
+        self._yt_since_date.setCalendarPopup(True)
+        self._yt_since_date.setDisplayFormat("yyyy-MM-dd")
+        self._yt_since_date.setMinimumDate(QDate(2005, 1, 1))  # YouTube's founding
+        self._yt_since_date.setMaximumDate(QDate.currentDate())
+        self._yt_since_date.setDate(QDate.currentDate().addMonths(-3))
+        self._yt_since_date.setEnabled(False)
+        self._yt_since_user_set = False
+        self._yt_since_date.dateChanged.connect(self._on_yt_since_date_changed)
+        date_row.addWidget(self._yt_since_date)
+        self._yt_since_hint = QLabel("defaults to the channel's first video")
+        self._yt_since_hint.setStyleSheet(f"color: {current_tokens()['ink_3']};")
+        date_row.addWidget(self._yt_since_hint)
+        date_row.addStretch(1)
+        v.addLayout(date_row)
+
+        # Mutual exclusion: enabling the date deselects the count radios;
+        # picking a count radio clears the date checkbox.
+        self._yt_since_chk.toggled.connect(self._on_yt_since_toggled)
         for b in self._yt_backfill_grp.buttons():
             b.toggled.connect(self._on_yt_radio_toggled)
-        time_row.addWidget(self._yt_time_combo)
-        time_row.addStretch(1)
-        v.addLayout(time_row)
 
         v.addStretch(1)
 
@@ -1079,6 +1331,14 @@ class AddShowDialog(QDialog):
                 self._on_youtube_url_resolve()
 
     def _on_youtube_url_resolve(self) -> None:
+        # Re-entrancy guard: the channel-offer QMessageBox below (and any modal
+        # in this slot) steals focus from the URL field, which re-fires its
+        # editingFinished signal — i.e. THIS slot — before the modal returns.
+        # Without the guard that second entry pops a duplicate dialog, keeps
+        # resetting `_yt_resolve_started_at` (so the elapsed counter is stuck at
+        # 0s), and spawns a second resolve thread that destroys the running one.
+        if self._yt_resolving:
+            return
         url = self.youtube_url_input.text().strip()
         if not url:
             return
@@ -1095,14 +1355,31 @@ class AddShowDialog(QDialog):
             self._yt_add_btn.setEnabled(False)
             return
 
+        # Claim the resolve before any modal can re-enter this slot.
+        self._yt_resolving = True
         if parsed.kind == "video":
-            # v1.2: video flow not yet supported in the Add dialog.
-            self.yt_status.setText(
-                "Adding single videos comes in a follow-up — please paste a channel URL for now."
+            # A single video — offer to add the channel that posted it.
+            answer = QMessageBox.question(
+                self,
+                "Add channel?",
+                "That's a single video. Add the channel that posted it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
-            self.yt_status.set_kind("fail")
-            self._yt_add_btn.setEnabled(False)
-            return
+            if answer != QMessageBox.StandardButton.Yes:
+                # Declined — leave the UI in a clean, neutral state (no error).
+                # Clear any previously-resolved channel card so a stale preview
+                # doesn't linger above the idle pill.
+                self._yt_resolving = False
+                self.yt_card.setVisible(False)
+                self.yt_status.setText("No problem — paste a channel or video URL when ready.")
+                self.yt_status.set_kind("idle")
+                self.yt_status.setVisible(True)
+                self._yt_add_btn.setEnabled(False)
+                return
+            # Yes: fall through to the resolve-thread start block below. It
+            # passes parsed.kind == "video" + parsed.value == <video_id> to
+            # _YoutubeResolveThread, which does the (slow) video → channel
+            # resolution off the GUI thread.
 
         # Initial status — the step signal will overwrite this almost
         # immediately, but seed it so the user sees motion before the
@@ -1138,9 +1415,14 @@ class AddShowDialog(QDialog):
     def _refresh_yt_resolve_status(self) -> None:
         elapsed = int(time.monotonic() - self._yt_resolve_started_at)
         cur, total = self._yt_resolve_step_idx
-        self.yt_status.setText(f"Step {cur}/{total}: {self._yt_resolve_step_label} ({elapsed}s)")
+        self.yt_status.setText(
+            f"Step {cur}/{total}: {self._yt_resolve_step_label} ({elapsed}s — usually under 20 s)"
+        )
 
     def _on_youtube_resolve_done(self, out: dict) -> None:
+        # Resolve finished (ok or error) → release the re-entrancy guard so a
+        # fresh paste/Resolve can start a new resolve.
+        self._yt_resolving = False
         # Stop the elapsed-second ticker + hide the marquee.
         if getattr(self, "_yt_resolve_timer", None) is not None:
             self._yt_resolve_timer.stop()
@@ -1156,148 +1438,286 @@ class AddShowDialog(QDialog):
             return
         preview = out["preview"]
         self._loaded_yt_preview = preview
-        self.yt_card_title.setText(preview.get("title") or "(untitled)")
-        vc = preview.get("video_count") or 0
-        suffix = "+ recent" if preview.get("video_count_is_lower_bound") else ""
-        self.yt_card_meta.setText(
-            f"{vc}{suffix} video(s) · channel id: {preview.get('channel_id', '')}"
-        )
+        # New channel — drop any cached first-video date + manual override from
+        # a prior resolve, then eagerly fetch THIS channel's first-video date in
+        # the background so the "since a specific date" field shows it (its
+        # documented default) instead of the placeholder.
+        self._yt_first_video_date = ""
+        self._yt_since_user_set = False
+        self._start_first_video_fetch(preview.get("channel_id") or "")
+        title = preview.get("title") or "(untitled)"
+        self.yt_card_title.setText(title)
+        # Default the slug to the channel name, but never clobber an edit the
+        # user already made by hand.
+        new_slug = slugify(title)
+        cur = self._yt_slug_input.text().strip()
+        if not cur or cur == getattr(self, "_yt_autoslug", ""):
+            self._yt_slug_input.setText(new_slug)
+        self._yt_autoslug = new_slug
+        # The exact "Active since" date + total video count come from the eager
+        # _YtFirstVideoThread (started on resolve); show a placeholder until it
+        # lands so the card never shows a misleading lower-bound count.
+        self.yt_card_meta.setText("Loading channel details…")
+        # Auto-load the channel thumbnail off-thread (silent on failure).
+        self.yt_card_thumb.setVisible(False)
+        art = preview.get("artwork_url") or ""
+        if art:
+            worker = _CoverWorker(-1, art)
+            worker.done.connect(self._on_yt_thumb_loaded)
+            self._search_pool.start(worker)
         self.yt_card.setVisible(True)
         self.yt_status.setText("Ready")
         self.yt_status.set_kind("ok")
         self._yt_add_btn.setEnabled(True)
 
+    def _on_yt_thumb_loaded(self, _row: int, pixmap: QPixmap) -> None:
+        self.yt_card_thumb.setPixmap(pixmap)
+        self.yt_card_thumb.setVisible(True)
+
     def _yt_backfill_choice(self) -> str:
         btn = self._yt_backfill_grp.checkedButton()
         return btn.text() if btn else "Only new"
 
-    def _yt_time_window_days(self) -> int | None:
-        """Return the selected time-window in days, or None if 'none'."""
-        return self._yt_time_combo.currentData()
+    def _yt_since_date_iso(self) -> str | None:
+        """Return the 'since' date as YYYY-MM-DD when active, else None."""
+        if not self._yt_since_chk.isChecked():
+            return None
+        return self._yt_since_date.date().toString("yyyy-MM-dd")
 
-    def _on_yt_time_changed(self, _idx: int) -> None:
-        """Picking a time window deselects the count radios."""
-        if self._yt_time_combo.currentData() is None:
+    def _on_yt_since_toggled(self, checked: bool) -> None:
+        """Enabling the 'since date' picker deselects the count radios. The
+        field already defaults to the channel's first upload (fetched eagerly
+        on resolve); only (re)start the fetch if it isn't cached yet."""
+        self._yt_since_date.setEnabled(checked)
+        if not checked:
             return
-        # Uncheck all radios so _yt_backfill_choice falls back to "Only new"
-        # (its default sentinel) which we ignore when a time window is set.
         self._yt_backfill_grp.setExclusive(False)
         for b in self._yt_backfill_grp.buttons():
             b.setChecked(False)
         self._yt_backfill_grp.setExclusive(True)
+        if self._yt_first_video_date:
+            if not self._yt_since_user_set:
+                self._apply_first_video_date(self._yt_first_video_date)
+            return
+        # Not cached yet (eager fetch failed or still running) — (re)start it.
+        self._start_first_video_fetch((self._loaded_yt_preview or {}).get("channel_id") or "")
+
+    def _start_first_video_fetch(self, cid: str) -> None:
+        """Fetch the channel's oldest-upload date off-thread; cached on arrival
+        and applied to the 'since' field unless the user picked a date."""
+        if not cid:
+            return
+        if self._yt_first_video_thread is not None and self._yt_first_video_thread.isRunning():
+            return
+        self._yt_since_hint.setText("finding the channel's first video…")
+        self._yt_first_video_thread = _YtFirstVideoThread(cid, self)
+        self._yt_first_video_thread.done.connect(self._on_yt_first_video_date)
+        self._yt_first_video_thread.start()
+
+    def _on_yt_first_video_date(self, iso: str, count: int = 0) -> None:
+        self._yt_first_video_date = iso
+        # Fill the channel card's details line ("Active since" / "Total videos").
+        left = f"Active since: {iso}" if iso else "Active since: —"
+        right = f"Total videos: {count}" if count else "Total videos: —"
+        if hasattr(self, "yt_card_meta"):
+            self.yt_card_meta.setText(f"{left} · {right}")
+        if iso:
+            self._yt_since_hint.setText(f"defaults to the channel's first video ({iso})")
+        else:
+            self._yt_since_hint.setText("defaults to the channel's first video")
+        # Default the field to the first video unless the user picked a date
+        # themselves. Applied even while the checkbox is off, so the shown
+        # default matches the hint.
+        if iso and not getattr(self, "_yt_since_user_set", False):
+            self._apply_first_video_date(iso)
+
+    def _apply_first_video_date(self, iso: str) -> None:
+        d = QDate.fromString(iso, "yyyy-MM-dd")
+        if d.isValid():
+            self._yt_since_date.blockSignals(True)
+            self._yt_since_date.setDate(d)
+            self._yt_since_date.blockSignals(False)
+
+    def _on_yt_since_date_changed(self, _d) -> None:
+        self._yt_since_user_set = True
 
     def _on_yt_radio_toggled(self, checked: bool) -> None:
-        """Picking a count radio resets the time dropdown to 'none'."""
+        """Picking a count radio clears the 'since date' checkbox."""
         if not checked:
             return
-        if self._yt_time_combo.currentIndex() != 0:
-            self._yt_time_combo.blockSignals(True)
-            self._yt_time_combo.setCurrentIndex(0)
-            self._yt_time_combo.blockSignals(False)
+        if self._yt_since_chk.isChecked():
+            self._yt_since_chk.blockSignals(True)
+            self._yt_since_chk.setChecked(False)
+            self._yt_since_date.setEnabled(False)
+            self._yt_since_chk.blockSignals(False)
 
     def _add_from_youtube(self) -> None:
+        """Validate the selection, then kick off the (slow) channel
+        enumeration on a worker thread. The save itself happens later in
+        ``_on_yt_enumerate_done`` once the worker returns."""
         preview = self._loaded_yt_preview
         if not preview:
             QMessageBox.warning(self, "Missing", "Resolve a channel URL first.")
             return
         title = preview.get("title") or "channel"
         cid = preview.get("channel_id") or ""
-        if not cid:
+        is_playlist = bool(preview.get("is_playlist"))
+        playlist_id = preview.get("playlist_id") or ""
+        if is_playlist and not playlist_id:
+            QMessageBox.warning(self, "Missing", "Could not determine the playlist id.")
+            return
+        if not cid and not is_playlist:
             QMessageBox.warning(self, "Missing", "Could not determine channel id.")
             return
-        slug = slugify(title)
+        slug = self._yt_slug_input.text().strip() or slugify(title)
 
-        # Decide enumeration limit. Time-window selection takes precedence
-        # over the count radios (the two are mutually exclusive in the UI).
-        time_window_days = self._yt_time_window_days()
+        # Decide enumeration depth + the baseline mode the worker's manifest
+        # gets seeded under. A "since" date overrides the count radios
+        # (mutually exclusive in the UI). The worker ALWAYS also fetches the
+        # RSS feed window, so the baseline can mark the daily-poll window items
+        # done/pending and the poll can never queue beyond the chosen depth.
+        since_iso = self._yt_since_date_iso()
         choice = self._yt_backfill_choice()
 
-        if time_window_days is not None:
-            # Fetch a generous slice (videos come newest-first; we filter
-            # client-side and stop once we hit the cutoff). 500 covers the
-            # vast majority of channels for a 12-month window.
-            limit = 500
-        elif choice == "All":
+        if since_iso is not None:
+            # Deep-extract on/after the cutoff; the window (always fetched)
+            # supplies the pre-date entries the baseline will mark done.
             limit = None
-        elif choice == "Last 20":
-            limit = 20
-        elif choice == "Last 50":
-            limit = 50
-        elif choice == "Most recent":
-            limit = 1  # actually transcribe this one (vs "Only new" which marks-as-done)
-        else:  # "Only new"
-            limit = 1  # seed the most recent video so future runs see a baseline
+            date_after = since_iso
+            mode = ("since", since_iso)
+        elif choice.startswith("Last "):
+            n = int(choice.split()[1])
+            # Deep-extract exactly N. The feed window is always merged in too,
+            # so the daily poll's set is fully seeded and the baseline (keep
+            # newest N pending, rest done) holds even when N < the window.
+            limit = n
+            date_after = None
+            mode = ("last", n)
+        else:  # "Only new" — no deep extraction needed: the always-fetched RSS
+            # window IS the daily-poll set; seeding it all done means only
+            # genuinely-new uploads (discovered later by the poll) transcribe.
+            # limit=0 tells the worker to skip the deep enumerate entirely.
+            limit = 0
+            date_after = None
+            mode = ("only_new", None)
 
-        try:
-            videos = _youtube_meta.enumerate_channel_videos(cid, limit=limit)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "Error", f"Failed to enumerate videos: {e}")
+        # Stash the prep so the worker's done handler can finish the save.
+        self._yt_pending = {
+            "title": title,
+            "cid": cid,
+            "slug": slug,
+            "mode": mode,
+            "preview": preview,
+            "playlist_id": playlist_id,
+        }
+
+        # Indeterminate progress + Cancel; disable Add while the (potentially
+        # many-second) yt-dlp enumeration runs off the GUI thread so the app
+        # stays responsive.
+        self._yt_enumerating = True
+        self.yt_progress.setVisible(True)
+        self._yt_enum_cancel_btn.setVisible(True)
+        self._yt_add_btn.setEnabled(False)
+        # Status text + 1 Hz elapsed counter so the user sees what's happening —
+        # full-metadata extraction of a large backfill can take a while.
+        self._yt_enum_started_at = time.monotonic()
+        self._refresh_yt_enum_status()
+        self.yt_status.set_kind("running")
+        self.yt_status.setVisible(True)
+        self._yt_enum_timer = QTimer(self)
+        self._yt_enum_timer.timeout.connect(self._refresh_yt_enum_status)
+        self._yt_enum_timer.start(1000)
+
+        self._yt_enumerate_thread = _YoutubeEnumerateThread(
+            cid,
+            limit,
+            date_after=date_after,
+            include_shorts=False,
+            parent=self,
+            playlist_id=playlist_id or None,
+        )
+        self._yt_enumerate_thread.done.connect(self._on_yt_enumerate_done)
+        self._yt_enumerate_thread.error.connect(self._on_yt_enumerate_error)
+        self._yt_enumerate_thread.start()
+
+    def _refresh_yt_enum_status(self) -> None:
+        elapsed = int(time.monotonic() - getattr(self, "_yt_enum_started_at", 0.0))
+        self.yt_status.setText(f"Fetching the video list… ({elapsed}s)")
+
+    def _teardown_yt_enumerate_ui(self) -> None:
+        """Hide the progress/cancel affordances and re-enable Add."""
+        self._yt_enumerating = False
+        if getattr(self, "_yt_enum_timer", None) is not None:
+            self._yt_enum_timer.stop()
+            self._yt_enum_timer = None
+        self.yt_progress.setVisible(False)
+        self._yt_enum_cancel_btn.setVisible(False)
+        self._yt_add_btn.setEnabled(True)
+
+    def _cancel_yt_enumerate(self) -> None:
+        """Abandon an in-flight enumeration. ``enumerate_channel_videos`` is a
+        blocking subprocess that can't be cleanly interrupted mid-flight, so we
+        request interruption, disconnect the result slots (a late result is
+        ignored), drop our reference (the thread stays alive via its Qt parent),
+        and restore the UI."""
+        t = self._yt_enumerate_thread
+        if t is not None:
+            try:
+                t.requestInterruption()
+                t.done.disconnect(self._on_yt_enumerate_done)
+                t.error.disconnect(self._on_yt_enumerate_error)
+            except (TypeError, RuntimeError):
+                pass
+            self._yt_enumerate_thread = None
+        self._teardown_yt_enumerate_ui()
+
+    def _on_yt_enumerate_error(self, msg: str) -> None:
+        self._teardown_yt_enumerate_ui()
+        QMessageBox.warning(self, "Error", f"Failed to enumerate videos: {msg}")
+
+    def _on_yt_enumerate_done(self, manifest: list) -> None:
+        """Seed the show from the worker's merged, dated manifest.
+
+        The worker now does the manifest assembly off-thread (RSS feed window
+        merged with the deep full-extraction backfill), so this just guards the
+        empty case and hands the manifest + structured backlog mode to
+        ``_do_save``, which applies the real baseline. The OLD client-side
+        since-filter is gone — the baseline marks pre-date window videos done."""
+        self._teardown_yt_enumerate_ui()
+        if not manifest:
+            QMessageBox.information(self, "No videos", "0 videos match this selection.")
             return
 
-        # Apply time-window filter after enumeration.
-        if time_window_days is not None:
-            import time as _time
+        pending = self._yt_pending or {}
+        title = pending.get("title") or "channel"
+        cid = pending.get("cid") or ""
+        slug = pending.get("slug") or ""
+        mode = pending.get("mode") or ("only_new", None)
+        preview = pending.get("preview") or {}
+        playlist_id = pending.get("playlist_id") or ""
 
-            cutoff = _time.time() - time_window_days * 86400
-            videos = [v for v in videos if (v.get("timestamp") or 0) >= cutoff]
+        # Caption preference: checked → import uploader subtitles per video
+        # (manual only; whisper fallback). Unchecked → always whisper. Auto-
+        # generated captions are never used by either path.
+        transcript_pref = "captions" if self._yt_captions_chk.isChecked() else "whisper"
 
-        # Build a manifest the existing _do_save funnel understands.
-        # Date sourcing: yt-dlp --flat-playlist returns `timestamp`
-        # (Unix epoch seconds), not `upload_date`. Convert to ISO so
-        # build_slug doesn't fall back to 1970-01-01 in the filename.
-        import time as _time
+        from core.youtube import rss_url_for_playlist_id
 
-        manifest = []
-        for v in videos:
-            vid = v.get("id") or v.get("url") or ""
-            if not vid:
-                continue
-            ts = v.get("timestamp") or 0
-            pub = ""
-            if ts:
-                pub = _time.strftime("%Y-%m-%d", _time.gmtime(int(ts)))
-            elif v.get("upload_date"):
-                # Some yt-dlp paths emit YYYYMMDD instead — normalise.
-                ud = str(v["upload_date"])
-                if len(ud) == 8 and ud.isdigit():
-                    pub = f"{ud[:4]}-{ud[4:6]}-{ud[6:8]}"
-                else:
-                    pub = ud
-            manifest.append(
-                {
-                    "guid": vid,
-                    "title": v.get("title") or vid,
-                    "pubDate": pub,
-                    # YouTube videos have no MP3 enclosure — leave blank;
-                    # the YouTube pipeline branch resolves the source itself.
-                    "mp3_url": f"https://www.youtube.com/watch?v={vid}",
-                }
-            )
-
-        # Backlog mode controls whether seeded items get marked done as a
-        # baseline ("Only new") or stay pending ("All", "Most recent",
-        # "Last N", time windows). "Only new" is the only one that should
-        # mark anything as done — the rest are explicit user picks for
-        # what should actually transcribe. Time windows already filtered
-        # the manifest above, so everything left should transcribe.
-        if time_window_days is not None:
-            backlog_mode = "All"
-        elif choice == "All":
-            backlog_mode = "All"
-        elif choice == "Only new":
-            backlog_mode = "Last 5"  # seed + mark-as-done
-        else:  # "Most recent" / "Last 20" / "Last 50"
-            backlog_mode = "All"
-
+        _rss_url = (
+            rss_url_for_playlist_id(playlist_id) if playlist_id else rss_url_for_channel_id(cid)
+        )
         show_dict = {
             "slug": slug,
             "title": title,
-            "rss": rss_url_for_channel_id(cid),
+            "rss": _rss_url,
             "whisper_prompt": "",
             "manifest": manifest,
-            "backlog": backlog_mode,
+            # Structured baseline instruction consumed by _do_save:
+            #   ("only_new", None) | ("last", N) | ("since", "YYYY-MM-DD")
+            "backlog": mode,
             "artwork_url": preview.get("artwork_url", "") or "",
             "source": "youtube",
+            "youtube_transcript_pref": transcript_pref,
             # User-picked from the dropdown above (seeded from the
             # YouTube default language in Settings). Used as lang code
             # for caption fetch + whisper-cli fallback.
@@ -1314,10 +1734,31 @@ class AddShowDialog(QDialog):
         if not slug:
             QMessageBox.warning(self, "Missing", "Slug required.")
             return
+        rss = (show.get("rss") or "").strip()
+        # Dedup YouTube channels by the channel id embedded in the feed URL —
+        # runs BEFORE the slug-exists check so re-adding the same channel under
+        # a different slug is caught with a channel-specific message.
+        if show.get("source") == "youtube":
+            new_cid = channel_id_from_feed_url(rss)
+            if new_cid:
+                existing = next(
+                    (
+                        s
+                        for s in self.updated_watchlist.shows
+                        if s.source == "youtube" and channel_id_from_feed_url(s.rss) == new_cid
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    QMessageBox.warning(
+                        self,
+                        "Already added",
+                        f"This channel is already in your watchlist as {existing.slug!r}.",
+                    )
+                    return
         if any(s.slug == slug for s in self.updated_watchlist.shows):
             QMessageBox.warning(self, "Exists", f"{slug!r} is already in the watchlist.")
             return
-        rss = (show.get("rss") or "").strip()
         if not rss:
             QMessageBox.warning(self, "Missing", "RSS URL required.")
             return
@@ -1336,9 +1777,16 @@ class AddShowDialog(QDialog):
         )
         if _lang:
             model_kwargs["language"] = _lang
+        _pref = (show.get("youtube_transcript_pref") or "").strip()
+        if _pref:
+            model_kwargs["youtube_transcript_pref"] = _pref
         model = Show(**model_kwargs)
         self.updated_watchlist.shows.append(model)
         save_watchlist(self.ctx)
+        from ui.activity_log import log as log_activity
+
+        _kind = "channel" if model.source == "youtube" else "show"
+        log_activity(f"Added {_kind} '{model.title}' ({slug})")
 
         # Seed episodes in state; handle backlog strategy.
         manifest = show.get("manifest") or []
@@ -1349,10 +1797,32 @@ class AddShowDialog(QDialog):
                 title=ep["title"],
                 pub_date=ep["pubDate"],
                 mp3_url=ep["mp3_url"],
+                duration_sec=ep.get("duration_sec"),
             )
 
         mode = show.get("backlog") or "Last 5"
-        if mode == "All":
+        # YouTube modes arrive as a structured (kind, arg) tuple and apply the
+        # real, tested baseline via core.backlog.apply_backlog (which orders by
+        # pub_date DESC — now meaningful because the manifest is dated). Podcast
+        # modes still arrive as the legacy strings handled below.
+        if isinstance(mode, tuple):
+            kind = mode[0]
+            if kind == "only_new":
+                # apply_backlog has no "only_new"; mark the whole seeded
+                # baseline done so only future uploads transcribe.
+                with self.ctx.state._conn() as c:
+                    c.execute("UPDATE episodes SET status='done' WHERE show_slug=?", (slug,))
+            elif kind == "all":
+                pass  # leave everything pending
+            else:  # ("last", N) | ("since", date) | ("recent", None)
+                apply_backlog(self.ctx.state, slug, mode, manifest)
+        elif mode == "Only new":
+            # Baseline mode (YouTube "Only new"): mark every seeded video done
+            # so the back-catalogue is skipped and only future uploads — new
+            # entries the feed poll discovers later — get transcribed.
+            with self.ctx.state._conn() as c:
+                c.execute("UPDATE episodes SET status='done' WHERE show_slug=?", (slug,))
+        elif mode == "All":
             pass  # leave everything pending
         elif mode == "Most recent":
             # Keep only the latest 1 pending; mark older as done.

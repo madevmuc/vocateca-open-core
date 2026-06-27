@@ -16,3 +16,11 @@ pytz>=2024.1
 tzlocal>=5.0
 # Security: hardened XML parser used in OPML import (defuses XXE + bombs)
 defusedxml>=0.7
+# Optional: PDF bulk-export (core.bulk_export). Markdown/JSON work without it.
+fpdf2>=2.7
+# Optional: speaker diarization (core.diarize, off by default). Apache-2.0;
+# also needs a one-time segmentation+embedding model download.
+# sherpa-onnx>=1.10
+# Optional: MCP stdio server (core.mcp_server, `cli.py mcp`). Lets an LLM client
+# drive the app; not needed for normal use.
+# mcp>=1.0

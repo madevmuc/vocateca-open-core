@@ -73,3 +73,30 @@ def describe_profile(profile: LoadProfile) -> str:
     """Human-readable one-liner for the settings read-out label."""
     episodes = "1 Episode" if profile.parallel == 1 else f"{profile.parallel} Episoden"
     return f"{episodes} × {profile.threads} Threads · {_TIER_DE[profile.qos]}"
+
+
+def resolve_transcribe_workers(
+    load_parallel: int,
+    transcribe_concurrency: int,
+    ram_gb: float | None = None,
+    per_worker_gb: float = 3.0,
+) -> int:
+    """Effective transcribe-worker count (2.2).
+
+    The load profile sets a safe default (1, or 2 on big machines at "full").
+    ``transcribe_concurrency`` is a user override: when > 1 it raises the cap to
+    that value; the default (1) leaves the profile's choice untouched so we never
+    *reduce* the parallelism a "full" profile already grants.
+
+    The result is capped by available RAM (``ram_gb``): each concurrent whisper
+    worker holds the model in memory (~``per_worker_gb`` for large-v3), so we
+    never spawn more than ``ram_gb // per_worker_gb`` workers — preventing an
+    over-eager ``transcribe_concurrency`` from thrashing swap. ``ram_gb=None``
+    skips the RAM cap (detection failed)."""
+    base = max(int(load_parallel or 1), 1)
+    cc = int(transcribe_concurrency or 1)
+    workers = max(cc, 1) if cc > 1 else base
+    if ram_gb:
+        ram_cap = max(1, int(ram_gb // max(per_worker_gb, 0.1)))
+        workers = min(workers, ram_cap)
+    return max(workers, 1)

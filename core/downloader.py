@@ -77,6 +77,12 @@ def _head(url: str, timeout: float = 10.0) -> httpx.Response:
     return r
 
 
+class DownloadPaused(RuntimeError):
+    """Raised when a per-download pause was requested mid-stream (2.4).
+
+    The ``.part`` file is preserved so a later call resumes from the offset."""
+
+
 def download_mp3(
     url: str,
     dest: Path,
@@ -84,6 +90,7 @@ def download_mp3(
     chunk: int = 1 << 16,
     timeout: float = 60.0,
     max_bytes: int = MAX_MP3_BYTES,
+    pause_check=None,
     _sleep=time.sleep,
 ) -> DownloadResult:
     """Download an MP3 with retry on transient network failures.
@@ -98,7 +105,16 @@ def download_mp3(
     last_exc: BaseException | None = None
     for attempt, delay in enumerate(RETRY_DELAYS):
         try:
-            return _download_once(url, dest, chunk=chunk, timeout=timeout, max_bytes=max_bytes)
+            return _download_once(
+                url,
+                dest,
+                chunk=chunk,
+                timeout=timeout,
+                max_bytes=max_bytes,
+                pause_check=pause_check,
+            )
+        except DownloadPaused:
+            raise  # never retry a deliberate pause
         except Exception as e:
             if not _should_retry(e):
                 raise
@@ -117,7 +133,7 @@ def download_mp3(
 
 
 def _download_once(
-    url: str, dest: Path, *, chunk: int, timeout: float, max_bytes: int
+    url: str, dest: Path, *, chunk: int, timeout: float, max_bytes: int, pause_check=None
 ) -> DownloadResult:
     expected = 0
     accept_ranges = False
@@ -211,6 +227,11 @@ def _download_once(
                             "magic bytes don't match audio)"
                         )
                     first_chunk = False
+                # Per-download pause (2.4): flush what we have and bail, leaving
+                # the .part on disk so a later call resumes from here.
+                if pause_check is not None and pause_check():
+                    f.flush()
+                    raise DownloadPaused(f"download paused at {written} bytes")
                 f.write(block)
                 written += len(block)
                 if written > max_bytes:

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from core.downloader import download_mp3
+from core.downloader import DownloadPaused, download_mp3
 from core.library import LibraryIndex
 from core.sanitize import sanitize_filename
 from core.state import EpisodeStatus, StateStore
@@ -17,6 +17,17 @@ from core.transcriber import TranscriptionError, transcribe_episode
 logger = logging.getLogger(__name__)
 
 _DISK_GUARD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+
+# In-loop transient-download retry budget (6.1). Total tries = _MAX_DOWNLOAD_ATTEMPTS.
+_MAX_DOWNLOAD_ATTEMPTS = 3
+_PIPELINE_RETRY_DELAYS = (2.0, 5.0, 10.0)
+
+
+def _retry_sleep(seconds: float) -> None:
+    """Indirection so tests can stub the backoff sleep."""
+    import time
+
+    time.sleep(seconds)
 
 
 class DiskSpaceError(RuntimeError):
@@ -38,6 +49,20 @@ class PipelineContext:
     threads: int = 6
     launch_prefix: tuple[str, ...] = ()
     save_srt: bool = True
+    # Confidence marking (1.3): when on, request token-level JSON and wrap
+    # sub-threshold words in ==highlight== in the transcript body.
+    confidence_marking: bool = False
+    confidence_threshold: float = 0.5
+    # GPU/Metal (8.1): when False, pass --no-gpu to whisper.
+    metal_enabled: bool = True
+    # Duration filters (3.3): effective bounds in seconds (0 = no limit).
+    # Resolved per show (show value over settings default) in the worker.
+    min_duration_sec: int = 0
+    max_duration_sec: int = 0
+    # Per-download pause (2.4): callable(guid) -> bool; when it returns True
+    # mid-download the stream halts (leaving a .part) and the episode is
+    # re-queued. None disables the check.
+    download_pause_check: object = None
     # YouTube-source dispatch (Theme A). When ``source == "youtube"`` the
     # pipeline routes the episode through the captions-first / whisper-
     # fallback branch instead of the standard MP3-download path. The
@@ -46,14 +71,104 @@ class PipelineContext:
     source: str = "podcast"
     youtube_transcript_pref: str = ""  # "" → fall back to default below
     youtube_default_transcript_source: str = "captions"
+    # Caption fallback chain (3.4): manual_whisper | manual_auto_whisper.
+    caption_fallback_mode: str = "manual_whisper"
     youtube_channel_id: str = ""
+    # When True (the per-show default), a cheap probe runs before download
+    # and a YouTube Short is marked SKIPPED instead of transcribed. When
+    # False the probe is skipped entirely and Shorts transcribe normally.
+    skip_shorts: bool = True
+    # Speaker diarization (1.5): when on AND the optional sherpa-onnx backend +
+    # models are present, the SRT is relabelled with A/B/C speaker tags. Best-
+    # effort — a missing backend is logged and skipped, never fails a transcribe.
+    diarization_enabled: bool = False
+    diarization_model_dir: str = ""
+    # Watch-folder post-transcribe action for locally-ingested files: keep |
+    # move (into <root>/done/) | delete. Applied once the episode is DONE.
+    watch_folder_post: str = "keep"
+    watch_folder_root: str = ""
 
 
 @dataclass(frozen=True)
 class PipelineResult:
-    action: Literal["transcribed", "skipped", "failed"]
+    action: Literal["transcribed", "skipped", "failed", "deferred"]
     guid: str
     detail: str = ""
+
+
+def _record_failure(ctx, guid: str, exc: BaseException, err: str) -> str:
+    """Categorize a pipeline exception (6.1), record it with an attempt bump,
+    and decide retry vs. terminal failure. Returns the PipelineResult action
+    ("deferred" when re-queued for a transient retry, else "failed")."""
+    from core import errors
+
+    category = errors.categorize(exc)
+    # `attempts` in the DB is the count BEFORE this failure; record_failure
+    # bumps it. Decide retry against the post-bump count so max_attempts means
+    # exactly N total tries (e.g. max_attempts=3 → try 3 times, then FAILED).
+    ep = ctx.state.get_episode(guid)
+    attempts_after = int((ep or {}).get("attempts") or 0) + 1
+    retry = errors.should_retry(category, attempts_after)
+    ctx.state.record_failure(guid, category, err, retry=retry)
+    return "deferred" if retry else "failed"
+
+
+def _apply_watch_post(ctx, guid: str) -> None:
+    """Move/delete a locally-ingested source file after its transcript is done
+    (Settings → 'After transcribing'). Best-effort; no-op for non-local episodes
+    or when set to 'keep'."""
+    post = getattr(ctx, "watch_folder_post", "keep")
+    root = getattr(ctx, "watch_folder_root", "")
+    if post not in ("move", "delete") or not root:
+        return
+    local = ctx.state.get_meta(f"local_path:{guid}")
+    if not local:
+        return
+    from core.watch_post import apply_post_action
+
+    apply_post_action(local, post, root)
+
+
+def _maybe_diarize(ctx, audio_path, srt_path) -> bool:
+    """Best-effort speaker diarization (1.5): when enabled, relabel ``srt_path``
+    in place with A/B/C speaker tags using the sherpa-onnx backend. Swallows all
+    errors (incl. DiarizationUnavailable / missing models) so it never breaks a
+    completed transcribe. Returns True iff the SRT was relabelled."""
+    if not getattr(ctx, "diarization_enabled", False) or not srt_path:
+        return False
+    try:
+        from core.diarize import diarize_audio, diarize_segments, relabel_srt
+
+        segs = diarize_segments(
+            audio_path,
+            enabled=True,
+            backend=lambda p: diarize_audio(p, model_dir=ctx.diarization_model_dir),
+        )
+        if not segs:
+            return False
+        p = Path(srt_path)
+        p.write_text(relabel_srt(p.read_text(encoding="utf-8"), segs), encoding="utf-8")
+        return True
+    except Exception as e:  # noqa: BLE001 — diarization is strictly optional
+        logger.info("diarization skipped (%s): %s", type(e).__name__, e)
+        return False
+
+
+def caption_source_chain(pref: str, fallback_mode: str) -> list[str]:
+    """Ordered transcript sources for a YouTube episode (3.4).
+
+    A per-show ``pref`` of ``"whisper"`` forces audio (skips captions). Otherwise
+    the settings ``caption_fallback_mode`` decides the caption chain:
+    ``manual_whisper`` → manual captions then whisper; ``manual_auto_whisper`` →
+    manual then auto captions then whisper. Unknown modes fall back to
+    ``manual_whisper``.
+    """
+    if pref == "whisper":
+        return ["whisper"]
+    # Legacy per-show pref: "auto-captions" always means manual→auto→whisper.
+    if pref == "auto-captions" or fallback_mode == "manual_auto_whisper":
+        return ["manual", "auto", "whisper"]
+    return ["manual", "whisper"]
 
 
 def build_slug(pub_date: str, title: str, episode_number: str = "0000") -> str:
@@ -149,6 +264,17 @@ def download_phase(
     if ep is None:
         raise ValueError(f"unknown guid {guid}")
 
+    # Duration filter (3.3): skip episodes whose KNOWN length is out of the
+    # configured range. Unknown duration passes through to normal processing.
+    from core.filters import duration_filter_reason
+
+    _reason = duration_filter_reason(
+        ep.get("duration_sec"), ctx.min_duration_sec, ctx.max_duration_sec
+    )
+    if _reason:
+        ctx.state.set_status(guid, EpisodeStatus.SKIPPED, error_text=_reason)
+        return DownloadOutcome(guid=guid, result=PipelineResult("skipped", guid, _reason))
+
     base_slug = build_slug(ep["pub_date"], ep["title"], episode_number)
     # Reserve a unique-per-guid slug up front. build_slug is NOT unique —
     # feed re-uploads and '(1/2)'/'(2/2)' parts collapse to the same slug,
@@ -235,29 +361,53 @@ def download_phase(
             guid=guid,
             result=PipelineResult("failed", guid, err),
         )
-    try:
-        _guard_disk(audio_dir)
-        ctx.state.set_status(guid, EpisodeStatus.DOWNLOADING)
-        download_mp3(ep["mp3_url"], mp3_path)
-    except DiskSpaceError as e:
-        ctx.state.set_status(guid, EpisodeStatus.PENDING)
-        return DownloadOutcome(
-            guid=guid,
-            result=PipelineResult("failed", guid, f"disk: {e}"),
-        )
-    except Exception as e:
-        err = (
-            f"download failed [{type(e).__name__}]: {e}\n"
-            f"  show={ep['show_slug']}  guid={guid}\n"
-            f"  url={ep['mp3_url']}\n"
-            f"  dest={mp3_path}"
-        )
-        logger.error("download failed: %s (guid=%s)", ep["show_slug"], guid, exc_info=True)
-        ctx.state.set_status(guid, EpisodeStatus.FAILED, error_text=err)
-        return DownloadOutcome(
-            guid=guid,
-            result=PipelineResult("failed", guid, err),
-        )
+    _pause_check = None
+    if ctx.download_pause_check is not None:
+        _pause_check = lambda: bool(ctx.download_pause_check(guid))  # noqa: E731
+    # Transient download failures (network/disk) retry IN-LOOP with backoff
+    # here (6.1) rather than re-queueing for a later claim; permanent errors
+    # fail immediately. The downloader also retries network errors at the HTTP
+    # level — this is the coarser, category-aware outer loop.
+    from core import errors
+
+    attempt = 0
+    while True:
+        try:
+            _guard_disk(audio_dir)
+            ctx.state.set_status(guid, EpisodeStatus.DOWNLOADING)
+            download_mp3(ep["mp3_url"], mp3_path, pause_check=_pause_check)
+            break
+        except DownloadPaused:
+            # Per-download pause (2.4): park as PAUSED (not PENDING) so the claim
+            # loop won't immediately re-grab it and re-pause in a tight loop. The
+            # .part is kept; "Resume download" flips it back to PENDING.
+            ctx.state.set_status(guid, EpisodeStatus.PAUSED)
+            return DownloadOutcome(
+                guid=guid, result=PipelineResult("deferred", guid, "download paused")
+            )
+        except Exception as e:
+            attempt += 1
+            category = errors.DISK if isinstance(e, DiskSpaceError) else errors.categorize(e)
+            err = (
+                f"download failed [{type(e).__name__}] ({category}): {e}\n"
+                f"  show={ep['show_slug']}  guid={guid}\n"
+                f"  url={ep['mp3_url']}\n  dest={mp3_path}  attempt={attempt}"
+            )
+            if errors.is_transient(category) and attempt < _MAX_DOWNLOAD_ATTEMPTS:
+                delay = _PIPELINE_RETRY_DELAYS[min(attempt - 1, len(_PIPELINE_RETRY_DELAYS) - 1)]
+                logger.warning(
+                    "download transient failure (%s) attempt %d/%d — retrying in %.0fs: %s",
+                    category,
+                    attempt,
+                    _MAX_DOWNLOAD_ATTEMPTS,
+                    delay,
+                    e,
+                )
+                _retry_sleep(delay)
+                continue
+            logger.error("download failed: %s (guid=%s)", ep["show_slug"], guid, exc_info=True)
+            ctx.state.set_error_details(guid, category, attempt, err)
+            return DownloadOutcome(guid=guid, result=PipelineResult("failed", guid, err))
     # Persist the actual on-disk path BEFORE flipping status — orphan
     # recovery on next launch reads mp3_path back and avoids the
     # slug-rebuild guesswork that defaulted to episode_number='0000'
@@ -290,6 +440,18 @@ def transcribe_phase(outcome: DownloadOutcome, ctx: PipelineContext) -> Pipeline
 
     model_path = _P.home() / ".config/open-wispr/models" / f"ggml-{ctx.model_name}.bin"
 
+    # Pre-transcribe integrity checks (6.5): a truncated audio file or a model
+    # whose hash drifted from its TOFU pin fails fast with a clear reason rather
+    # than a cryptic whisper error much later.
+    from core import integrity
+
+    _ireason = integrity.check_audio_integrity(mp3_path) or integrity.check_model_integrity(
+        model_path, ctx.model_name
+    )
+    if _ireason:
+        ctx.state.set_status(guid, EpisodeStatus.FAILED, error_text=f"integrity: {_ireason}")
+        return PipelineResult("failed", guid, f"integrity: {_ireason}")
+
     # Write % progress into state.meta so the Queue tab can render
     # "transcribing · X%" on the active row. The transcriber uses a
     # subprocess.run + stdout→file + background poller chain that
@@ -317,18 +479,31 @@ def transcribe_phase(outcome: DownloadOutcome, ctx: PipelineContext) -> Pipeline
             threads=ctx.threads,
             launch_prefix=ctx.launch_prefix,
             save_srt=ctx.save_srt,
+            confidence_marking=ctx.confidence_marking,
+            confidence_threshold=ctx.confidence_threshold,
+            metal_enabled=ctx.metal_enabled,
             progress_cb=_write_progress,
         )
     except TranscriptionError as e:
         err = f"transcribe failed: {e}\n  show={ep['show_slug']}  guid={guid}\n  mp3={mp3_path}"
         logger.error("transcribe failed: %s (guid=%s)", ep["show_slug"], guid, exc_info=True)
-        ctx.state.set_status(guid, EpisodeStatus.FAILED, error_text=err)
-        return PipelineResult("failed", guid, err)
+        action = _record_failure(ctx, guid, e, err)
+        return PipelineResult(action, guid, err)
+    # Optional speaker diarization (1.5) — relabel the SRT before indexing.
+    _maybe_diarize(ctx, mp3_path, result.srt_path)
     ctx.library.add(result.md_path)
     from core.stats import _duration_from_srt
 
     ctx.state.record_completion(guid, result.word_count, _duration_from_srt(result.srt_path))
+    _detected = getattr(result, "detected_language", None)
+    if _detected:
+        ctx.state.set_detected_language(guid, _detected)
+    _meanconf = getattr(result, "mean_confidence", None)
+    if _meanconf is not None:
+        ctx.state.set_mean_confidence(guid, _meanconf)
     ctx.state.set_status(guid, EpisodeStatus.DONE)
+    # 'After transcribing' action for locally-ingested sources (move/delete).
+    _apply_watch_post(ctx, guid)
     # Clean up stale % so a later re-transcribe of the same guid starts
     # from blank instead of inheriting the previous 99%.
     try:
@@ -500,7 +675,33 @@ def _process_youtube_episode(
         return PipelineResult("failed", guid, err)
     vid = parsed.value
 
+    # Proactive Shorts skip: only when the show excludes Shorts. A cheap
+    # metadata probe classifies the video; a Short is terminal-SKIPPED and
+    # never downloaded. Any other category is handled reactively below.
+    if ctx.skip_shorts:
+        from core.youtube_classify import classify_video
+
+        try:
+            meta = youtube_audio.probe_video_meta(vid)
+        except Exception:
+            meta = {}
+        category, message = classify_video(meta)
+        if category == "short":
+            ctx.state.set_status(guid, EpisodeStatus.SKIPPED)
+            return PipelineResult("skipped", guid, message or "YouTube Short")
+        # The probe already knows the duration — persist it (cheap) so the
+        # Queue's Audio/Whisper/Finish columns + the live % work for this video.
+        _dur = int(meta.get("duration") or 0)
+        if _dur > 0 and not int(ep.get("duration_sec") or 0):
+            ctx.state.set_duration_sec(guid, _dur)
+            ep["duration_sec"] = _dur
+
     pref = ctx.youtube_transcript_pref or ctx.youtube_default_transcript_source or "captions"
+    # Build the ordered source chain from the per-show pref + the settings
+    # caption-fallback mode (3.4). caption_source_chain owns all the rules,
+    # including the legacy "auto-captions" pref.
+    chain = caption_source_chain(pref, ctx.caption_fallback_mode)
+    want_auto = "auto" in chain
 
     show_dir = ctx.output_root / ep["show_slug"]
     show_dir.mkdir(parents=True, exist_ok=True)
@@ -512,16 +713,16 @@ def _process_youtube_episode(
     transcript_source: str | None = None
     srt_path: Path | None = None
 
-    if pref in ("captions", "auto-captions"):
+    if "manual" in chain:
         ctx.state.set_status(guid, EpisodeStatus.DOWNLOADING)
         try:
             srt_path = youtube_captions.fetch_manual_captions(
                 vid,
                 work_dir / "video",
                 lang=ctx.language or "en",
-                auto_ok=(pref == "auto-captions"),
+                auto_ok=want_auto,
             )
-            transcript_source = pref
+            transcript_source = "auto-captions" if want_auto else "captions"
         except NoCaptionsAvailable:
             srt_path = None
 
@@ -539,6 +740,20 @@ def _process_youtube_episode(
             ctx.state.set_status(guid, EpisodeStatus.PENDING)
             return PipelineResult("failed", guid, f"disk: {e}")
         except Exception as e:
+            from core.youtube_classify import classify_video
+
+            category, message = classify_video(str(e))
+            # Live/premiere/upcoming → DEFERRED (re-probed later, not a failure).
+            if category == "live":
+                ctx.state.set_status(guid, EpisodeStatus.DEFERRED)
+                return PipelineResult("deferred", guid, message)
+            # Members-only / age-restricted / region-locked → FAILED with the
+            # friendly classification message rather than the raw exception.
+            if category in ("members_only", "age_restricted", "region_locked"):
+                ctx.state.set_status(guid, EpisodeStatus.FAILED, error_text=message)
+                return PipelineResult("failed", guid, message)
+            # Unrecognised error → generic FAILED (never deferred: avoids a
+            # livelock on a persistent error such as a bot-gate challenge).
             err = f"youtube audio download failed [{type(e).__name__}]: {e}"
             logger.error("yt audio failed: %s (guid=%s)", ep["show_slug"], guid, exc_info=True)
             ctx.state.set_status(guid, EpisodeStatus.FAILED, error_text=err)
@@ -552,6 +767,38 @@ def _process_youtube_episode(
         from pathlib import Path as _P
 
         model_path = _P.home() / ".config/open-wispr/models" / f"ggml-{ctx.model_name}.bin"
+
+        # Live transcription % for the Queue (mirrors transcribe_phase). Make
+        # sure we know the audio length first — probe once if the backfill
+        # didn't record it — so the % and the Queue Audio/Whisper/Finish
+        # columns have a real length to work from.
+        audio_sec = int(ep.get("duration_sec") or 0)
+        if not audio_sec:
+            try:
+                _m = youtube_audio.probe_video_meta(vid)
+                audio_sec = int(_m.get("duration") or 0)
+            except Exception:
+                audio_sec = 0
+            if audio_sec > 0:
+                ctx.state.set_duration_sec(guid, audio_sec)
+                ep["duration_sec"] = audio_sec
+
+        def _write_progress(elapsed_audio_sec: int) -> None:
+            pct = max(0, min(99, int(100 * elapsed_audio_sec / (audio_sec or 1))))
+            try:
+                ctx.state.set_meta(f"transcribe_pct:{guid}", str(pct))
+            except Exception:
+                pass
+
+        # Same pre-transcribe integrity guard as the podcast path (6.5).
+        from core import integrity
+
+        _ireason = integrity.check_audio_integrity(mp3_path) or integrity.check_model_integrity(
+            model_path, ctx.model_name
+        )
+        if _ireason:
+            ctx.state.set_status(guid, EpisodeStatus.FAILED, error_text=f"integrity: {_ireason}")
+            return PipelineResult("failed", guid, f"integrity: {_ireason}")
         try:
             wresult = transcribe_episode(
                 mp3_path=mp3_path,
@@ -566,6 +813,10 @@ def _process_youtube_episode(
                 threads=ctx.threads,
                 launch_prefix=ctx.launch_prefix,
                 save_srt=True,  # always need SRT for YouTube re-render
+                confidence_marking=ctx.confidence_marking,
+                confidence_threshold=ctx.confidence_threshold,
+                metal_enabled=ctx.metal_enabled,
+                progress_cb=_write_progress,
             )
         except TranscriptionError as e:
             err = f"transcribe failed: {e}"
@@ -604,6 +855,14 @@ def _process_youtube_episode(
         ctx.state.record_completion(guid, len(md_text.split()), _duration_from_srt(srt_path))
     except Exception:
         ctx.state.record_completion(guid, len(md_text.split()))
+    # Persist whisper-derived metadata when the whisper fallback ran (parity
+    # with the podcast path); the captions path leaves wresult unset.
+    _wres = locals().get("wresult")
+    if _wres is not None:
+        if getattr(_wres, "detected_language", None):
+            ctx.state.set_detected_language(guid, _wres.detected_language)
+        if getattr(_wres, "mean_confidence", None) is not None:
+            ctx.state.set_mean_confidence(guid, _wres.mean_confidence)
     ctx.state.set_status(guid, EpisodeStatus.DONE)
     try:
         ctx.state.set_meta(f"transcribe_pct:{guid}", "")

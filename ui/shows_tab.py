@@ -43,6 +43,8 @@ class ShowsTab(QWidget):
         action_row.setContentsMargins(0, 0, 0, 0)
         self.add_btn = QPushButton("Add Podcast / Show…")
         self.add_btn.clicked.connect(self._add)
+        self.add_youtube_btn = QPushButton("Add YouTube Channel…")
+        self.add_youtube_btn.clicked.connect(self._add_youtube)
         self.curated_btn = QPushButton("Add Episodes…")
         self.curated_btn.clicked.connect(self._curated)
         self.check_btn = QPushButton("Start / Check Now")
@@ -69,6 +71,7 @@ class ShowsTab(QWidget):
         )
         for b in (
             self.add_btn,
+            self.add_youtube_btn,
             self.curated_btn,
             self.check_btn,
             self.pause_btn,
@@ -81,6 +84,12 @@ class ShowsTab(QWidget):
             action_row.addWidget(b)
         action_row.addStretch()
         layout.addLayout(action_row)
+
+        # The dedicated YouTube button only makes sense when YouTube ingestion
+        # is enabled — hide it for podcast-only users (matches the Add dialog).
+        from core.sources import youtube_enabled
+
+        self.add_youtube_btn.setVisible(youtube_enabled(self.ctx.settings))
 
         # Bulk-action toolbar — operates on all currently selected rows.
         # Buttons are disabled until the table has a selection.
@@ -161,6 +170,17 @@ class ShowsTab(QWidget):
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self.table)
+
+        from ui.widgets.empty_state import EmptyState
+
+        self.empty_state = EmptyState(
+            title="No shows yet",
+            hint="Add a podcast or YouTube channel to start transcribing.",
+            action_text="Add show",
+            on_action=self._add,
+        )
+        layout.addWidget(self.empty_state)
+        self.empty_state.setVisible(False)
 
         # (Action + bulk button rows live at the top of the tab — see
         # the consolidation block above. The bottom button row that
@@ -324,6 +344,10 @@ class ShowsTab(QWidget):
         if sb is not None:
             # Clamp in case the row count shrank below the old offset.
             sb.setValue(min(scroll_pos, sb.maximum()))
+        # Empty-state when there are no shows at all (not merely filtered-empty).
+        no_shows = len(self.ctx.watchlist.shows) == 0
+        self.empty_state.setVisible(no_shows)
+        self.table.setVisible(not no_shows)
 
     def _show_matches_filters(self, show) -> bool:
         f = self._active_filters
@@ -449,6 +473,17 @@ class ShowsTab(QWidget):
             self.ctx.watchlist = dlg.updated_watchlist
             self.refresh()
 
+    def _add_youtube(self):
+        """Open the Add dialog focused on the YouTube-channel flow — a single
+        link field, no podcast tabs (the dedicated 'Add YouTube Channel…'
+        entry point)."""
+        from ui.add_show_dialog import AddShowDialog
+
+        dlg = AddShowDialog(self.ctx, self, initial_mode="youtube")
+        if dlg.exec():
+            self.ctx.watchlist = dlg.updated_watchlist
+            self.refresh()
+
     def _curated(self):
         from ui.add_episodes_dialog import AddEpisodesDialog
 
@@ -475,6 +510,12 @@ class ShowsTab(QWidget):
 
         if self._thread and self._thread.isRunning():
             return False
+        if force:
+            # User-initiated check (toolbar, tray, shortcut, Queue Start). The
+            # scheduler path (force=False) stays silent so it doesn't spam.
+            from ui.activity_log import log as log_activity
+
+            log_activity(f"Started a check{f' for {only_slug}' if only_slug else ''}")
         self._thread = CheckAllThread(self.ctx, self.ctx.settings, only_slug=only_slug, force=force)
         self._thread.progress.connect(self._log)
         self._thread.queue_sized.connect(self._on_queue_sized)
@@ -734,11 +775,19 @@ class ShowsTab(QWidget):
         reply = QMessageBox.question(
             self,
             "Delete shows",
-            f"Remove {len(slugs)} show(s) from the watchlist?\nOn-disk transcripts are kept.",
+            f"Remove {len(slugs)} show(s) from the watchlist?\n"
+            "Their episode history is cleared (re-adding starts fresh); "
+            "on-disk transcripts are kept.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
         self.ctx.watchlist.shows = [s for s in self.ctx.watchlist.shows if s.slug not in slugs]
         save_watchlist(self.ctx)
+        # Purge each removed show's episode rows so re-adding re-queues cleanly.
+        for slug in slugs:
+            self.ctx.state.delete_episodes_for_show(slug)
+        from ui.activity_log import log as log_activity
+
+        log_activity(f"Removed {len(slugs)} show(s): {', '.join(slugs)}")
         self.refresh()

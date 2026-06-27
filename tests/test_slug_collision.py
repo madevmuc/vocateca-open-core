@@ -52,10 +52,10 @@ def _ctx(tmp_path: Path, *, delete_mp3_after: bool = True) -> PipelineContext:
 
 def _fake_download(url, dest, **kw):
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(b"\x00" * 4096)
+    dest.write_bytes(b"ID3" + b"\x00" * 4096)  # valid audio magic for integrity check
     from core.downloader import DownloadResult
 
-    return DownloadResult(4096, False, 4096)
+    return DownloadResult(4099, False, 4099)
 
 
 _USAGE_TAIL = (
@@ -134,7 +134,7 @@ def test_find_existing_audio_does_not_cross_match_part_numbers(tmp_path: Path):
     audio = tmp_path / "show" / "audio"
     audio.mkdir(parents=True)
     part1 = audio / "2021-11-04_0000_Fix & Flip - 10 Fragen an einen Makler (12).mp3"
-    part1.write_bytes(b"x" * 1000)
+    part1.write_bytes(b"ID3" + b"x" * 1000)
     # Looking for part 2 while only part 1 is on disk.
     out = _find_existing_audio(audio, "2021-11-04", "Fix & Flip - 10 Fragen an einen Makler (2/2)")
     assert out is None, "part 2 must not adopt part 1's audio file"
@@ -168,7 +168,7 @@ def test_exit2_error_surfaces_whispers_real_diagnostic(tmp_path: Path):
     out = tmp_path / "out"
     out.mkdir()
     mp3 = tmp_path / "a.mp3"
-    mp3.write_bytes(b"\x00" * 2048)  # exists at pre-flight
+    mp3.write_bytes(b"ID3" + b"\x00" * 2048)  # exists at pre-flight
 
     err = (
         f"error: input file not found '{mp3}'\n"
@@ -240,7 +240,7 @@ def test_retention_keeps_mp3_still_referenced_by_active_episode(tmp_path: Path):
     audio = show_dir / "audio"
     audio.mkdir(parents=True)
     shared = audio / "2021-01-01_0000_shared.mp3"
-    shared.write_bytes(b"\x00" * 4096)
+    shared.write_bytes(b"ID3" + b"\x00" * 4096)
 
     for g in ("g1", "g2"):
         ctx.state.upsert_episode(

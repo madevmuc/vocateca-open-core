@@ -7,7 +7,6 @@ tests/test_settings_pane_sources.py.
 from __future__ import annotations
 
 import os
-import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -93,15 +92,21 @@ def test_persists_and_restores(qapp, tmp_path):
     # sectionResized(logicalIndex, oldSize, newSize)
     table1.horizontalHeader().sectionResized.emit(2, 80, 222)
 
-    # Wait for the 300 ms debounce timer to fire and the persist callback
-    # to write through to QSettings.
-    deadline = time.monotonic() + 1.5
-    while time.monotonic() < deadline:
-        qapp.processEvents()
-        time.sleep(0.05)
-        raw = QSettings().value("test/persist", "")
-        if raw:
-            break
+    # Fire the 300 ms debounce timer deterministically rather than waiting on
+    # the event loop: under the full suite a lingering background QThread can
+    # starve main-thread QTimer servicing, making a wall-clock wait flaky. The
+    # debounce QTimer is the table's single-shot 300 ms child; emit its timeout
+    # to run the persist callback synchronously.
+    from PyQt6.QtCore import QTimer
+
+    qapp.processEvents()
+    fired = False
+    for t in table1.findChildren(QTimer):
+        if t.isSingleShot() and t.interval() == 300:
+            t.timeout.emit()
+            fired = True
+    assert fired, "debounce timer not found"
+    qapp.processEvents()
     raw = QSettings().value("test/persist", "")
     assert raw, "expected QSettings entry after sectionResized + debounce"
 

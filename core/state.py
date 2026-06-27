@@ -6,10 +6,12 @@ import hashlib
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
+
+from core import events
 
 
 class EpisodeStatus(str, Enum):
@@ -20,6 +22,46 @@ class EpisodeStatus(str, Enum):
     DONE = "done"
     FAILED = "failed"
     STALE = "stale"
+    # Deliberately not processed (e.g. a Short on a show that excludes
+    # Shorts); leaves the pending pool but is not a failure.
+    SKIPPED = "skipped"
+    # Temporarily not processable, re-checked later (e.g. a live/premiere
+    # video that hasn't finished); leaves the pending pool but is not a failure.
+    DEFERRED = "deferred"
+    # Manually deactivated by the user: stays visible in the queue but the
+    # worker never claims it (the claim query is status='pending'). Toggle back
+    # to pending to resume; the feed poll preserves it (upsert keeps status).
+    PAUSED = "paused"
+
+
+# Queue claim ordering (2.5). Whitelisted SQL fragments — never interpolate a
+# raw setting value. `priority DESC` always leads so 'Run next/now' bumps win.
+_QUEUE_ORDERS = {
+    "oldest_first": "priority DESC, pub_date ASC",
+    "newest_first": "priority DESC, pub_date DESC",
+    "shortest_first": "priority DESC, (duration_sec IS NULL), duration_sec ASC",
+}
+
+
+def claim_order_by(queue_order: str) -> str:
+    """Return the whitelisted ORDER BY fragment for a queue_order setting.
+
+    Falls back to ``oldest_first`` for any unknown value.
+    """
+    return _QUEUE_ORDERS.get(queue_order, _QUEUE_ORDERS["oldest_first"])
+
+
+# Episode status → lifecycle event type. Statuses absent from this map
+# (PENDING/STALE/PAUSED) emit no event.
+_STATUS_EVENT_MAP = {
+    EpisodeStatus.DOWNLOADING: events.EventType.EPISODE_DOWNLOAD_STARTED,
+    EpisodeStatus.DOWNLOADED: events.EventType.EPISODE_DOWNLOADED,
+    EpisodeStatus.TRANSCRIBING: events.EventType.EPISODE_TRANSCRIBE_STARTED,
+    EpisodeStatus.DONE: events.EventType.EPISODE_TRANSCRIBED,
+    EpisodeStatus.FAILED: events.EventType.EPISODE_FAILED,
+    EpisodeStatus.SKIPPED: events.EventType.EPISODE_SKIPPED,
+    EpisodeStatus.DEFERRED: events.EventType.EPISODE_DEFERRED,
+}
 
 
 _SCHEMA = """
@@ -65,6 +107,19 @@ CREATE TABLE IF NOT EXISTS slug_reservations (
     slug TEXT PRIMARY KEY,
     guid TEXT NOT NULL UNIQUE
 );
+
+-- Append-only lifecycle event log (core.events backbone). Pruned on startup
+-- to settings.event_retention_days. Backs timeline / filterable logs / stats.
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    type TEXT NOT NULL,
+    show_slug TEXT,
+    guid TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
+CREATE INDEX IF NOT EXISTS idx_events_guid ON events(guid);
 """
 
 
@@ -116,6 +171,10 @@ class StateStore:
                 "ALTER TABLE episodes ADD COLUMN duration_sec INTEGER",
                 "ALTER TABLE episodes ADD COLUMN word_count INTEGER",
                 "ALTER TABLE episodes ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE episodes ADD COLUMN detected_language TEXT",
+                "ALTER TABLE episodes ADD COLUMN mean_confidence REAL",
+                "ALTER TABLE episodes ADD COLUMN error_category TEXT",
+                "ALTER TABLE episodes ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
             ):
                 try:
                     c.execute(stmt)
@@ -170,6 +229,58 @@ class StateStore:
             else:
                 c.execute("UPDATE episodes SET word_count=? WHERE guid=?", (word_count, guid))
 
+    def set_detected_language(self, guid: str, lang: str) -> None:
+        """Persist the language whisper auto-detected for this episode (1.1)."""
+        with self._conn() as c:
+            c.execute("UPDATE episodes SET detected_language=? WHERE guid=?", (lang, guid))
+
+    def set_mean_confidence(self, guid: str, value: float) -> None:
+        """Persist the mean whisper confidence for this episode (1.3)."""
+        with self._conn() as c:
+            c.execute("UPDATE episodes SET mean_confidence=? WHERE guid=?", (value, guid))
+
+    def set_error_details(self, guid: str, category: str, attempts: int, error_text: str) -> None:
+        """Terminal failure with an explicit attempt count (6.1 in-loop retry):
+        set status FAILED + error_text + error_category + attempts, and emit the
+        episode.failed event."""
+        with self._conn() as c:
+            c.execute(
+                "UPDATE episodes SET error_category=?, attempts=? WHERE guid=?",
+                (category, int(attempts), guid),
+            )
+        self.set_status(guid, EpisodeStatus.FAILED, error_text=error_text)
+
+    def record_failure(self, guid: str, category: str, error_text: str, *, retry: bool) -> int:
+        """Record a failure (6.1): bump ``attempts``, store ``error_category``,
+        and set status to PENDING (when ``retry``) or FAILED. Returns the new
+        attempt count. Emits the matching lifecycle event via set_status."""
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE episodes SET attempts = COALESCE(attempts, 0) + 1, error_category=? "
+                "WHERE guid=?",
+                (category, guid),
+            )
+            if cur.rowcount:
+                row = c.execute("SELECT attempts FROM episodes WHERE guid=?", (guid,)).fetchone()
+                attempts = row["attempts"] if row else 1
+            else:
+                attempts = 1
+        if retry:
+            self.set_status(guid, EpisodeStatus.PENDING)
+        else:
+            self.set_status(guid, EpisodeStatus.FAILED, error_text=error_text)
+        return attempts
+
+    def set_duration_sec(self, guid: str, duration_sec: int) -> None:
+        """Persist a video's known audio length mid-flight (before transcription
+        completes) so the Queue's Audio / Whisper / Finish columns + the live
+        transcribe % have a real audio length to work from."""
+        with self._conn() as c:
+            c.execute(
+                "UPDATE episodes SET duration_sec=? WHERE guid=?",
+                (duration_sec, guid),
+            )
+
     def get_episode(self, guid: str) -> Optional[Dict[str, Any]]:
         with self._conn() as c:
             row = c.execute("SELECT * FROM episodes WHERE guid = ?", (guid,)).fetchone()
@@ -184,9 +295,78 @@ class StateStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def claim_one_pending(self, scope_slugs: list[str], order_by: str) -> Optional[dict]:
+        """Atomically claim the next pending episode for one of ``scope_slugs``,
+        flipping it to ``downloading``, and return its row (or None).
+
+        ``order_by`` MUST be a whitelisted fragment from ``claim_order_by`` —
+        never raw user input. The single ``UPDATE … RETURNING`` is atomic, so
+        concurrent download workers can call this without double-claiming a row
+        (parallel transcription, 2.2)."""
+        if not scope_slugs:
+            return None
+        placeholders = ",".join("?" for _ in scope_slugs)
+        with self._conn() as c:
+            row = c.execute(
+                "UPDATE episodes SET status='downloading' "
+                "WHERE guid = ("
+                "  SELECT guid FROM episodes "
+                f"  WHERE status='pending' AND show_slug IN ({placeholders}) "
+                f"  ORDER BY {order_by} LIMIT 1"
+                ") RETURNING *",
+                tuple(scope_slugs),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def set_priority(self, guid: str, priority: int) -> None:
         with self._conn() as c:
             c.execute("UPDATE episodes SET priority=? WHERE guid=?", (priority, guid))
+
+    # Base for manual "move to top" ordering — above the Run-now (10) /
+    # Run-next (5) bump priorities so a move-to-top episode genuinely lands
+    # at the top of the claim order (priority DESC).
+    _MANUAL_TOP_BASE = 1000
+
+    def set_priorities(self, ordered_guids: list[str]) -> None:
+        """Persist a user-chosen ordering (2.1): the first guid gets the highest
+        priority so the claim ORDER BY (priority DESC, …) yields the same order.
+        Priorities start above the Run-now/Run-next bumps so 'move to top' really
+        reaches the top. Guids not listed keep their existing priority."""
+        n = len(ordered_guids)
+        with self._conn() as c:
+            for i, guid in enumerate(ordered_guids):
+                c.execute(
+                    "UPDATE episodes SET priority=? WHERE guid=?",
+                    (self._MANUAL_TOP_BASE + (n - i), guid),
+                )
+
+    def move_to_bottom(self, guids: list[str]) -> None:
+        """Sink ``guids`` below everything else in the claim order (2.1)."""
+        with self._conn() as c:
+            for guid in guids:
+                c.execute(
+                    "UPDATE episodes SET priority=? WHERE guid=?",
+                    (-self._MANUAL_TOP_BASE, guid),
+                )
+
+    def delete_episodes_for_show(self, show_slug: str) -> int:
+        """Purge all episode rows for a show (used when the show is removed) so
+        re-adding the same channel starts from a clean slate instead of finding
+        its old episodes still marked ``done`` (and thus never re-queued). Also
+        drops the show's slug reservations. Transcripts on disk are untouched.
+        Returns the number of episode rows deleted."""
+        with self._conn() as c:
+            guids = [
+                r["guid"]
+                for r in c.execute(
+                    "SELECT guid FROM episodes WHERE show_slug=?", (show_slug,)
+                ).fetchall()
+            ]
+            cur = c.execute("DELETE FROM episodes WHERE show_slug=?", (show_slug,))
+            if guids:
+                ph = ",".join("?" for _ in guids)
+                c.execute(f"DELETE FROM slug_reservations WHERE guid IN ({ph})", tuple(guids))
+            return cur.rowcount or 0
 
     def set_mp3_path(self, guid: str, mp3_path: str) -> None:
         """Persist the actual on-disk MP3 path so the orphan-recovery
@@ -263,10 +443,14 @@ class StateStore:
         self, guid: str, status: EpisodeStatus, *, error_text: Optional[str] = None
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        emits_event = _STATUS_EVENT_MAP.get(status) is not None
         with self._conn() as c:
             if status == EpisodeStatus.DONE:
+                # Success clears the failure bookkeeping so a later, unrelated
+                # transient failure gets its full retry budget (6.1).
                 c.execute(
-                    "UPDATE episodes SET status=?, completed_at=?, error_text=NULL WHERE guid=?",
+                    "UPDATE episodes SET status=?, completed_at=?, error_text=NULL, "
+                    "error_category=NULL, attempts=0 WHERE guid=?",
                     (status.value, now, guid),
                 )
             elif status in (EpisodeStatus.DOWNLOADING, EpisodeStatus.TRANSCRIBING):
@@ -281,6 +465,42 @@ class StateStore:
                 )
             else:
                 c.execute("UPDATE episodes SET status=? WHERE guid=?", (status.value, guid))
+            # Only fetch the payload row for statuses that actually emit an event
+            # — PENDING/STALE/PAUSED transitions (common in the worker hot path)
+            # skip the extra SELECT entirely.
+            row = (
+                c.execute(
+                    "SELECT show_slug, title, detected_language FROM episodes WHERE guid=?",
+                    (guid,),
+                ).fetchone()
+                if emits_event
+                else None
+            )
+        if emits_event:
+            self._emit_status_event(guid, status, row, error_text)
+
+    @staticmethod
+    def _emit_status_event(guid, status, row, error_text):
+        """Translate a status change into a lifecycle event (best-effort)."""
+        event_type = _STATUS_EVENT_MAP.get(status)
+        if event_type is None:
+            return
+        payload: dict = {}
+        if row is not None and row["title"]:
+            payload["title"] = row["title"]
+        if status == EpisodeStatus.DONE and row is not None and row["detected_language"]:
+            payload["detected_language"] = row["detected_language"]
+        if error_text:
+            payload["error_text"] = error_text
+        events.emit(
+            events.Event(
+                type=event_type,
+                ts=events.now_iso(),
+                show_slug=(row["show_slug"] if row is not None else None),
+                guid=guid,
+                payload=payload,
+            )
+        )
 
     def recover_in_flight(self) -> int:
         """Called on startup: reset downloading/transcribing → pending."""
@@ -304,6 +524,27 @@ class StateStore:
             )
             return cur.rowcount or 0
 
+    def snapshot_statuses(self, statuses: list[str]) -> list[tuple[str, str, int]]:
+        """Capture (guid, status, priority) for rows in the given statuses, so a
+        destructive bulk change (e.g. clear-queue) can be undone (9.5)."""
+        ph = ",".join("?" for _ in statuses)
+        with self._conn() as c:
+            rows = c.execute(
+                f"SELECT guid, status, priority FROM episodes WHERE status IN ({ph})",
+                tuple(statuses),
+            ).fetchall()
+        return [(r["guid"], r["status"], r["priority"]) for r in rows]
+
+    def restore_statuses(self, snapshot: list[tuple[str, str, int]]) -> int:
+        """Restore (guid, status, priority) rows captured by ``snapshot_statuses``."""
+        with self._conn() as c:
+            for guid, status, priority in snapshot:
+                c.execute(
+                    "UPDATE episodes SET status=?, priority=? WHERE guid=?",
+                    (status, priority, guid),
+                )
+        return len(snapshot)
+
     def set_meta(self, key: str, value: str) -> None:
         with self._conn() as c:
             c.execute(
@@ -318,3 +559,105 @@ class StateStore:
         with self._conn() as c:
             row = c.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
             return row["value"] if row else None
+
+    # ── events (core.events persistence) ──────────────────────────────────
+    def append_event(self, ev: Any) -> None:
+        """Persist a single ``core.events.Event``."""
+        import json
+
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO events (ts, type, show_slug, guid, payload_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    ev.ts,
+                    ev.type,
+                    ev.show_slug,
+                    ev.guid,
+                    json.dumps(ev.payload or {}, ensure_ascii=False),
+                ),
+            )
+
+    def query_events(
+        self,
+        *,
+        type_prefix: Optional[str] = None,
+        show_slug: Optional[str] = None,
+        guid: Optional[str] = None,
+        since: Optional[str] = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Read persisted events, oldest-first, with optional filters.
+
+        ``type_prefix`` matches by prefix (e.g. ``"episode."``) or, with no
+        trailing dot, exactly. ``since`` is an inclusive ISO-8601 lower bound on
+        ``ts`` (string comparison is valid for ISO-8601 UTC).
+        """
+        import json
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if type_prefix:
+            if type_prefix.endswith("."):
+                clauses.append("type LIKE ?")
+                params.append(type_prefix + "%")
+            else:
+                clauses.append("type = ?")
+                params.append(type_prefix)
+        if show_slug is not None:
+            clauses.append("show_slug = ?")
+            params.append(show_slug)
+        if guid is not None:
+            clauses.append("guid = ?")
+            params.append(guid)
+        if since is not None:
+            clauses.append("ts >= ?")
+            params.append(since)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        with self._conn() as c:
+            rows = c.execute(
+                f"SELECT id, ts, type, show_slug, guid, payload_json FROM events"
+                f"{where} ORDER BY id ASC LIMIT ?",
+                params,
+            ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d.pop("payload_json") or "{}")
+            except Exception:
+                d["payload"] = {}
+                d.pop("payload_json", None)
+            out.append(d)
+        return out
+
+    def count_events(self, *, type_exact: Optional[str] = None, since: Optional[str] = None) -> int:
+        """Cheap COUNT(*) over the events table with optional type/since filters
+        (avoids materialising rows just to count them)."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if type_exact is not None:
+            clauses.append("type = ?")
+            params.append(type_exact)
+        if since is not None:
+            clauses.append("ts >= ?")
+            params.append(since)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._conn() as c:
+            row = c.execute(f"SELECT COUNT(*) AS n FROM events{where}", params).fetchone()
+        return int(row["n"]) if row else 0
+
+    def prune_events(self, retention_days: int) -> int:
+        """Delete events older than ``retention_days``. Returns rows deleted.
+
+        A non-positive ``retention_days`` keeps everything (no-op).
+        """
+        if retention_days is None or retention_days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat(
+            timespec="seconds"
+        )
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+            return cur.rowcount or 0

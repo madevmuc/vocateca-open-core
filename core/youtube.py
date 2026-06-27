@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import parse_qs, urlparse
 
-YoutubeKind = Literal["video", "channel_id", "handle"]
+YoutubeKind = Literal["video", "channel_id", "handle", "channel_url", "playlist"]
 
 
 class YoutubeUrlError(ValueError):
@@ -17,7 +17,9 @@ class YoutubeUrlError(ValueError):
 @dataclass(frozen=True)
 class YoutubeUrl:
     kind: YoutubeKind
-    value: str  # video id, channel id, or handle (without @)
+    # video id; channel id; handle without @; or, for kind "channel_url",
+    # a full channel URL (resolved to an id via resolve_channel_url_to_id).
+    value: str
 
 
 _VIDEO_ID_RE = re.compile(r"^[\w-]{11}$")
@@ -38,6 +40,12 @@ def parse_youtube_url(url: str) -> YoutubeUrl:
         raise YoutubeUrlError(f"bad video id: {vid!r}")
 
     if host in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
+        if path.startswith("/playlist"):
+            qs = parse_qs(u.query)
+            pid = (qs.get("list") or [""])[0]
+            if pid:
+                return YoutubeUrl("playlist", pid)
+            raise YoutubeUrlError("playlist URL has no list= id")
         if path.startswith("/watch"):
             qs = parse_qs(u.query)
             v = (qs.get("v") or [""])[0]
@@ -53,9 +61,85 @@ def parse_youtube_url(url: str) -> YoutubeUrl:
             handle = path[2:].split("/", 1)[0]
             if handle:
                 return YoutubeUrl("handle", handle)
+        if path.startswith("/c/") or path.startswith("/user/"):
+            return YoutubeUrl("channel_url", url.strip())
+
+    # Bare "@handle" or bare "name" (no scheme, no host): only when urlparse
+    # produced no netloc, so real URLs that fail every branch still raise.
+    if not u.netloc:
+        remainder = url.strip()
+        if remainder.startswith("@"):
+            remainder = remainder[1:]
+        if remainder and "/" not in remainder and not any(c.isspace() for c in remainder):
+            return YoutubeUrl("channel_url", f"https://www.youtube.com/@{remainder}")
 
     raise YoutubeUrlError(f"unrecognised YouTube URL: {url!r}")
 
 
 def rss_url_for_channel_id(channel_id: str) -> str:
     return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+
+
+def rss_url_for_playlist_id(playlist_id: str) -> str:
+    """YouTube exposes a per-playlist RSS feed (3.2) — used so a playlist show
+    polls for new entries just like a channel."""
+    return f"https://www.youtube.com/feeds/videos.xml?playlist_id={playlist_id}"
+
+
+def manifest_from_videos(videos: list[dict]) -> list[dict]:
+    """Convert ``enumerate_channel_videos`` flat-playlist output into the
+    canonical manifest the upsert/backlog path expects.
+
+    Mirrors the GUI's logic in ``ui/add_show_dialog._on_yt_enumerate_done``:
+    derive the id from ``id`` (falling back to ``url``, skipping entries with
+    neither), and derive ``pubDate`` from the Unix ``timestamp`` (epoch →
+    ``YYYY-MM-DD``) or, failing that, a ``YYYYMMDD`` ``upload_date``. Videos
+    have no MP3 enclosure, so ``mp3_url`` points at the watch URL; the YouTube
+    pipeline branch resolves the actual source (captions or audio) itself.
+    """
+    import time
+
+    manifest: list[dict] = []
+    for v in videos:
+        vid = v.get("id") or v.get("url")
+        if not vid:
+            continue
+        ts = v.get("timestamp") or 0
+        pub = ""
+        if ts:
+            pub = time.strftime("%Y-%m-%d", time.gmtime(int(ts)))
+        elif v.get("upload_date"):
+            ud = str(v["upload_date"])
+            if len(ud) == 8 and ud.isdigit():
+                pub = f"{ud[:4]}-{ud[4:6]}-{ud[6:8]}"
+            else:
+                pub = ud
+        # Full extraction (enumerate full=True) carries a numeric `duration`
+        # in seconds; the flat path leaves it None. Bool is excluded so a
+        # stray True/False never coerces to 1/0.
+        dur = v.get("duration")
+        duration_sec = (
+            int(dur) if isinstance(dur, (int, float)) and not isinstance(dur, bool) else None
+        )
+        manifest.append(
+            {
+                "guid": vid,
+                "title": v.get("title") or vid,
+                "pubDate": pub,
+                "mp3_url": f"https://www.youtube.com/watch?v={vid}",
+                "description": "",
+                "duration_sec": duration_sec,
+            }
+        )
+    return manifest
+
+
+def channel_id_from_feed_url(feed_url: str) -> str:
+    """Return the ``channel_id`` query param of a YouTube channel feed URL.
+
+    Returns ``""`` when the URL carries no such param (e.g. a podcast RSS
+    URL). Kept permissive on purpose — does not validate the ``UC…`` shape —
+    so it can dedup channels by the id embedded in their canonical feed URL.
+    """
+    qs = parse_qs(urlparse((feed_url or "").strip()).query)
+    return (qs.get("channel_id") or [""])[0]

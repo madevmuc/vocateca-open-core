@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from PyQt6.QtCore import QDateTime, QLocale, QSettings, Qt, QTimer, QUrl
+from PyQt6.QtCore import QDateTime, QLocale, QSettings, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -95,6 +95,11 @@ def _last_compiled_path(ctx) -> Path:
 
 
 class MainWindow(QMainWindow):
+    # Activity-log lines may be emitted from worker threads (via the event-bus
+    # bridge). This signal marshals them onto the GUI thread before any QWidget
+    # is touched — emitting a signal is thread-safe; the slot runs queued here.
+    _log_line_sig = pyqtSignal(str)
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Paragraphos")
@@ -241,11 +246,26 @@ class MainWindow(QMainWindow):
 
         # Fan every log message into both the dock (bottom) and the
         # sidebar Logs pane so they stay in sync.
-        def _log_sink(msg: str) -> None:
+        def _append_log_line(msg: str) -> None:
             self.log_dock.append(msg)
             self.logs_pane.append(msg)
 
+        # Widget mutation only happens in this slot, always on the GUI thread.
+        self._log_line_sig.connect(_append_log_line)
+
+        def _log_sink(msg: str) -> None:
+            # Safe to call from any thread — the signal queues to the GUI thread.
+            self._log_line_sig.emit(msg)
+
         self.shows_tab.log_sink = _log_sink  # type: ignore[attr-defined]
+        # App-wide activity log (adds/removes/start/pause/deletes/…) fans into
+        # the same dock + pane via this sink.
+        from ui import activity_log
+
+        activity_log.set_sink(_log_sink)
+        # Translate a curated subset of bus events into activity-log lines so
+        # the dock surfaces richer lifecycle info alongside direct log() calls.
+        activity_log.install_event_bridge()
 
         self.setMenuBar(build_menu_bar(self))
 
@@ -258,6 +278,8 @@ class MainWindow(QMainWindow):
             ("Ctrl+L", lambda: self.log_dock.setVisible(not self.log_dock.isVisible())),
             ("?", lambda: self._show_cheatsheet()),
             ("Ctrl+/", lambda: self._show_cheatsheet()),
+            ("Ctrl+Z", self._undo_last),
+            ("Ctrl+K", self._open_command_palette),
         ):
             QShortcut(
                 QKeySequence(key) if isinstance(key, str) else QKeySequence(key), self, activated=fn
@@ -493,6 +515,40 @@ class MainWindow(QMainWindow):
         self.sidebar.set_count("shows", len(self.ctx.watchlist.shows))
         self.sidebar.set_count("queue", pending)
         self.sidebar.set_count("failed", failed)
+
+    def _open_command_palette(self) -> None:
+        """Cmd-K fuzzy command palette (9.2)."""
+        from ui.command_palette import Command, CommandPalette
+
+        cmds = [
+            Command("Go to Shows", lambda: self._on_nav("shows")),
+            Command("Go to Queue", lambda: self._on_nav("queue")),
+            Command("Go to Library", lambda: self._on_nav("library")),
+            Command("Go to Failed", lambda: self._on_nav("failed")),
+            Command("Open Settings", lambda: self._on_nav("settings")),
+            Command("Start check", lambda: self.shows_tab.start_check(force=True)),
+            Command("Stop", self.shows_tab._stop),
+            Command("Undo last action", self._undo_last),
+            Command(
+                "Toggle log panel",
+                lambda: self.log_dock.setVisible(not self.log_dock.isVisible()),
+            ),
+        ]
+        pal = CommandPalette(cmds, self)
+        pal.resize(420, 320)
+        pal.exec()
+
+    def _undo_last(self) -> None:
+        """Run the most recent undoable destructive action (9.5), if any."""
+        from ui.activity_log import log as log_activity
+        from ui.undo import manager as undo_manager
+
+        label = undo_manager.undo_last()
+        if label:
+            log_activity(f"Undone: {label}")
+            self._refresh_status_bar()
+        else:
+            log_activity("Nothing to undo")
 
     def _refresh_status_bar(self) -> None:
         from datetime import datetime, timedelta

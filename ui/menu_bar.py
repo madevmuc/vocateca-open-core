@@ -148,6 +148,41 @@ def build_menu_bar(window) -> QMenuBar:
     a.triggered.connect(lambda: _open_in_obsidian(window))
     ac.addAction(a)
 
+    # ── Tools ─────────────────────────────────────────────────────
+    # GUI parity with the CLI: each action wraps the same core function the
+    # corresponding `cli.py` subcommand uses.
+    t = mb.addMenu("Tools")
+    a = QAction("Statistics…", window)
+    a.triggered.connect(lambda: _show_stats(window))
+    t.addAction(a)
+    a = QAction("Event Log…", window)
+    a.triggered.connect(lambda: _show_event_log(window))
+    t.addAction(a)
+    a = QAction("Health Check…", window)
+    a.triggered.connect(lambda: _show_health(window))
+    t.addAction(a)
+    t.addSeparator()
+    a = QAction("Bulk Export Transcripts…", window)
+    a.triggered.connect(lambda: _bulk_export(window))
+    t.addAction(a)
+    a = QAction("Publish Transcript Site…", window)
+    a.triggered.connect(lambda: _publish_site(window))
+    t.addAction(a)
+    t.addSeparator()
+    a = QAction("Backfill YouTube Dates (selected show)…", window)
+    a.triggered.connect(lambda: _backfill_dates(window))
+    t.addAction(a)
+    a = QAction("Find Duplicate Episodes (selected show)…", window)
+    a.triggered.connect(lambda: _find_duplicates(window))
+    t.addAction(a)
+    t.addSeparator()
+    a = QAction("Start Local API…", window)
+    a.triggered.connect(lambda: _start_local_api(window))
+    t.addAction(a)
+    a = QAction("Export Bug Report…", window)
+    a.triggered.connect(lambda: _export_bug_report(window))
+    t.addAction(a)
+
     # ── Window ────────────────────────────────────────────────────
     w = mb.addMenu("Window")
     a = QAction("Minimize", window)
@@ -360,6 +395,318 @@ def _check_selected(window) -> None:
     slug = _selected_slug(window)
     if slug:
         window.shows_tab.start_check(only_slug=slug, force=True)
+
+
+# ── Tools menu helpers (GUI parity with the CLI) ──────────────────────────
+
+
+def _show_stats(window) -> None:
+    """Structured stats panel (7.1) — labelled metric rows, not a message box."""
+    from PyQt6.QtWidgets import QDialogButtonBox, QFormLayout
+
+    from core.stats import dashboard_summary
+
+    s = dashboard_summary(window.ctx.state)
+    dlg = QDialog(window)
+    dlg.setWindowTitle("Statistics")
+    dlg.setMinimumWidth(360)
+    lay = QVBoxLayout(dlg)
+    form = QFormLayout()
+    form.addRow("Throughput (7d)", QLabel(f"{s['throughput_per_day']:.2f} episodes/day"))
+    form.addRow("Success rate", QLabel(f"{s['success_rate'] * 100:.0f}%"))
+    form.addRow("Realtime factor", QLabel(f"{s['realtime_factor']:.2f}×"))
+    form.addRow("Done", QLabel(str(s["done"])))
+    form.addRow("Pending", QLabel(str(s["pending"])))
+    form.addRow("Failed", QLabel(str(s["failed"])))
+    lay.addLayout(form)
+    bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    bb.rejected.connect(dlg.reject)
+    bb.accepted.connect(dlg.accept)
+    lay.addWidget(bb)
+    dlg.exec()
+
+
+def _show_health(window) -> None:
+    """Health panel (6.2) — one coloured row per check."""
+    from PyQt6.QtWidgets import QDialogButtonBox
+
+    from core import health
+
+    rows = health.run_health_check(window.ctx)
+    dlg = QDialog(window)
+    dlg.setWindowTitle("Health check")
+    dlg.setMinimumWidth(460)
+    lay = QVBoxLayout(dlg)
+    for r in rows:
+        ok = r["ok"]
+        lbl = QLabel(f"{'✓' if ok else '✗'}  {r['check']}: {r['detail']}")
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(f"color: {'#2e7d32' if ok else '#c62828'};")
+        lay.addWidget(lbl)
+    bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    bb.rejected.connect(dlg.reject)
+    lay.addWidget(bb)
+    dlg.exec()
+
+
+def _show_event_log(window) -> None:
+    """Filterable event-log viewer with JSON/CSV export (7.3)."""
+    from PyQt6.QtWidgets import (
+        QFileDialog,
+        QHBoxLayout,
+        QLineEdit,
+        QMessageBox,
+        QPlainTextEdit,
+        QPushButton,
+    )
+
+    dlg = QDialog(window)
+    dlg.setWindowTitle("Event log")
+    dlg.resize(640, 480)
+    lay = QVBoxLayout(dlg)
+    row = QHBoxLayout()
+    type_edit = QLineEdit()
+    type_edit.setPlaceholderText("type filter, e.g. 'episode.' (blank = all)")
+    row.addWidget(type_edit)
+    lay.addLayout(row)
+    view = QPlainTextEdit()
+    view.setReadOnly(True)
+    lay.addWidget(view)
+
+    def _refresh():
+        rows = window.ctx.state.query_events(
+            type_prefix=type_edit.text().strip() or None, limit=500
+        )
+        view.setPlainText(
+            "\n".join(f"{r['ts']}  {r['type']}  {r.get('show_slug') or ''}".rstrip() for r in rows)
+            or "(no events)"
+        )
+
+    type_edit.textChanged.connect(lambda _=None: _refresh())
+
+    btn_row = QHBoxLayout()
+    export_btn = QPushButton("Export…")
+
+    def _export():
+        path, _ = QFileDialog.getSaveFileName(
+            dlg, "Export events", "events.json", "JSON (*.json);;CSV (*.csv)"
+        )
+        if not path:
+            return
+        from core.log_export import export_events
+
+        rows = window.ctx.state.query_events(
+            type_prefix=type_edit.text().strip() or None, limit=5000
+        )
+        fmt = "csv" if path.lower().endswith(".csv") else "json"
+        export_events(rows, fmt, path)
+        QMessageBox.information(dlg, "Exported", f"Wrote {len(rows)} event(s) → {path}")
+
+    export_btn.clicked.connect(_export)
+    btn_row.addWidget(export_btn)
+    btn_row.addStretch()
+    lay.addLayout(btn_row)
+    _refresh()
+    dlg.exec()
+
+
+def _bulk_export(window) -> None:
+    from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+
+    slug = _selected_slug(window)
+    if not slug:
+        QMessageBox.information(window, "Select show", "Select a row in the Shows tab first.")
+        return
+    fmt, ok = QInputDialog.getItem(
+        window, "Bulk export", "Format:", ["md", "json", "pdf"], 0, False
+    )
+    if not ok:
+        return
+    path, _ = QFileDialog.getSaveFileName(window, "Export to", f"{slug}-export.{fmt}")
+    if not path:
+        return
+    show_dir = Path(window.ctx.settings.output_root).expanduser() / slug
+    items = [
+        {"title": md.stem, "text": md.read_text(encoding="utf-8", errors="replace")}
+        for md in sorted(show_dir.glob("*.md"))
+        if md.name != "index.md"
+    ]
+    if not items:
+        QMessageBox.information(window, "Nothing to export", "No transcripts for that show.")
+        return
+    from core.bulk_export import BulkExportError, export
+
+    try:
+        export(items, fmt, path)
+    except BulkExportError as e:
+        QMessageBox.warning(window, "Export failed", str(e))
+        return
+    QMessageBox.information(window, "Exported", f"Wrote {len(items)} transcript(s) → {path}")
+
+
+def _publish_site(window) -> None:
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+    dest = QFileDialog.getExistingDirectory(window, "Publish site into folder")
+    if not dest:
+        return
+    root = Path(window.ctx.settings.output_root).expanduser()
+    items = []
+    for show_dir in (p for p in root.iterdir() if p.is_dir()):
+        for md in sorted(show_dir.glob("*.md")):
+            if md.name == "index.md":
+                continue
+            items.append(
+                {
+                    "slug": f"{show_dir.name}--{md.stem}",
+                    "title": md.stem,
+                    "date": md.stem[:10],
+                    "text": md.read_text(encoding="utf-8", errors="replace"),
+                }
+            )
+    if not items:
+        QMessageBox.information(window, "Nothing to publish", "No transcripts found.")
+        return
+    from core.publish import publish_site
+
+    out = publish_site(items, dest)
+    QMessageBox.information(window, "Published", f"Wrote {len(items)} page(s) → {out}/index.html")
+
+
+class _BackfillThread(QThread):
+    """Off-thread YouTube date backfill so the GUI never freezes on the
+    (potentially minutes-long) yt-dlp full enumeration."""
+
+    done = pyqtSignal(int)
+    error = pyqtSignal(str)
+
+    def __init__(self, state, channel_id: str, parent=None):
+        super().__init__(parent)
+        self._state = state
+        self._cid = channel_id
+
+    def run(self) -> None:
+        try:
+            from core.backcat_dates import backfill_show_dates
+            from core.youtube_meta import enumerate_channel_videos
+
+            changed = backfill_show_dates(
+                self._state,
+                self._cid,
+                enumerate_fn=lambda c, *, full: enumerate_channel_videos(
+                    c, include_shorts=True, full=full
+                ),
+            )
+            self.done.emit(changed)
+        except Exception as e:  # noqa: BLE001
+            self.error.emit(str(e))
+
+
+def _backfill_dates(window) -> None:
+    from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+
+    slug = _selected_slug(window)
+    if not slug:
+        QMessageBox.information(window, "Select show", "Select a YouTube show first.")
+        return
+    show = next((s for s in window.ctx.watchlist.shows if s.slug == slug), None)
+    if not show or getattr(show, "source", "podcast") != "youtube":
+        QMessageBox.information(window, "YouTube only", "Date backfill applies to YouTube shows.")
+        return
+    from core.youtube import channel_id_from_feed_url
+
+    cid = channel_id_from_feed_url(show.rss)
+    if not cid:
+        QMessageBox.warning(window, "Backfill", "Couldn't resolve the channel id.")
+        return
+
+    prog = QProgressDialog("Re-resolving upload dates…", None, 0, 0, window)
+    prog.setWindowTitle("Backfill dates")
+    prog.setMinimumDuration(0)
+    prog.setCancelButton(None)
+    th = _BackfillThread(window.ctx.state, cid, window)
+    window._backfill_thread = th  # keep a reference for the thread's lifetime
+
+    def _on_done(n: int) -> None:
+        prog.close()
+        QMessageBox.information(window, "Backfill", f"Updated {n} episode date(s).")
+
+    def _on_error(msg: str) -> None:
+        prog.close()
+        QMessageBox.warning(window, "Backfill", f"Backfill failed: {msg}")
+
+    th.done.connect(_on_done)
+    th.error.connect(_on_error)
+    th.finished.connect(lambda: setattr(window, "_backfill_thread", None))
+    th.start()
+    prog.show()
+
+
+def _find_duplicates(window) -> None:
+    from PyQt6.QtWidgets import QMessageBox
+
+    from core.dedupe import find_near_duplicates
+    from core.state import EpisodeStatus
+
+    slug = _selected_slug(window)
+    if not slug:
+        QMessageBox.information(window, "Select show", "Select a show first.")
+        return
+    rows = window.ctx.state.list_by_status(slug, EpisodeStatus.PENDING)
+    rows += window.ctx.state.list_by_status(slug, EpisodeStatus.DONE)
+    titles = {r["guid"]: r["title"] for r in rows}
+    pairs = find_near_duplicates([(r["guid"], r["title"]) for r in rows])
+    body = (
+        "\n".join(f"• {titles.get(a)!r}\n  ≈ {titles.get(b)!r}" for a, b in pairs)
+        or "No likely duplicates found."
+    )
+    QMessageBox.information(window, "Duplicate episodes", body)
+
+
+def _start_local_api(window) -> None:
+    """Start the localhost JSON API in a background thread (10.2)."""
+    import secrets
+    import threading
+
+    from PyQt6.QtWidgets import QMessageBox
+
+    if getattr(window, "_api_server", None) is not None:
+        QMessageBox.information(window, "Local API", "The local API is already running.")
+        return
+    from core.api_server import serve
+
+    token = window.ctx.state.get_meta("api_token") or secrets.token_urlsafe(16)
+    window.ctx.state.set_meta("api_token", token)
+    try:
+        server = serve(window.ctx, token=token, host="127.0.0.1", port=8723)
+    except OSError as e:
+        QMessageBox.warning(window, "Local API", f"Couldn't start the API: {e}")
+        return
+    window._api_server = server
+    threading.Thread(target=server.serve_forever, name="api-server", daemon=True).start()
+    QMessageBox.information(
+        window,
+        "Local API",
+        f"Running at http://127.0.0.1:8723\n\nToken:\n{token}\n\n"
+        "Send it as `Authorization: Bearer <token>` or `?token=`.",
+    )
+
+
+def _export_bug_report(window) -> None:
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+    path, _ = QFileDialog.getSaveFileName(window, "Export bug report", "paragraphos-bug-report.zip")
+    if not path:
+        return
+    from core.bugbundle import build_bundle
+
+    build_bundle(
+        settings=window.ctx.settings,
+        state=window.ctx.state,
+        dest=path,
+        log_dir=window.ctx.data_dir / "logs",
+    )
+    QMessageBox.information(window, "Bug report", f"Wrote {path}")
 
 
 def _mark_selected_stale(window) -> None:

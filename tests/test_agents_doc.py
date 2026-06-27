@@ -9,3 +9,4 @@ def test_agents_doc_points_to_blessed_path():
     assert "cli.py add" in txt
     assert "--backlog" in txt
     assert "watchlist.yaml" in txt
+    assert "backlog" in txt
