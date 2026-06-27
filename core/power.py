@@ -44,3 +44,15 @@ def effective_load_level(
     if on_battery and pause_on_battery:
         return battery_level
     return base_level
+
+
+def should_pause_for_battery(
+    *, pause_queue_on_battery: bool, on_battery_now: bool | None = None
+) -> bool:
+    """Whether the queue should be held right now because we're on battery.
+
+    ``on_battery_now`` is injectable for tests; when None it probes
+    :func:`on_battery`. Returns False unless the setting is on AND unplugged."""
+    if not pause_queue_on_battery:
+        return False
+    return on_battery() if on_battery_now is None else bool(on_battery_now)

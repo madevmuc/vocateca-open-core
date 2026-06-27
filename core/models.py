@@ -239,13 +239,18 @@ class Settings(BaseModel):
     # power / battery budget (8.4)
     pause_on_battery: bool = False
     battery_load_level: Literal["quiet", "balanced", "full"] = "quiet"
+    # When on, the whole queue is held while the laptop runs on battery (no
+    # downloads/transcribes start) and resumes automatically once plugged in.
+    # Distinct from pause_on_battery, which only eases the load level.
+    pause_queue_on_battery: bool = False
     # parallel transcription cap (2.2) — 1 = serial (safe default)
     transcribe_concurrency: int = 1
     # metal / model auto-pick (8.1)
     whisper_metal_enabled: bool = True
     whisper_model_autopick: bool = False
-    # diarization (1.5) — off by default; gates a one-time model download
-    diarization_enabled: bool = False
+    # diarization (1.5) — on by default; needs the optional sherpa-onnx backend
+    # + models to actually run (otherwise it's a silently-skipped no-op)
+    diarization_enabled: bool = True
     # Directory holding segmentation.onnx + embedding.onnx for sherpa-onnx
     # diarization. Empty → resolved to <data_dir>/models/diarize at runtime.
     diarization_model_dir: str = ""

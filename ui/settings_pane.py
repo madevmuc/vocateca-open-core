@@ -203,6 +203,7 @@ class SettingsPane(QWidget):
         wf_pick = QPushButton("Browse…")
         wf_pick.clicked.connect(self._pick_watch_folder)
         wf_row.addWidget(wf_pick)
+        wf_row.addWidget(self._finder_button(self.watch_folder_root.text))
         self._add_field(
             f_local,
             "Folder path",
@@ -260,6 +261,7 @@ class SettingsPane(QWidget):
         pick = QPushButton("Browse…")
         pick.clicked.connect(self._pick_dir)
         pick_row.addWidget(pick)
+        pick_row.addWidget(self._finder_button(self.output.text))
         self._add_field(
             f1,
             "Output root",
@@ -275,6 +277,7 @@ class SettingsPane(QWidget):
         exp_pick = QPushButton("Browse…")
         exp_pick.clicked.connect(self._pick_export)
         exp_row.addWidget(exp_pick)
+        exp_row.addWidget(self._finder_button(self.export_root.text))
         self._add_field(f1, "Export ZIP target", self._row_widget(exp_row))
 
         self.obsidian_path = QLineEdit(self.ctx.settings.obsidian_vault_path)
@@ -292,6 +295,7 @@ class SettingsPane(QWidget):
         kb_pick = QPushButton("Browse…")
         kb_pick.clicked.connect(self._pick_kb_root)
         kb_row.addWidget(kb_pick)
+        kb_row.addWidget(self._finder_button(self.kb_root.text))
         kb_hint, kb_kind = self._kb_root_hint(self.kb_root.text())
         self._add_field(
             f1,
@@ -313,12 +317,16 @@ class SettingsPane(QWidget):
         _pick = QPushButton("Pick…")
         _pick.clicked.connect(self._pick_obsidian)
         obs_row.addWidget(_pick)
+        obs_row.addWidget(self._finder_button(self.obsidian_path.text))
         self._add_field(obsidian_form, "Vault path", self._row_widget(obs_row))
         self._add_field(obsidian_form, "Vault name", self.obsidian_name)
         self.obsidian_preview = QLabel("")
         self.obsidian_preview.setObjectName("obsidian_preview")
         self.obsidian_preview.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
         self.obsidian_preview.setWordWrap(True)
+        self.obsidian_preview.setTextFormat(Qt.TextFormat.RichText)
+        self.obsidian_preview.setOpenExternalLinks(False)
+        self.obsidian_preview.linkActivated.connect(self._on_path_link)
         self._add_field(obsidian_form, "", self.obsidian_preview)
         root.addLayout(obsidian_form)
 
@@ -488,6 +496,16 @@ class SettingsPane(QWidget):
         _tc_holder = QWidget()
         _tc_holder.setLayout(_tc_form)
         root.addWidget(_tc_holder)
+
+        self.pause_queue_on_battery_cb = QCheckBox(
+            "Pause the whole queue while on battery (resume when plugged in)"
+        )
+        self.pause_queue_on_battery_cb.setObjectName("pause_queue_on_battery_checkbox")
+        self.pause_queue_on_battery_cb.setChecked(
+            bool(getattr(self.ctx.settings, "pause_queue_on_battery", False))
+        )
+        self.pause_queue_on_battery_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.pause_queue_on_battery_cb)
 
         self.pause_on_battery_cb = QCheckBox("Ease off CPU/RAM when running on battery")
         self.pause_on_battery_cb.setObjectName("pause_on_battery_checkbox")
@@ -1019,12 +1037,32 @@ class SettingsPane(QWidget):
             self.obsidian_path.setText(d)
             self.obsidian_name.setText(Path(d).name)
 
+    def _on_path_link(self, href: str) -> None:
+        """linkActivated handler for any displayed-path link → reveal in Finder."""
+        from core.reveal import reveal_in_finder
+
+        reveal_in_finder(href)
+
+    def _path_link_html(self, path: str) -> str:
+        """A clickable Finder link for a displayed path (rich-text anchor)."""
+        import html
+
+        safe = html.escape(path)
+        return f'<a href="{safe}" style="color: palette(link);">{safe}</a>'
+
     def _refresh_obsidian_preview(self) -> None:
         """Update the 'where transcripts land' preview line under the
         Obsidian group box. Keeps the user anchored when they flip
-        between paths / vault names."""
-        path = self.output.text() or "<no output folder set>"
-        self.obsidian_preview.setText(f"Transcripts will be written to: {path}")
+        between paths / vault names. The path is a clickable Finder link."""
+        path = self.output.text() or ""
+        if path:
+            self.obsidian_preview.setText(
+                f"Transcripts will be written to: {self._path_link_html(path)}"
+            )
+        else:
+            self.obsidian_preview.setText(
+                "Transcripts will be written to: &lt;no output folder set&gt;"
+            )
 
     def _pick_export(self):
         start = self._default_picker_dir(self.export_root.text())
@@ -1331,6 +1369,7 @@ class SettingsPane(QWidget):
         s.whisper_metal_enabled = self.whisper_metal_cb.isChecked()
         s.transcribe_concurrency = int(self.transcribe_concurrency_spin.value())
         s.pause_on_battery = self.pause_on_battery_cb.isChecked()
+        s.pause_queue_on_battery = self.pause_queue_on_battery_cb.isChecked()
         s.battery_load_level = self.battery_load_combo.currentData() or "quiet"
         s.notify_quiet_hours_enabled = self.quiet_hours_cb.isChecked()
         s.notify_quiet_hours_start = self.quiet_start.text().strip() or "22:00"
@@ -1439,6 +1478,16 @@ class SettingsPane(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         w.setLayout(layout)
         return w
+
+    def _finder_button(self, getter) -> QPushButton:
+        """An 'Open in Finder' button that reveals the path returned by ``getter``
+        (a callable, e.g. ``line_edit.text``) — sits next to every Browse button."""
+        from core.reveal import reveal_in_finder
+
+        btn = QPushButton("Open in Finder")
+        btn.setToolTip("Reveal this folder in Finder")
+        btn.clicked.connect(lambda: reveal_in_finder(getter() if callable(getter) else getter))
+        return btn
 
     def _kb_root_hint(self, path: str):
         """Return (hint, kind) for the knowledge-hub root field."""

@@ -42,3 +42,14 @@ def test_effective_load_level_on_battery():
         effective_load_level("full", on_battery=False, pause_on_battery=True, battery_level="quiet")
         == "full"
     )
+
+
+def test_should_pause_for_battery():
+    from core.power import should_pause_for_battery
+
+    # off → never pause regardless of power state
+    assert should_pause_for_battery(pause_queue_on_battery=False, on_battery_now=True) is False
+    # on + on battery → pause
+    assert should_pause_for_battery(pause_queue_on_battery=True, on_battery_now=True) is True
+    # on + plugged in → don't pause
+    assert should_pause_for_battery(pause_queue_on_battery=True, on_battery_now=False) is False

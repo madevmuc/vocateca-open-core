@@ -729,6 +729,17 @@ class CheckAllThread(QThread):
             self._finish()
             return
 
+        # Battery gate: when enabled and the laptop is unplugged, idle this
+        # cycle. The next scheduled/manual check resumes once on AC power.
+        from core.power import should_pause_for_battery
+
+        if should_pause_for_battery(
+            pause_queue_on_battery=bool(getattr(self.settings, "pause_queue_on_battery", False))
+        ):
+            self.progress.emit("on battery — queue paused (resumes when plugged in)")
+            self._finish()
+            return
+
         # Processing windows (2.3): outside the configured windows the worker
         # idles (does nothing this cycle) and waits for the next scheduled run.
         if getattr(self.settings, "processing_windows_enabled", False):
@@ -1022,12 +1033,28 @@ class CheckAllThread(QThread):
         # set we trip the shared stop event, draining both workers.
         pause_watch_stop = threading.Event()
 
+        _bat_gate = bool(getattr(self.settings, "pause_queue_on_battery", False))
+
         def _watch_pause():
+            from core.power import should_pause_for_battery
+
+            i = 0
             while not pause_watch_stop.is_set():
                 if self.ctx.state.get_meta("queue_paused") == "1":
                     self.progress.emit("queue paused mid-run — halting between episodes")
                     self._stop_event.set()
                     return
+                # Battery probe is coarser (~15 s) so we don't shell out to
+                # pmset every second.
+                if (
+                    _bat_gate
+                    and i % 15 == 0
+                    and should_pause_for_battery(pause_queue_on_battery=True)
+                ):
+                    self.progress.emit("on battery — halting between episodes")
+                    self._stop_event.set()
+                    return
+                i += 1
                 pause_watch_stop.wait(1.0)
 
         pw = threading.Thread(target=_watch_pause, name="pause-watch", daemon=True)
