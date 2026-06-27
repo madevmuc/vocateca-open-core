@@ -104,6 +104,9 @@ people actually paste, and paired with a full per-show episode browser.
   history beyond the RSS window and queues the newly fetched videos.
 
 ### Added
+- **OPML subscription import.** `cli.py import-opml subs.opml --backlog …`
+  imports podcast subscriptions from an OPML export (XXE-safe via defusedxml),
+  seeding each feed as a show.
 - **Transcript publishing.** `cli.py publish` generates a self-contained static
   site — an index with client-side full-text search, one page per transcript,
   and an RSS feed — ready to host anywhere static.

@@ -236,6 +236,12 @@ per-test `_reset_event_bus` fixture was also added for subscriber isolation
   `publish_site` → index.html (static list + client-side search), per-transcript
   pages, search.js + search-index.json, rss.xml. All HTML-escaped. New
   `cli.py publish [--slug] [--out] [--title]`. 4 tests.
+- **Task 33 — OPML import + setup check (9.1)** ✅ `core/opml.parse_opml`
+  already existed (defusedxml, XXE-safe); added nested + XXE tests. New
+  `cli.py import-opml <file> --backlog` seeds each feed as a show. Dep
+  verification already lives in `first_run_wizard` (deps.check). 3 tests.
+  **Best-assumption:** OPML import exposed via CLI; wizard GUI import step
+  deferred (wizard's dep-verification half already shipped).
 - **Task 11 — wire use_etag_cache (8.5)** ✅ `rss.conditional_validators`
   gates stored ETag/Last-Modified by the setting; worker uses it (off → sends
   no conditional headers). respx tests confirm header present/absent. Settings

@@ -490,6 +490,57 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_opml(args: argparse.Namespace) -> int:
+    """Import podcast subscriptions from an OPML file (9.1)."""
+    from core.backlog import BacklogError, apply_backlog, parse_backlog
+    from core.opml import parse_opml
+    from core.stats import _parse_duration as _pd
+    from core.watchlist_guard import mark_decided
+
+    try:
+        mode = parse_backlog(args.backlog)
+    except BacklogError as e:
+        print(e, file=sys.stderr)
+        return 2
+    try:
+        feeds = parse_opml(Path(args.file))
+    except Exception as e:  # noqa: BLE001
+        print(f"could not parse OPML: {e}", file=sys.stderr)
+        return 2
+
+    wl = _watchlist()
+    state = _state()
+    added = 0
+    for feed in feeds:
+        slug = slugify(feed["title"])
+        if any(s.slug == slug for s in wl.shows):
+            continue
+        try:
+            manifest = build_manifest(feed["xmlUrl"], timeout=60)
+        except Exception as e:  # noqa: BLE001
+            print(f"  skip {slug}: feed error: {e}", file=sys.stderr)
+            continue
+        wl.shows.append(
+            Show(slug=slug, title=feed["title"], rss=feed["xmlUrl"], language=args.lang or "de")
+        )
+        for ep in manifest:
+            state.upsert_episode(
+                show_slug=slug,
+                guid=ep["guid"],
+                title=ep["title"],
+                pub_date=ep["pubDate"],
+                mp3_url=ep["mp3_url"],
+                duration_sec=_pd(ep.get("duration", "")),
+            )
+        apply_backlog(state, slug, mode, manifest)
+        mark_decided(state, slug)
+        added += 1
+        print(f"  + {slug} ({len(manifest)} episodes)")
+    wl.save_atomic(DATA / "watchlist.yaml")
+    print(f"imported {added} show(s) from {args.file}")
+    return 0
+
+
 def cmd_import_feeds(args: argparse.Namespace) -> int:
     """Bulk-import the curated real-estate podcast list."""
     from scripts_legacy_shows import SHOWS_PROMPTS
@@ -1509,6 +1560,12 @@ def main() -> int:
     sub.add_parser("import-feeds", help="bulk-import the curated podcast list").set_defaults(
         fn=cmd_import_feeds
     )
+
+    s_opml = sub.add_parser("import-opml", help="import podcast subscriptions from an OPML file")
+    s_opml.add_argument("file")
+    s_opml.add_argument("--backlog", required=True, help="all | recent | last:N | since:YYYY-MM-DD")
+    s_opml.add_argument("--lang", default=None, help="whisper language code (default de)")
+    s_opml.set_defaults(fn=cmd_import_opml)
 
     # — inspection
     s_status = sub.add_parser("status", help="snapshot: queue depth, in-flight, by-status counts")
