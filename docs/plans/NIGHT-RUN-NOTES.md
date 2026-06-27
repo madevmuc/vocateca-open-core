@@ -329,6 +329,27 @@ Ran an 8-angle review over `main..HEAD`; fixed the confirmed findings:
 Updated YT pipeline test fixtures to write valid audio magic (the new integrity
 check rejects dummy bytes). 916 tests green, ruff clean, suite exits 0.
 
+## Deferred-polish pass (requested: "richer GUI + everything undone")
+
+- **Richer panels** — Stats + Health are structured dialogs (labelled rows /
+  coloured checks) instead of message boxes.
+- **Off-thread network** — Backfill YouTube Dates runs on a QThread with a
+  progress dialog (no GUI freeze).
+- **Library multi-select export** — extended selection + "Export selected…"
+  (md/json/pdf).
+- **Queue reorder** — "Move to bottom"; fixed "Move to top" to outrank the
+  Run-now/Run-next bumps (was assigning priorities below them).
+- **Parallel transcription wired** — `core.load.resolve_transcribe_workers`
+  honours `transcribe_concurrency` (>1 raises the worker count; default keeps
+  the load profile's choice) + a Settings spinbox.
+- **Perf/cleanup** — `dashboard_summary` uses COUNT(*) (new
+  `state.count_events`); `_collect_show_transcripts` shared by publish/export.
+
+Still genuinely design-only (need new deps/models; out of an overnight scope per
+spec rule 5): full diarization (sherpa-onnx + model download), streaming
+transcription, and the MCP stdio transport — all have design docs + flag-gated
+seams under `docs/plans/`. Suite: **922 passing**, ruff clean, exits 0.
+
 ## Final summary
 
 **Outcome:** all 41 plan tasks addressed. Baseline `720 passed` → final

@@ -26,9 +26,11 @@ deep CLI/automation surface.
   CLI (`stats`, `logs`, `health`, `bug-report`, `serve`, `publish`, `export`, …).
 - **Full GUI/CLI parity** — a new **Tools** menu (Statistics, Event Log,
   Health Check, Bulk Export, Publish Site, Backfill Dates, Find Duplicates,
-  Start Local API, Export Bug Report), Settings controls for quiet hours and a
-  webhook editor, and YouTube **playlist** add in the Add dialog — so every CLI
-  capability is reachable from the GUI too.
+  Start Local API, Export Bug Report), Settings controls for quiet hours, a
+  webhook editor and a parallel-transcription cap, YouTube **playlist** add in
+  the Add dialog, library multi-select export, and queue move-to-top/bottom — so
+  every CLI capability is reachable from the GUI too. Stats/Health are
+  structured panels, and the YouTube date backfill runs off the GUI thread.
 
 Heavyweight items (diarization, parallel/streaming transcription, MCP transport)
 land as design docs + flag-gated skeletons — see `docs/plans/`.
