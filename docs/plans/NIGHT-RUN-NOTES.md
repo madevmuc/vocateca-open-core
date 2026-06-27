@@ -174,6 +174,11 @@ per-test `_reset_event_bus` fixture was also added for subscriber isolation
   `check_model_hash` + `run_health_check`). `recover_in_flight` already resets
   stale rows; app_context logs health warnings on launch; `cli.py health`
   command. 5 tests.
+- **Task 22 — disk guard (6.3)** ✅ `core/diskguard.py` (`free_gb`,
+  `estimate_needed` audio+overhead, `should_pause` gated by setting/threshold).
+  Worker pre-flight before pass 2: low disk → set `queue_paused` + progress
+  warning + finish. Settings "Processing & reliability" toggle + min-free-GB
+  spinbox. 5 tests.
 - **Task 11 — wire use_etag_cache (8.5)** ✅ `rss.conditional_validators`
   gates stored ETag/Last-Modified by the setting; worker uses it (off → sends
   no conditional headers). respx tests confirm header present/absent. Settings

@@ -104,6 +104,9 @@ people actually paste, and paired with a full per-show episode browser.
   history beyond the RSS window and queues the newly fetched videos.
 
 ### Added
+- **Disk guard.** Before each run the queue auto-pauses if free space is below
+  a configurable threshold (Settings → Processing & reliability), so a long
+  back-catalogue run can't fill the disk mid-transcribe.
 - **Self-healing startup + health self-check.** Stale in-flight rows are reset
   to a resumable state on launch (existing behaviour), and a new health check
   (dependencies, model hash, data-dir writable, free disk) logs any problems at

@@ -870,6 +870,20 @@ class CheckAllThread(QThread):
             self._finish()
             return
 
+        # Disk guard (6.3): if free space is below the threshold, auto-pause the
+        # queue rather than filling the disk mid-transcribe.
+        from core import diskguard
+
+        if diskguard.should_pause(self.settings, Path(self.settings.output_root).expanduser()):
+            self.ctx.state.set_meta("queue_paused", "1")
+            free = diskguard.free_gb(Path(self.settings.output_root).expanduser())
+            self.progress.emit(
+                f"⚠ low disk: {free:.1f} GB free — queue auto-paused "
+                f"(guard {self.settings.disk_guard_min_free_gb} GB)"
+            )
+            self._finish()
+            return
+
         # Pass 2: parallel download + transcribe.
         dl_conc = max(int(self.settings.download_concurrency or 1), 1)
         host_cap = max(int(self.settings.download_concurrency_per_host or 1), 1)

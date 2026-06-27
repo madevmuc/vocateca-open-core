@@ -389,6 +389,31 @@ class SettingsPane(QWidget):
         etag_hint.setWordWrap(True)
         root.addWidget(etag_hint)
 
+        self.disk_guard_cb = QCheckBox("Auto-pause the queue when free disk space runs low")
+        self.disk_guard_cb.setObjectName("disk_guard_checkbox")
+        self.disk_guard_cb.setChecked(bool(getattr(self.ctx.settings, "disk_guard_enabled", True)))
+        self.disk_guard_cb.toggled.connect(self._schedule_save)
+        root.addWidget(self.disk_guard_cb)
+
+        _dg_form = QFormLayout()
+        self.disk_guard_min_gb = QSpinBox()
+        self.disk_guard_min_gb.setRange(1, 500)
+        self.disk_guard_min_gb.setSuffix(" GB")
+        self.disk_guard_min_gb.setValue(
+            int(getattr(self.ctx.settings, "disk_guard_min_free_gb", 5))
+        )
+        self.disk_guard_min_gb.valueChanged.connect(self._schedule_save)
+        self._add_field(
+            _dg_form,
+            "Minimum free space",
+            self.disk_guard_min_gb,
+            hint="The queue auto-pauses before work when free space drops below this.",
+            hint_kind="info",
+        )
+        _dg_holder = QWidget()
+        _dg_holder.setLayout(_dg_form)
+        root.addWidget(_dg_holder)
+
         # ── YouTube ────────────────────────────────────────────
         # Visible only when Sources → YouTube channels is checked. The
         # whole group hides/shows live as the Sources toggle flips.
@@ -1138,6 +1163,8 @@ class SettingsPane(QWidget):
         s.save_srt = self.save_srt_cb.isChecked()
         s.confidence_marking_enabled = self.confidence_marking_cb.isChecked()
         s.use_etag_cache = self.use_etag_cache_cb.isChecked()
+        s.disk_guard_enabled = self.disk_guard_cb.isChecked()
+        s.disk_guard_min_free_gb = int(self.disk_guard_min_gb.value())
         s.sources_podcasts = self.podcasts_checkbox.isChecked()
         s.sources_youtube = self.youtube_checkbox.isChecked()
         s.show_log_dock = self.show_log_dock_cb.isChecked()
