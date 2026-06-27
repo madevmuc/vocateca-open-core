@@ -1237,6 +1237,22 @@ def cmd_watch_list(args: argparse.Namespace) -> int:
 # ────────────────────────────────────────────────────────────────────────
 
 
+def cmd_stats(args: argparse.Namespace) -> int:
+    """Headline throughput / realtime-factor / success-rate dashboard (7.1)."""
+    from core.stats import dashboard_summary
+
+    summary = dashboard_summary(_state(), window_days=args.window)
+    human = (
+        f"throughput: {summary['throughput_per_day']:.2f} episodes/day "
+        f"(last {args.window}d)\n"
+        f"success rate: {summary['success_rate'] * 100:.0f}%\n"
+        f"realtime factor: {summary['realtime_factor']:.2f}×\n"
+        f"done/pending/failed: {summary['done']}/{summary['pending']}/{summary['failed']}"
+    )
+    _emit(summary, as_json=args.json, human=human)
+    return 0
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """Query (and optionally export) the structured event log (7.3)."""
     state = _state()
@@ -1359,6 +1375,11 @@ def main() -> int:
     s_status = sub.add_parser("status", help="snapshot: queue depth, in-flight, by-status counts")
     s_status.add_argument("--json", action="store_true")
     s_status.set_defaults(fn=cmd_status)
+
+    s_stats = sub.add_parser("stats", help="throughput / realtime-factor / success-rate dashboard")
+    s_stats.add_argument("--window", type=int, default=7, help="throughput window in days")
+    s_stats.add_argument("--json", action="store_true")
+    s_stats.set_defaults(fn=cmd_stats)
 
     s_logs = sub.add_parser("logs", help="query/export the structured event log")
     s_logs.add_argument("--type", default=None, help="exact type or prefix (e.g. 'episode.')")

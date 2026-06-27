@@ -24,6 +24,8 @@ people actually paste, and paired with a full per-show episode browser.
   a curated subset is mirrored into the activity-log dock.
 
 ### Added
+- **Stats dashboard.** `cli.py stats` reports throughput (episodes/day),
+  success rate, whisper realtime-factor, and done/pending/failed counts.
 - **Structured, filterable event log + export.** `cli.py logs` queries the
   event log by type/show/since and exports matching rows to JSON or CSV.
 - **Episode timeline.** Right-click an episode in the Library → **Show

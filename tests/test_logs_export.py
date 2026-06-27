@@ -76,7 +76,9 @@ def test_cli_logs_export(tmp_path, monkeypatch):
     s.append_event(Event(type=EventType.RUN_FINISHED, ts=events.now_iso()))
     dest = tmp_path / "log.json"
     rc = cli.cmd_logs(
-        argparse.Namespace(type=None, show=None, since=None, limit=200, export=str(dest), json=False)
+        argparse.Namespace(
+            type=None, show=None, since=None, limit=200, export=str(dest), json=False
+        )
     )
     assert rc == 0
     assert json.loads(dest.read_text(encoding="utf-8"))

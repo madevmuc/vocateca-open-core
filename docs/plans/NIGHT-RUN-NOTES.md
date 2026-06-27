@@ -154,6 +154,11 @@ per-test `_reset_event_bus` fixture was also added for subscriber isolation
   **Best-assumption:** delivered the filter+export via the CLI (operator
   surface, testable); the GUI LogsPane event-table upgrade is deferred (the
   dock still shows live activity strings).
+- **Task 19 — stats dashboard (7.1)** ✅ `stats.throughput_per_day` +
+  `success_rate` (pure, event-driven) + `dashboard_summary` (bundles them with
+  existing `realtime_factor` + global counts). New `cli.py stats` command. 4
+  tests. **Best-assumption:** headline metrics surfaced via CLI; GUI stats
+  panel deferred (reuses existing realtime_factor for the RTF metric).
 - **Task 11 — wire use_etag_cache (8.5)** ✅ `rss.conditional_validators`
   gates stored ETag/Last-Modified by the setting; worker uses it (off → sends
   no conditional headers). respx tests confirm header present/absent. Settings
