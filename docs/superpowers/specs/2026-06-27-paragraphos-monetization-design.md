@@ -186,11 +186,29 @@ Domizile + DSGVO-Auftragsverarbeitung vor Vertrag bestätigen.
   recht greift.)
 - **DSGVO-Datenschutzerklärung** (Telemetrie nur opt-in; alles lokal hält
   das einfach).
-- **Impressum** (TMG), **Widerrufsrecht** für digitale Produkte.
+- **Impressum** nach **DDG** (Digitale-Dienste-Gesetz — hat das TMG im
+  Mai 2024 abgelöst), **Widerrufsrecht** für digitale Produkte.
+- **Onboarding-Disclaimer mit verpflichtender Zustimmung** (siehe §6.4).
 - EULA-Klausel: Nutzer ist für **auto-geholte Inhalte** verantwortlich
   (relevant, weil die *bezahlte* Funktion unbeaufsichtigt fremde Inhalte
   zieht).
 - Optional: Marke „Paragraphos" schützen.
+
+### 6.4 Onboarding-Disclaimer (verpflichtende Zustimmung)
+
+Beim **ersten Start** zeigt der Setup-Guide einen Disclaimer, dem der Nutzer
+**aktiv zustimmen muss**, bevor die App nutzbar ist (kein „Weiter" ohne
+Häkchen). Inhalt der Verpflichtung:
+
+- Das Programm ist **nur für die private Nutzung** geeignet.
+- **Datenschutz und Urheberrechte** Dritter müssen gewahrt werden.
+- Nutzung erfolgt **auf eigene Gefahr** / in Eigenverantwortung.
+- Heruntergeladene bzw. transkribierte Inhalte dürfen **nur genutzt werden,
+  wenn der Nutzer die Rechtesituation geklärt hat**.
+
+Der Nutzer verpflichtet sich per aktiver Zustimmung (Checkbox + Bestätigen).
+Zustimmung wird mit **Zeitstempel + Disclaimer-Version** lokal protokolliert;
+bei materiell geänderter Fassung erneut einholen. Gilt für **Free und Pro**.
 
 ---
 
