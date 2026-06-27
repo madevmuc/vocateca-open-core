@@ -50,8 +50,8 @@ dass es *unbeaufsichtigt* geholt wird.
 ## 2. Geschäftsmodell
 
 - **Abo** (Subscription), passend zu „solange im Hintergrund läuft".
-  Vorschlag (Recherche-Stand): **€4,99/Monat · €39/Jahr** (jährlich führen,
-  ~2 Monate gratis). Lifetime-Tier vorerst zurückstellen.
+  Festgelegt: **€4,90/Monat · €49/Jahr** (jährlich führen). Lifetime-Tier
+  vorerst zurückstellen.
 - **Account-Login statt Lizenzschlüssel:** Pro wird an einen Nutzer-Account
   gebunden, Login per E-Mail-Magic-Link/OTP (kein Key zum Aufbewahren,
   Mehrgeräte inklusive). Details §4.
@@ -190,6 +190,17 @@ beschluss, ist kein EU-Mitglied → Paddle/Payhip nicht erste Wahl.)
   - **Cleverbridge (DE) / Nexway (FR) — raus:** enterprise-gated, kein
     Self-Serve.
 
+**Provider-Lock-in? Gering — bewusst so gebaut.** Identität/Accounts liegen in
+**Nhost**, nicht beim Zahlungsanbieter; der Abo-Status kommt per Webhook in die
+Nhost-`subscriptions`-Tabelle. Ein späterer Anbieterwechsel (Mollie → Vatly
+o. a.) heißt softwareseitig nur: den **Webhook-Adapter** neu verdrahten —
+Nutzer behalten Login + Account. Nicht übertragbar sind laufende
+**Zahlungsmandate** (Karten/SEPA bleiben aus PCI-/Mandatsgründen beim alten
+Anbieter) → Bestandsabonnenten müssen beim Wechsel einmal neu autorisieren,
+üblich via **Parallelbetrieb** (Altanbieter bedient Bestandsabos bis Renewal,
+Neuanbieter nimmt Neukunden). Prinzip: Zahlungsanbieter hinter einem **dünnen
+Adapter** halten; App und Identität hängen nie direkt am Anbieter.
+
 US-Anbieter (Lemonsqueezy, Gumroad, FastSpring) ausgeschlossen. Exakte
 Domizile + DSGVO-Auftragsverarbeitung vor Vertrag bestätigen.
 
@@ -260,9 +271,9 @@ eigenen Spec → Plan → Implementierung:
 
 - [ ] Nhost: exakte schwedische Rechtsperson erfragen (AVV ✓ vorab
       unterzeichnet, Sub-Prozessor = AWS ✓, EU/Frankfurt-Region ✓, Pro-Plan).
-- [ ] MoR-Pfad bestätigen: **Mollie + OSS** zum Launch (empfohlen) vs. Vatly
-      abwarten (Gebühr/Verfügbarkeit direkt anfragen). Cleverbridge/Nexway raus.
-- [ ] Preise €4,99/Mo · €39/Jahr bestätigen (Recherche-Vorschlag).
+- [ ] Mollie-Konto + BZSt-OSS-Registrierung aufsetzen; Webhook → Nhost.
 
 **Entschieden:** ffmpeg = LGPL-Build bündeln (§6.1). YouTube-Ingest bleibt
-Free; nur Automatik kostet (§1).
+Free; nur Automatik kostet (§1). Zahlung = **Mollie (NL) + OSS** zum Launch,
+Vatly als späteres VAT-Offload-Upgrade (§6.2). Preise = **€4,90/Mo · €49/Jahr**
+(§2). Provider-Wechsel später dank Nhost-entkoppelter Identität gering (§6.2).

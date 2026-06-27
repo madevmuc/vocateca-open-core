@@ -20,7 +20,7 @@ deep CLI/automation surface.
   notifications + quiet hours, webhooks, a per-episode timeline, and
   filterable/exportable logs + a stats dashboard (CLI).
 - **Ingestion & sharing** — YouTube playlists, back-catalogue date backfill,
-  re-upload detection, OPML import, bulk export (md/json/pdf), and a static
+  re-upload detection, OPML import, bulk export (md/json/html/pdf), and a static
   searchable transcript site + RSS.
 - **Automation** — a localhost JSON API, a ⌘K command palette, and an expanded
   CLI (`stats`, `logs`, `health`, `bug-report`, `serve`, `publish`, `export`, …).

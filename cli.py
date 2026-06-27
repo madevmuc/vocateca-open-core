@@ -1424,7 +1424,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 
 def cmd_export(args: argparse.Namespace) -> int:
-    """Bulk-export a show's transcripts to md/json/pdf (4.1)."""
+    """Bulk-export a show's transcripts to md/json/html/pdf (4.1)."""
     from core.bulk_export import BulkExportError, export
 
     settings = _settings()
@@ -1666,9 +1666,9 @@ def main() -> int:
     s_publish.add_argument("--title", default=None, help="site title")
     s_publish.set_defaults(fn=cmd_publish)
 
-    s_export = sub.add_parser("export", help="bulk-export a show's transcripts (md/json/pdf)")
+    s_export = sub.add_parser("export", help="bulk-export a show's transcripts (md/json/html/pdf)")
     s_export.add_argument("slug")
-    s_export.add_argument("--format", choices=["md", "json", "pdf"], default="md")
+    s_export.add_argument("--format", choices=["md", "json", "html", "pdf"], default="md")
     s_export.add_argument(
         "--out", default=None, help="output path (default: <data>/<slug>-export.*)"
     )

@@ -518,7 +518,7 @@ def _bulk_export(window) -> None:
         QMessageBox.information(window, "Select show", "Select a row in the Shows tab first.")
         return
     fmt, ok = QInputDialog.getItem(
-        window, "Bulk export", "Format:", ["md", "json", "pdf"], 0, False
+        window, "Bulk export", "Format:", ["md", "json", "html", "pdf"], 0, False
     )
     if not ok:
         return
