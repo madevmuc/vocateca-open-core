@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 
 _DISK_GUARD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
 
+# In-loop transient-download retry budget (6.1). Total tries = _MAX_DOWNLOAD_ATTEMPTS.
+_MAX_DOWNLOAD_ATTEMPTS = 3
+_PIPELINE_RETRY_DELAYS = (2.0, 5.0, 10.0)
+
+
+def _retry_sleep(seconds: float) -> None:
+    """Indirection so tests can stub the backoff sleep."""
+    import time
+
+    time.sleep(seconds)
+
 
 class DiskSpaceError(RuntimeError):
     pass
@@ -303,34 +314,50 @@ def download_phase(
     _pause_check = None
     if ctx.download_pause_check is not None:
         _pause_check = lambda: bool(ctx.download_pause_check(guid))  # noqa: E731
-    try:
-        _guard_disk(audio_dir)
-        ctx.state.set_status(guid, EpisodeStatus.DOWNLOADING)
-        download_mp3(ep["mp3_url"], mp3_path, pause_check=_pause_check)
-    except DownloadPaused:
-        # Per-download pause (2.4): park as PAUSED (not PENDING) so the claim
-        # loop won't immediately re-grab it and re-pause in a tight loop. The
-        # .part is kept; "Resume download" flips it back to PENDING to continue.
-        ctx.state.set_status(guid, EpisodeStatus.PAUSED)
-        return DownloadOutcome(
-            guid=guid, result=PipelineResult("deferred", guid, "download paused")
-        )
-    except DiskSpaceError as e:
-        ctx.state.set_status(guid, EpisodeStatus.PENDING)
-        return DownloadOutcome(
-            guid=guid,
-            result=PipelineResult("failed", guid, f"disk: {e}"),
-        )
-    except Exception as e:
-        err = (
-            f"download failed [{type(e).__name__}]: {e}\n"
-            f"  show={ep['show_slug']}  guid={guid}\n"
-            f"  url={ep['mp3_url']}\n"
-            f"  dest={mp3_path}"
-        )
-        logger.error("download failed: %s (guid=%s)", ep["show_slug"], guid, exc_info=True)
-        action = _record_failure(ctx, guid, e, err)
-        return DownloadOutcome(guid=guid, result=PipelineResult(action, guid, err))
+    # Transient download failures (network/disk) retry IN-LOOP with backoff
+    # here (6.1) rather than re-queueing for a later claim; permanent errors
+    # fail immediately. The downloader also retries network errors at the HTTP
+    # level — this is the coarser, category-aware outer loop.
+    from core import errors
+
+    attempt = 0
+    while True:
+        try:
+            _guard_disk(audio_dir)
+            ctx.state.set_status(guid, EpisodeStatus.DOWNLOADING)
+            download_mp3(ep["mp3_url"], mp3_path, pause_check=_pause_check)
+            break
+        except DownloadPaused:
+            # Per-download pause (2.4): park as PAUSED (not PENDING) so the claim
+            # loop won't immediately re-grab it and re-pause in a tight loop. The
+            # .part is kept; "Resume download" flips it back to PENDING.
+            ctx.state.set_status(guid, EpisodeStatus.PAUSED)
+            return DownloadOutcome(
+                guid=guid, result=PipelineResult("deferred", guid, "download paused")
+            )
+        except Exception as e:
+            attempt += 1
+            category = errors.DISK if isinstance(e, DiskSpaceError) else errors.categorize(e)
+            err = (
+                f"download failed [{type(e).__name__}] ({category}): {e}\n"
+                f"  show={ep['show_slug']}  guid={guid}\n"
+                f"  url={ep['mp3_url']}\n  dest={mp3_path}  attempt={attempt}"
+            )
+            if errors.is_transient(category) and attempt < _MAX_DOWNLOAD_ATTEMPTS:
+                delay = _PIPELINE_RETRY_DELAYS[min(attempt - 1, len(_PIPELINE_RETRY_DELAYS) - 1)]
+                logger.warning(
+                    "download transient failure (%s) attempt %d/%d — retrying in %.0fs: %s",
+                    category,
+                    attempt,
+                    _MAX_DOWNLOAD_ATTEMPTS,
+                    delay,
+                    e,
+                )
+                _retry_sleep(delay)
+                continue
+            logger.error("download failed: %s (guid=%s)", ep["show_slug"], guid, exc_info=True)
+            ctx.state.set_error_details(guid, category, attempt, err)
+            return DownloadOutcome(guid=guid, result=PipelineResult("failed", guid, err))
     # Persist the actual on-disk path BEFORE flipping status — orphan
     # recovery on next launch reads mp3_path back and avoids the
     # slug-rebuild guesswork that defaulted to episode_number='0000'

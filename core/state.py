@@ -239,6 +239,17 @@ class StateStore:
         with self._conn() as c:
             c.execute("UPDATE episodes SET mean_confidence=? WHERE guid=?", (value, guid))
 
+    def set_error_details(self, guid: str, category: str, attempts: int, error_text: str) -> None:
+        """Terminal failure with an explicit attempt count (6.1 in-loop retry):
+        set status FAILED + error_text + error_category + attempts, and emit the
+        episode.failed event."""
+        with self._conn() as c:
+            c.execute(
+                "UPDATE episodes SET error_category=?, attempts=? WHERE guid=?",
+                (category, int(attempts), guid),
+            )
+        self.set_status(guid, EpisodeStatus.FAILED, error_text=error_text)
+
     def record_failure(self, guid: str, category: str, error_text: str, *, retry: bool) -> int:
         """Record a failure (6.1): bump ``attempts``, store ``error_category``,
         and set status to PENDING (when ``retry``) or FAILED. Returns the new

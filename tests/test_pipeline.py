@@ -114,38 +114,27 @@ def test_download_failure_marks_failed(tmp_path: Path):
     assert "unrecoverable parse glitch" in ctx.state.get_episode("gx")["error_text"]
 
 
-def test_transient_download_failure_is_retried(tmp_path: Path):
+def test_transient_download_failure_retries_in_loop_then_fails(tmp_path: Path, monkeypatch):
     ctx = _ctx(tmp_path)
     ctx.state.upsert_episode(
         show_slug="demo", guid="gx", title="T", pub_date="2026-04-15", mp3_url="http://x"
     )
 
+    tries = {"n": 0}
+
     def boom(*a, **kw):
+        tries["n"] += 1
         raise RuntimeError("network down")
+
+    # Stub the backoff sleep so the test doesn't actually wait.
+    monkeypatch.setattr("core.pipeline._retry_sleep", lambda s: None)
 
     with patch("core.pipeline.download_mp3", side_effect=boom):
         r = process_episode("gx", ctx)
-    # First transient failure → re-queued (deferred), not terminal.
-    assert r.action == "deferred"
-    assert ctx.state.get_episode("gx")["status"] == "pending"
-    assert ctx.state.get_episode("gx")["error_category"] == "network"
-
-
-def test_transient_failure_caps_at_exactly_three_attempts(tmp_path: Path):
-    ctx = _ctx(tmp_path)
-    ctx.state.upsert_episode(
-        show_slug="demo", guid="gx", title="T", pub_date="2026-04-15", mp3_url="http://x"
-    )
-
-    def boom(*a, **kw):
-        raise RuntimeError("network down")
-
-    actions = []
-    with patch("core.pipeline.download_mp3", side_effect=boom):
-        for _ in range(3):
-            actions.append(process_episode("gx", ctx).action)
-    # max_attempts=3 → two retries then a terminal failure on the 3rd attempt.
-    assert actions == ["deferred", "deferred", "failed"]
+    # A single call retries in-loop up to the cap, then fails terminally.
+    assert r.action == "failed"
+    assert tries["n"] == 3  # _MAX_DOWNLOAD_ATTEMPTS
     ep = ctx.state.get_episode("gx")
     assert ep["status"] == "failed"
+    assert ep["error_category"] == "network"
     assert ep["attempts"] == 3

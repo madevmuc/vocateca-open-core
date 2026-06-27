@@ -659,6 +659,21 @@ class CheckAllThread(QThread):
             )
         return PipelineContext(**kwargs)
 
+    def _skip_duplicates(self, slug: str) -> int:
+        """Mark pending re-upload duplicates SKIPPED (3.5). Keeps one episode per
+        near-duplicate cluster; never skips a done/in-flight one. Returns count."""
+        from core.dedupe import resolve_duplicates
+
+        eps = self.ctx.state.list_by_status(
+            slug, EpisodeStatus.PENDING
+        ) + self.ctx.state.list_by_status(slug, EpisodeStatus.DONE)
+        to_skip = resolve_duplicates(eps)
+        for guid in to_skip:
+            self.ctx.state.set_status(guid, EpisodeStatus.SKIPPED, error_text="duplicate-reupload")
+        if to_skip:
+            self.progress.emit(f"{slug}: skipped {len(to_skip)} re-upload duplicate(s)")
+        return len(to_skip)
+
     def _reprobe_deferred(self, show) -> int:
         """Re-classify a youtube show's DEFERRED episodes; promote any that are
         no longer live/premiere back to PENDING so this same check processes
@@ -844,6 +859,9 @@ class CheckAllThread(QThread):
             # promoted to PENDING *before* we gather pending below, so a
             # just-finished stream is picked up by this very pass.
             self._reprobe_deferred(show)
+            # Re-upload dedupe (3.5): skip pending episodes that near-duplicate
+            # another (done or earlier) episode of this show, keeping one.
+            self._skip_duplicates(show.slug)
             pending = self.ctx.state.list_by_status(show.slug, EpisodeStatus.PENDING)
             if self.limit:
                 pending = pending[-self.limit :]

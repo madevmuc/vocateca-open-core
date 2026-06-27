@@ -14,7 +14,7 @@ def test_legacy_yaml_loads_with_defaults(tmp_path):
     assert s.event_retention_days == 90
     assert s.queue_order == "oldest_first"
     assert s.caption_fallback_mode == "manual_whisper"
-    assert s.confidence_marking_enabled is False
+    assert s.confidence_marking_enabled is True
     assert s.confidence_threshold == 0.5
     assert s.disk_guard_enabled is True
     assert s.disk_guard_min_free_gb == 5

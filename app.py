@@ -104,6 +104,14 @@ class ParagraphosApp(QObject):
         except Exception:
             pass
 
+    def _on_online_changed(self, online: bool) -> None:
+        """GUI-thread slot for ConnectivityMonitor.online_changed. Connected as a
+        bound method so Qt marshals the worker-thread signal onto the GUI thread
+        before the window touches widgets / the DB."""
+        win = getattr(self, "_window", None)
+        if win is not None:
+            win.on_online_changed(online)
+
     def _bus_notify(self, ev) -> None:
         """Bus callback: fire a desktop notification if the event passes the
         granular notify rules (7.4). Runs on whatever thread emitted the event;
@@ -1110,9 +1118,13 @@ def main() -> int:
 
     if app.ctx.settings.connectivity_monitor_enabled:
         app._conn_monitor = ConnectivityMonitor()
-        app._conn_monitor.online_changed.connect(
-            lambda online: app._window.on_online_changed(online) if app._window else None
-        )
+        # Connect to a bound method of `app` (a QObject on the GUI thread), NOT a
+        # bare lambda. online_changed is emitted from the monitor's worker
+        # thread; a lambda has no receiver QObject so Qt would run it directly on
+        # that worker thread, mutating widgets + the DB off the GUI thread. A
+        # bound method whose object lives on the GUI thread gives a queued
+        # (AutoConnection) delivery onto the GUI thread.
+        app._conn_monitor.online_changed.connect(app._on_online_changed)
         app._conn_monitor.start()
     # Universal-ingest watch folder — starts iff the user opted in via
     # Settings. Observes the chosen root recursively and ingests any

@@ -231,7 +231,7 @@ class Settings(BaseModel):
     # caption fallback (3.4)
     caption_fallback_mode: Literal["manual_whisper", "manual_auto_whisper"] = "manual_whisper"
     # confidence marking (1.3)
-    confidence_marking_enabled: bool = False
+    confidence_marking_enabled: bool = True
     confidence_threshold: float = 0.5
     # scheduling windows (2.3)
     processing_windows_enabled: bool = False

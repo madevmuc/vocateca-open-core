@@ -50,3 +50,45 @@ def find_near_duplicates(
             if title_similarity(items[i][1], items[j][1]) >= threshold:
                 pairs.append((items[i][0], items[j][0]))
     return pairs
+
+
+def resolve_duplicates(episodes: list[dict], *, threshold: float = 0.9) -> list[str]:
+    """Decide which episodes to skip as re-uploads (3.5 auto-skip).
+
+    ``episodes`` is a list of dicts with ``guid``, ``title``, ``status``,
+    ``pub_date``. For each near-duplicate cluster keep ONE canonical episode and
+    return the guids of the rest to mark SKIPPED. A done/in-flight episode is
+    always preferred as the keeper over a pending one (never un-do completed
+    work); among same-class duplicates the earliest ``pub_date`` is kept.
+
+    The default threshold (0.9) is deliberately stricter than the reporting
+    helper's 0.85 — auto-skipping is destructive, so we only act on very strong
+    matches. Returns guids in input order, never including a keeper.
+    """
+    _ACTIVE = {"done", "downloading", "downloaded", "transcribing"}
+
+    def _rank(ep: dict) -> tuple:
+        # Lower sorts first = preferred keeper: active before pending, then
+        # earliest pub_date, then stable by guid.
+        active = 0 if (ep.get("status") in _ACTIVE) else 1
+        return (active, ep.get("pub_date") or "", ep.get("guid") or "")
+
+    skip: list[str] = []
+    skipped_set: set[str] = set()
+    n = len(episodes)
+    for i in range(n):
+        a = episodes[i]
+        if a["guid"] in skipped_set:
+            continue
+        for j in range(i + 1, n):
+            b = episodes[j]
+            if b["guid"] in skipped_set:
+                continue
+            if title_similarity(a.get("title", ""), b.get("title", "")) >= threshold:
+                # The lower-ranked of the pair is the keeper; the other is dropped.
+                loser = sorted((a, b), key=_rank)[1]
+                # Only skip a PENDING loser — never skip an already-active/done one.
+                if loser.get("status") == "pending" and loser["guid"] not in skipped_set:
+                    skip.append(loser["guid"])
+                    skipped_set.add(loser["guid"])
+    return [g for g in (e["guid"] for e in episodes) if g in skipped_set]
