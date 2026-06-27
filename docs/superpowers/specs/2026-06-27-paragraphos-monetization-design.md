@@ -40,6 +40,11 @@ Die Free-Version ist **voll funktionsfähig**, nur unbeaufsichtigt nicht.
 Der Pro-Value-Prop ist bewusst „Bequemlichkeit / Anwesenheit sparen",
 kein verkrüppeltes Gratis-Produkt.
 
+**Quellen sind nicht gegated:** YouTube-Ingest (und jede andere Quelle) ist
+im Free-Tier voll nutzbar — manuell. Nur der *automatische* Pull/Watch fällt
+unter die Automatik-Grenze. Es kostet nichts, *was* man holt; es kostet nur,
+dass es *unbeaufsichtigt* geholt wird.
+
 ---
 
 ## 2. Geschäftsmodell
@@ -145,22 +150,34 @@ Das Modell ist **„ehrlicher Zahler mit Reibung"**, kein hartes DRM:
 | whisper.cpp | MIT | unkritisch |
 | Whisper-Weights (large-v3-turbo) | MIT | unkritisch |
 | sherpa-onnx (Diarization, optional) | Apache-2.0 | unkritisch |
-| ffmpeg | LGPL/GPL (Homebrew-Build) | bei Bündelung **LGPL-Build** nötig, dynamisch gelinkt; sonst weiter extern via Homebrew |
-| yt-dlp | Unlicense | lizenzrechtlich frei; **aber** YouTube-ToS-/Abmahnrisiko im Bezahlprodukt — Risiko bewerten |
+| ffmpeg | LGPL/GPL | **Entschieden: LGPL-Build bündeln**, dynamisch gelinkt, keine GPL-Komponenten (x264/x265). Löst die Homebrew-Abhängigkeit ab. |
+| yt-dlp | Unlicense | lizenzrechtlich frei. **YouTube-Ingest bleibt im Free-Tier** (manuell, wie jeder Download). YouTube-ToS-/Abmahnrisiko betrifft damit den Gratis-Teil; in About/EULA transparent halten. |
 
 ### 6.2 Backend: Zahlung getrennt von Auth/Entitlement
 
-Login-Modell → zwei getrennte Dienste statt einer Lizenz-API:
+Login-Modell → zwei getrennte Dienste statt einer Lizenz-API. Beide sollen
+in **EU-Mitgliedstaaten** domiziliert sein und damit voll der DSGVO
+unterliegen. (UK fällt seit Brexit nur unter UK-GDPR + Angemessenheits-
+beschluss, ist kein EU-Mitglied → Paddle/Payhip nicht erste Wahl.)
 
-- **Auth + Entitlement: Nhost** — EU-Firma (Schweden), managed, Supabase-
-  ähnlich (Postgres + Auth + Functions), EU-Hosting. Stellt Magic-Link-Login
-  (JWT), eine `subscriptions`-Tabelle und den Entitlement-Check. Echtes
-  EU-Domizil (≠ Supabase, das eine US-Firma mit EU-Region ist). Domizil/AV
-  vor Vertrag bestätigen.
-- **Merchant of Record (Zahlung + EU-VAT): Paddle (UK) oder Payhip (UK)** —
-  nur noch fürs Geld; ein MoR-Webhook füllt die Nhost-`subscriptions`-Tabelle.
-  US-Anbieter (Lemonsqueezy, Gumroad) ausgeschlossen (EU-Präferenz).
-  Datenstandort/DSGVO-AV prüfen.
+- **Auth + Entitlement: Nhost** — EU-Firma (**Schweden**), managed, Supabase-
+  ähnlich (Postgres + Auth + Functions), EU-Hosting. Magic-Link-Login (JWT),
+  `subscriptions`-Tabelle, Entitlement-Check. Echtes EU-Domizil (≠ Supabase,
+  US-Firma mit EU-Region).
+- **Merchant of Record (Zahlung + EU-VAT) — EU-domiziliert:**
+  - **Cleverbridge** (Köln, **DE**) — etablierter Software-MoR, VAT/GDPR im
+    MoR-Modus. Eher Enterprise.
+  - **Nexway** (Paris, **FR**) — Software/SaaS-MoR (Reseller/MoR/Hybrid),
+    VAT + GDPR.
+  - **Vatly** (Team **NL/DE/FR/RO**) — neuerer, indie-freundlicher EU-MoR
+    für SaaS.
+  - Ein MoR-Webhook füllt die Nhost-`subscriptions`-Tabelle.
+- **Alternative (voll-EU, ohne MoR):** EU-PSP wie **Mollie (NL)** + eigene
+  **OSS/One-Stop-Shop-Registrierung** in DE (VAT selbst tragen, ggf. via
+  Quaderno automatisiert). Günstiger, aber du übernimmst die VAT-Verwaltung.
+
+US-Anbieter (Lemonsqueezy, Gumroad, FastSpring) ausgeschlossen. Exakte
+Domizile + DSGVO-Auftragsverarbeitung vor Vertrag bestätigen.
 
 ### 6.3 Rechtliche To-dos vor Launch
 
@@ -209,10 +226,11 @@ eigenen Spec → Plan → Implementierung:
 
 ## Offene Entscheidungs-Items
 
-- [ ] Nhost-Domizil + DSGVO-Auftragsverarbeitung (AV) verifizieren.
-- [ ] MoR final wählen (Paddle vs. Payhip) nach Datenstandort-Prüfung;
-      Webhook → Nhost aufsetzen.
+- [ ] Nhost-Domizil + DSGVO-AV verifizieren.
+- [ ] EU-MoR final wählen (Cleverbridge / Nexway / Vatly) — Konditionen +
+      Indie-Tauglichkeit vergleichen; Webhook → Nhost. Alternativ-Pfad:
+      Mollie (NL) + OSS-Eigenregistrierung statt MoR.
 - [ ] Abo-Preise (monatlich/jährlich) festlegen.
-- [ ] ffmpeg: weiter extern (Homebrew) oder LGPL-Build bündeln?
-- [ ] YouTube-Ingest im Pro-Tier behalten oder als „bring your own URL /
-      at your own risk" kapseln?
+
+**Entschieden:** ffmpeg = LGPL-Build bündeln (§6.1). YouTube-Ingest bleibt
+Free; nur Automatik kostet (§1).
