@@ -70,6 +70,21 @@ class PipelineResult:
     detail: str = ""
 
 
+def _record_failure(ctx, guid: str, exc: BaseException, err: str) -> str:
+    """Categorize a pipeline exception (6.1), record it with an attempt bump,
+    and decide retry vs. terminal failure. Returns the PipelineResult action
+    ("deferred" when re-queued for a transient retry, else "failed")."""
+    from core import errors
+
+    category = errors.categorize(exc)
+    # Peek current attempts to decide before the bump.
+    ep = ctx.state.get_episode(guid)
+    attempts = int((ep or {}).get("attempts") or 0)
+    retry = errors.should_retry(category, attempts)
+    ctx.state.record_failure(guid, category, err, retry=retry)
+    return "deferred" if retry else "failed"
+
+
 def caption_source_chain(pref: str, fallback_mode: str) -> list[str]:
     """Ordered transcript sources for a YouTube episode (3.4).
 
@@ -294,11 +309,8 @@ def download_phase(
             f"  dest={mp3_path}"
         )
         logger.error("download failed: %s (guid=%s)", ep["show_slug"], guid, exc_info=True)
-        ctx.state.set_status(guid, EpisodeStatus.FAILED, error_text=err)
-        return DownloadOutcome(
-            guid=guid,
-            result=PipelineResult("failed", guid, err),
-        )
+        action = _record_failure(ctx, guid, e, err)
+        return DownloadOutcome(guid=guid, result=PipelineResult(action, guid, err))
     # Persist the actual on-disk path BEFORE flipping status — orphan
     # recovery on next launch reads mp3_path back and avoids the
     # slug-rebuild guesswork that defaulted to episode_number='0000'
@@ -377,8 +389,8 @@ def transcribe_phase(outcome: DownloadOutcome, ctx: PipelineContext) -> Pipeline
     except TranscriptionError as e:
         err = f"transcribe failed: {e}\n  show={ep['show_slug']}  guid={guid}\n  mp3={mp3_path}"
         logger.error("transcribe failed: %s (guid=%s)", ep["show_slug"], guid, exc_info=True)
-        ctx.state.set_status(guid, EpisodeStatus.FAILED, error_text=err)
-        return PipelineResult("failed", guid, err)
+        action = _record_failure(ctx, guid, e, err)
+        return PipelineResult(action, guid, err)
     ctx.library.add(result.md_path)
     from core.stats import _duration_from_srt
 

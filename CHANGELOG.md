@@ -103,6 +103,13 @@ people actually paste, and paired with a full per-show episode browser.
 - **`cli.py backlog <slug> --backlog …`** deepens an existing YouTube show's
   history beyond the RSS window and queues the newly fetched videos.
 
+### Added
+- **Error taxonomy + automatic retry.** Pipeline failures are now classified
+  (`network`, `not_found`, `too_large`, `format`, `whisper`, `disk`, `unknown`);
+  transient ones (network/disk) auto-retry with a capped attempt count instead
+  of failing outright, and the Failed tab shows the category + attempt count.
+  Exposed via `cli.py episodes --json` (`error_category`, `attempts`).
+
 ### Changed
 - **The `use_etag_cache` setting is now honoured.** When off, feeds are always
   re-fetched in full instead of sending conditional `ETag` /

@@ -102,11 +102,30 @@ def test_download_failure_marks_failed(tmp_path: Path):
         show_slug="demo", guid="gx", title="T", pub_date="2026-04-15", mp3_url="http://x"
     )
 
+    # A permanent (non-transient) error fails terminally. Transient categories
+    # (network/disk) are auto-retried instead — see test_error_taxonomy.
     def boom(*a, **kw):
-        raise RuntimeError("network down")
+        raise RuntimeError("unrecoverable parse glitch")
 
     with patch("core.pipeline.download_mp3", side_effect=boom):
         r = process_episode("gx", ctx)
     assert r.action == "failed"
     assert ctx.state.get_episode("gx")["status"] == "failed"
-    assert "network down" in ctx.state.get_episode("gx")["error_text"]
+    assert "unrecoverable parse glitch" in ctx.state.get_episode("gx")["error_text"]
+
+
+def test_transient_download_failure_is_retried(tmp_path: Path):
+    ctx = _ctx(tmp_path)
+    ctx.state.upsert_episode(
+        show_slug="demo", guid="gx", title="T", pub_date="2026-04-15", mp3_url="http://x"
+    )
+
+    def boom(*a, **kw):
+        raise RuntimeError("network down")
+
+    with patch("core.pipeline.download_mp3", side_effect=boom):
+        r = process_episode("gx", ctx)
+    # First transient failure → re-queued (deferred), not terminal.
+    assert r.action == "deferred"
+    assert ctx.state.get_episode("gx")["status"] == "pending"
+    assert ctx.state.get_episode("gx")["error_category"] == "network"

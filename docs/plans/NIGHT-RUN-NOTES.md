@@ -159,6 +159,16 @@ per-test `_reset_event_bus` fixture was also added for subscriber isolation
   existing `realtime_factor` + global counts). New `cli.py stats` command. 4
   tests. **Best-assumption:** headline metrics surfaced via CLI; GUI stats
   panel deferred (reuses existing realtime_factor for the RTF metric).
+- **Task 20 — error taxonomy + auto-retry (6.1)** ✅ `core/errors.py`
+  (`categorize` by type/status/message, `is_transient`, `should_retry` capped).
+  `error_category`+`attempts` episodes columns; `state.record_failure`
+  (bump+category, retry→PENDING / else FAILED). Pipeline `_record_failure`
+  wraps download + transcribe failures (transient→deferred retry). Failed tab
+  shows `[category]` + attempts; CLI JSON exposes both. Updated one pipeline
+  test (network download now retries) + added a retry test. 10 tests.
+  **Best-assumption:** retry is "defer to next claim" (status→PENDING, attempts
+  capped at 3) rather than an in-loop sleep-backoff — the downloader already
+  does low-level network retries, and re-queueing avoids blocking the worker.
 - **Task 11 — wire use_etag_cache (8.5)** ✅ `rss.conditional_validators`
   gates stored ETag/Last-Modified by the setting; worker uses it (off → sends
   no conditional headers). respx tests confirm header present/absent. Settings

@@ -114,7 +114,8 @@ class FailedTab(QWidget):
     def refresh(self):
         with self.ctx.state._conn() as c:
             rows = c.execute(
-                "SELECT show_slug, guid, title, attempted_at, error_text "
+                "SELECT show_slug, guid, title, attempted_at, error_text, "
+                "error_category, attempts "
                 "FROM episodes WHERE status='failed' ORDER BY attempted_at DESC"
             ).fetchall()
         # Sorting must be off during repopulation — Qt re-sorts on every
@@ -132,9 +133,13 @@ class FailedTab(QWidget):
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(r["show_slug"] or ""))
             self.table.setItem(row, 1, QTableWidgetItem(r["title"] or ""))
-            self.table.setItem(row, 2, QTableWidgetItem(_humanise_reason(row_error)))
-            # Tries is not tracked in the schema yet — show a dash.
-            self.table.setItem(row, 3, QTableWidgetItem("—"))
+            category = (r["error_category"] or "").strip()
+            reason = _humanise_reason(row_error)
+            if category:
+                reason = f"[{category}] {reason}"
+            self.table.setItem(row, 2, QTableWidgetItem(reason))
+            attempts = r["attempts"] if r["attempts"] is not None else 0
+            self.table.setItem(row, 3, QTableWidgetItem(str(attempts) if attempts else "—"))
             self.table.setItem(row, 4, QTableWidgetItem(r["attempted_at"] or ""))
             # Stash guid on the row (column 0) for selection-based helpers.
             self.table.item(row, 0).setData(0x0100, guid)  # Qt.ItemDataRole.UserRole

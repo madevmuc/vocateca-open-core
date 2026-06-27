@@ -173,6 +173,8 @@ class StateStore:
                 "ALTER TABLE episodes ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE episodes ADD COLUMN detected_language TEXT",
                 "ALTER TABLE episodes ADD COLUMN mean_confidence REAL",
+                "ALTER TABLE episodes ADD COLUMN error_category TEXT",
+                "ALTER TABLE episodes ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
             ):
                 try:
                     c.execute(stmt)
@@ -236,6 +238,27 @@ class StateStore:
         """Persist the mean whisper confidence for this episode (1.3)."""
         with self._conn() as c:
             c.execute("UPDATE episodes SET mean_confidence=? WHERE guid=?", (value, guid))
+
+    def record_failure(self, guid: str, category: str, error_text: str, *, retry: bool) -> int:
+        """Record a failure (6.1): bump ``attempts``, store ``error_category``,
+        and set status to PENDING (when ``retry``) or FAILED. Returns the new
+        attempt count. Emits the matching lifecycle event via set_status."""
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE episodes SET attempts = COALESCE(attempts, 0) + 1, error_category=? "
+                "WHERE guid=?",
+                (category, guid),
+            )
+            if cur.rowcount:
+                row = c.execute("SELECT attempts FROM episodes WHERE guid=?", (guid,)).fetchone()
+                attempts = row["attempts"] if row else 1
+            else:
+                attempts = 1
+        if retry:
+            self.set_status(guid, EpisodeStatus.PENDING)
+        else:
+            self.set_status(guid, EpisodeStatus.FAILED, error_text=error_text)
+        return attempts
 
     def set_duration_sec(self, guid: str, duration_sec: int) -> None:
         """Persist a video's known audio length mid-flight (before transcription

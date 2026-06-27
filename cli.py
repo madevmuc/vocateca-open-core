@@ -95,6 +95,8 @@ def _episode_dict(row: dict) -> dict:
         "attempted_at": row.get("attempted_at"),
         "completed_at": row.get("completed_at"),
         "error_text": row.get("error_text"),
+        "error_category": row.get("error_category"),
+        "attempts": row.get("attempts", 0),
     }
 
 
