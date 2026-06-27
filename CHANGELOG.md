@@ -69,7 +69,8 @@ land as design docs + flag-gated skeletons — see `docs/plans/`.
   transcribe, total), computed from the recorded events.
 - **Webhooks / on-event hooks.** Configure webhooks in `settings.yaml` to run a
   local script (event JSON on stdin) or HTTP POST the event JSON when matching
-  events fire. Dispatch is non-blocking and failure-isolated; POST targets are
+  events fire. Command targets may include arguments; each event's hooks fire
+  concurrently; dispatch is non-blocking and failure-isolated; POST targets are
   SSRF-guarded (no private/loopback hosts).
 - **Granular notifications.** Desktop notifications now fire on transcription
   failures and when a check finishes (in addition to the existing per-episode

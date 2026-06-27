@@ -65,6 +65,28 @@ def test_event_to_json_is_serialisable():
     assert payload["guid"] == "g1"
 
 
+def test_run_command_splits_arguments(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, **kw):
+        captured["argv"] = argv
+
+    monkeypatch.setattr(webhooks.subprocess, "run", fake_run)
+    webhooks._run_command("/path/notify.sh --tag run --quiet", _ev())
+    assert captured["argv"] == ["/path/notify.sh", "--tag", "run", "--quiet"]
+
+
+def test_dispatch_one_runs_matching_command():
+    calls = []
+    webhooks._dispatch_one(
+        _ev(),
+        {"events": [], "kind": "command", "target": "x"},
+        run_command=lambda t, e: calls.append(t),
+        http_post=lambda t, e: calls.append(t),
+    )
+    assert calls == ["x"]
+
+
 def test_http_post_rejects_internal_url():
     from core.security import UnsafeURLError
 

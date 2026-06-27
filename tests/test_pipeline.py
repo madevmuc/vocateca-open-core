@@ -129,3 +129,23 @@ def test_transient_download_failure_is_retried(tmp_path: Path):
     assert r.action == "deferred"
     assert ctx.state.get_episode("gx")["status"] == "pending"
     assert ctx.state.get_episode("gx")["error_category"] == "network"
+
+
+def test_transient_failure_caps_at_exactly_three_attempts(tmp_path: Path):
+    ctx = _ctx(tmp_path)
+    ctx.state.upsert_episode(
+        show_slug="demo", guid="gx", title="T", pub_date="2026-04-15", mp3_url="http://x"
+    )
+
+    def boom(*a, **kw):
+        raise RuntimeError("network down")
+
+    actions = []
+    with patch("core.pipeline.download_mp3", side_effect=boom):
+        for _ in range(3):
+            actions.append(process_episode("gx", ctx).action)
+    # max_attempts=3 → two retries then a terminal failure on the 3rd attempt.
+    assert actions == ["deferred", "deferred", "failed"]
+    ep = ctx.state.get_episode("gx")
+    assert ep["status"] == "failed"
+    assert ep["attempts"] == 3

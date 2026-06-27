@@ -59,9 +59,17 @@ def webhook_matches(webhook: dict, event_type: str) -> bool:
 
 
 def _run_command(target: str, event) -> None:
-    """Run ``target`` as a script, feeding the event JSON on stdin."""
+    """Run ``target`` as a script, feeding the event JSON on stdin.
+
+    ``target`` is shell-word-split so a command may carry arguments
+    (e.g. ``"/path/notify.sh --tag run"``); a bare path still works."""
+    import shlex
+
+    argv = shlex.split(target)
+    if not argv:
+        return
     subprocess.run(
-        [target],
+        argv,
         input=event_to_json(event),
         text=True,
         timeout=_COMMAND_TIMEOUT_SEC,
@@ -82,27 +90,32 @@ def _http_post(target: str, event) -> None:
     )
 
 
+def _dispatch_one(event, wh: dict, *, run_command=_run_command, http_post=_http_post) -> None:
+    """Run a single matching webhook; failures are logged and swallowed."""
+    try:
+        if not webhook_matches(wh, event.type):
+            return
+        kind = wh.get("kind")
+        target = wh.get("target") or ""
+        if not target:
+            return
+        if kind == "command":
+            run_command(target, event)
+        elif kind == "post":
+            http_post(target, event)
+    except Exception:
+        _logger.exception("webhook dispatch failed for %s → %s", event.type, wh.get("target"))
+
+
 def dispatch(
     event, webhooks: list[dict], *, run_command=_run_command, http_post=_http_post
 ) -> None:
-    """Synchronously dispatch ``event`` to all matching webhooks.
+    """Synchronously dispatch ``event`` to all matching webhooks (in order).
 
     Each webhook's failure is logged and swallowed so one bad hook never blocks
     the others or the caller. Executors are injectable for testing."""
     for wh in webhooks or []:
-        try:
-            if not webhook_matches(wh, event.type):
-                continue
-            kind = wh.get("kind")
-            target = wh.get("target") or ""
-            if not target:
-                continue
-            if kind == "command":
-                run_command(target, event)
-            elif kind == "post":
-                http_post(target, event)
-        except Exception:
-            _logger.exception("webhook dispatch failed for %s → %s", event.type, wh.get("target"))
+        _dispatch_one(event, wh, run_command=run_command, http_post=http_post)
 
 
 def install(get_settings) -> None:
@@ -119,11 +132,14 @@ def install(get_settings) -> None:
             if not getattr(settings, "webhooks_enabled", False):
                 return
             hooks = list(getattr(settings, "webhooks", []) or [])
-            if not hooks:
-                return
-            threading.Thread(
-                target=dispatch, args=(event, hooks), name="webhook-dispatch", daemon=True
-            ).start()
+            matching = [wh for wh in hooks if webhook_matches(wh, event.type)]
+            # One daemon thread per matching hook so a slow command hook doesn't
+            # delay the others in the same event's batch (and never blocks the
+            # bus emit / pipeline).
+            for wh in matching:
+                threading.Thread(
+                    target=_dispatch_one, args=(event, wh), name="webhook-dispatch", daemon=True
+                ).start()
         except Exception:
             _logger.exception("webhook install handler failed")
 

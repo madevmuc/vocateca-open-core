@@ -83,10 +83,12 @@ def _record_failure(ctx, guid: str, exc: BaseException, err: str) -> str:
     from core import errors
 
     category = errors.categorize(exc)
-    # Peek current attempts to decide before the bump.
+    # `attempts` in the DB is the count BEFORE this failure; record_failure
+    # bumps it. Decide retry against the post-bump count so max_attempts means
+    # exactly N total tries (e.g. max_attempts=3 → try 3 times, then FAILED).
     ep = ctx.state.get_episode(guid)
-    attempts = int((ep or {}).get("attempts") or 0)
-    retry = errors.should_retry(category, attempts)
+    attempts_after = int((ep or {}).get("attempts") or 0) + 1
+    retry = errors.should_retry(category, attempts_after)
     ctx.state.record_failure(guid, category, err, retry=retry)
     return "deferred" if retry else "failed"
 
