@@ -50,7 +50,8 @@ dass es *unbeaufsichtigt* geholt wird.
 ## 2. Geschäftsmodell
 
 - **Abo** (Subscription), passend zu „solange im Hintergrund läuft".
-  Vorschlag: monatlich + jährlich.
+  Vorschlag (Recherche-Stand): **€4,99/Monat · €39/Jahr** (jährlich führen,
+  ~2 Monate gratis). Lifetime-Tier vorerst zurückstellen.
 - **Account-Login statt Lizenzschlüssel:** Pro wird an einen Nutzer-Account
   gebunden, Login per E-Mail-Magic-Link/OTP (kein Key zum Aufbewahren,
   Mehrgeräte inklusive). Details §4.
@@ -168,18 +169,22 @@ beschluss, ist kein EU-Mitglied → Paddle/Payhip nicht erste Wahl.)
 - **Auth + Entitlement: Nhost** — EU-Firma (**Schweden**), managed, Supabase-
   ähnlich (Postgres + Auth + Functions), EU-Hosting. Magic-Link-Login (JWT),
   `subscriptions`-Tabelle, Entitlement-Check. Echtes EU-Domizil (≠ Supabase,
-  US-Firma mit EU-Region).
-- **Merchant of Record (Zahlung + EU-VAT) — EU-domiziliert:**
-  - **Cleverbridge** (Köln, **DE**) — etablierter Software-MoR, VAT/GDPR im
-    MoR-Modus. Eher Enterprise.
-  - **Nexway** (Paris, **FR**) — Software/SaaS-MoR (Reseller/MoR/Hybrid),
-    VAT + GDPR.
-  - **Vatly** (Team **NL/DE/FR/RO**) — neuerer, indie-freundlicher EU-MoR
-    für SaaS.
-  - Ein MoR-Webhook füllt die Nhost-`subscriptions`-Tabelle.
-- **Alternative (voll-EU, ohne MoR):** EU-PSP wie **Mollie (NL)** + eigene
-  **OSS/One-Stop-Shop-Registrierung** in DE (VAT selbst tragen, ggf. via
-  Quaderno automatisiert). Günstiger, aber du übernimmst die VAT-Verwaltung.
+  US-Firma mit EU-Region). **Recherche-Caveats:** Pro-Plan (~$25/mo) in der
+  **EU/Frankfurt-Region** nötig (Free-Tier pausiert nach 1 Woche idle). Vor
+  Launch klären: exakte schwedische Rechtsperson, signiertes **Art.-28-AVV**,
+  **Sub-Prozessor-Liste**. Hosting läuft vermutlich auf AWS (US-Mutter →
+  CLOUD Act) + Magic-Link-Mailversand als zusätzlicher Sub-Prozessor —
+  geringes Praxisrisiko bei minimaler Datenhaltung, aber dokumentieren.
+- **Merchant of Record (Zahlung + EU-VAT) — EU-domiziliert.** Recherche-Stand
+  (`research/2026-06-27-monetization-decisions.md`):
+  - **Vatly** (NL, *Sandorian Consultancy B.V.*) — **bevorzugt**: indie-
+    tauglicher EU-MoR für SaaS, *sofern* Transaktions-% und Verfügbarkeit
+    (Early-Access) passen. Subscription-Webhook → Nhost verifizieren.
+  - **Cleverbridge (DE) / Nexway (FR) — vorerst raus:** beide enterprise-
+    gated, verhandelte Konditionen + hohe Plattformgebühren, kein Self-Serve.
+  - **Fallback (voll-EU, ohne MoR): Mollie (NL)** + eigene **OSS/One-Stop-
+    Shop-Registrierung** in DE (VAT selbst, ggf. via Quaderno). Günstigste
+    Option, voll EU, aber VAT-Verwaltung liegt bei dir.
 
 US-Anbieter (Lemonsqueezy, Gumroad, FastSpring) ausgeschlossen. Exakte
 Domizile + DSGVO-Auftragsverarbeitung vor Vertrag bestätigen.
@@ -249,11 +254,11 @@ eigenen Spec → Plan → Implementierung:
 
 ## Offene Entscheidungs-Items
 
-- [ ] Nhost-Domizil + DSGVO-AV verifizieren.
-- [ ] EU-MoR final wählen (Cleverbridge / Nexway / Vatly) — Konditionen +
-      Indie-Tauglichkeit vergleichen; Webhook → Nhost. Alternativ-Pfad:
-      Mollie (NL) + OSS-Eigenregistrierung statt MoR.
-- [ ] Abo-Preise (monatlich/jährlich) festlegen.
+- [ ] Nhost vor Launch klären: schwedische Rechtsperson, signiertes
+      Art.-28-AVV, Sub-Prozessor-Liste; EU/Frankfurt-Region + Pro-Plan.
+- [ ] Vatly-Konditionen prüfen (Transaktions-%, Early-Access offen?) →
+      sonst Mollie+OSS-Fallback. Cleverbridge/Nexway raus (enterprise-gated).
+- [ ] Preise €4,99/Mo · €39/Jahr bestätigen (Recherche-Vorschlag).
 
 **Entschieden:** ffmpeg = LGPL-Build bündeln (§6.1). YouTube-Ingest bleibt
 Free; nur Automatik kostet (§1).
