@@ -104,6 +104,9 @@ people actually paste, and paired with a full per-show episode browser.
   history beyond the RSS window and queues the newly fetched videos.
 
 ### Added
+- **Pause/resume individual downloads.** Right-click a queued episode → Pause
+  download to halt its in-flight download (the partial is kept); Resume to
+  continue from where it left off.
 - **Processing windows.** Restrict transcription to set time windows (e.g.
   overnight) in Settings → Processing & reliability; outside them the worker
   idles until the next window.

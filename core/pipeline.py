@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from core.downloader import download_mp3
+from core.downloader import DownloadPaused, download_mp3
 from core.library import LibraryIndex
 from core.sanitize import sanitize_filename
 from core.state import EpisodeStatus, StateStore
@@ -46,6 +46,10 @@ class PipelineContext:
     # Resolved per show (show value over settings default) in the worker.
     min_duration_sec: int = 0
     max_duration_sec: int = 0
+    # Per-download pause (2.4): callable(guid) -> bool; when it returns True
+    # mid-download the stream halts (leaving a .part) and the episode is
+    # re-queued. None disables the check.
+    download_pause_check: object = None
     # YouTube-source dispatch (Theme A). When ``source == "youtube"`` the
     # pipeline routes the episode through the captions-first / whisper-
     # fallback branch instead of the standard MP3-download path. The
@@ -291,10 +295,19 @@ def download_phase(
             guid=guid,
             result=PipelineResult("failed", guid, err),
         )
+    _pause_check = None
+    if ctx.download_pause_check is not None:
+        _pause_check = lambda: bool(ctx.download_pause_check(guid))  # noqa: E731
     try:
         _guard_disk(audio_dir)
         ctx.state.set_status(guid, EpisodeStatus.DOWNLOADING)
-        download_mp3(ep["mp3_url"], mp3_path)
+        download_mp3(ep["mp3_url"], mp3_path, pause_check=_pause_check)
+    except DownloadPaused:
+        # Per-download pause (2.4): re-queue so it resumes from the .part later.
+        ctx.state.set_status(guid, EpisodeStatus.PENDING)
+        return DownloadOutcome(
+            guid=guid, result=PipelineResult("deferred", guid, "download paused")
+        )
     except DiskSpaceError as e:
         ctx.state.set_status(guid, EpisodeStatus.PENDING)
         return DownloadOutcome(

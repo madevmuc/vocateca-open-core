@@ -676,11 +676,24 @@ class QueueTab(QWidget):
                 f"Deactivate (keep in queue, don't process){sfx}",
                 lambda gs=guids: self._set_episode_status(gs, EpisodeStatus.PAUSED),
             )
+        menu.addSeparator()
+        menu.addAction(f"Pause download{sfx}", lambda gs=guids: self._set_download_paused(gs, True))
+        menu.addAction(
+            f"Resume download{sfx}", lambda gs=guids: self._set_download_paused(gs, False)
+        )
         menu.addAction(
             f"Remove from queue{sfx}",
             lambda gs=guids: self._remove_from_queue(gs),
         )
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _set_download_paused(self, guids: list[str], paused: bool) -> None:
+        """Set/clear the per-download pause flag (2.4). A paused in-flight
+        download halts (leaving a .part) and re-queues; resume continues."""
+        for g in guids:
+            self.ctx.state.set_meta(f"download_paused:{g}", "1" if paused else "0")
+        verb = "Paused" if paused else "Resumed"
+        log_activity(f"{verb} download for {len(guids)} episode(s)")
 
     def _move_to_top(self, guids: list[str]) -> None:
         """Persist a stable manual order for the selected episodes at the top of

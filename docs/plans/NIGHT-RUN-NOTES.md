@@ -200,6 +200,11 @@ per-test `_reset_event_bus` fixture was also added for subscriber isolation
   `within_windows` (multi-window, midnight wrap, malformed-skip). Worker idles
   at the start of a run when outside windows + `processing_windows_enabled`.
   Settings toggle + comma-separated windows field. 5 tests.
+- **Task 26 — pausable individual downloads (2.4)** ✅ downloader gains a
+  `pause_check` callback + `DownloadPaused` (halts mid-stream, keeps `.part`).
+  PipelineContext `download_pause_check`; download_phase catches DownloadPaused
+  → re-queue (deferred). Worker reads `download_paused:{guid}` meta; queue
+  context-menu Pause/Resume download sets/clears it. 3 tests (respx).
 - **Task 11 — wire use_etag_cache (8.5)** ✅ `rss.conditional_validators`
   gates stored ETag/Last-Modified by the setting; worker uses it (off → sends
   no conditional headers). respx tests confirm header present/absent. Settings

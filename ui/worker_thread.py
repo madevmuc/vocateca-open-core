@@ -602,6 +602,10 @@ class CheckAllThread(QThread):
         )
         kwargs["min_duration_sec"] = emin
         kwargs["max_duration_sec"] = emax
+        # Per-download pause (2.4): honour a per-guid pause flag in state.meta.
+        kwargs["download_pause_check"] = lambda g: (
+            self.ctx.state.get_meta(f"download_paused:{g}") == "1"
+        )
         if getattr(show, "source", "podcast") == "youtube":
             # Pull the channel id straight off the canonical channel-RSS URL
             # (`…?channel_id=UC…`). The Watchlist always stores YouTube shows
