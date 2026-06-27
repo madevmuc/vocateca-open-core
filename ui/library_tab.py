@@ -561,6 +561,10 @@ class LibraryTab(QWidget):
         a_retr.triggered.connect(lambda: self._do_retranscribe(guid))
         menu.addAction(a_retr)
 
+        a_timeline = QAction("Show timeline…", self)
+        a_timeline.triggered.connect(lambda: self._show_timeline(guid))
+        menu.addAction(a_timeline)
+
         menu.addSeparator()
         a_del = QAction("Delete transcript…", self)
         a_del.triggered.connect(lambda: self._delete_transcript(guid))
@@ -573,6 +577,13 @@ class LibraryTab(QWidget):
 
         retranscribe_episode(self.ctx, guid)
         self.refresh()
+
+    def _show_timeline(self, guid: str) -> None:
+        """Read-only per-episode phase timeline from the events table (7.2)."""
+        from core.timeline import format_timeline
+
+        events = self.ctx.state.query_events(guid=guid)
+        QMessageBox.information(self, "Episode timeline", format_timeline(events))
 
     # --- Tree (folder) context menu + deletions --------------------------
 

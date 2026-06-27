@@ -24,6 +24,9 @@ people actually paste, and paired with a full per-show episode browser.
   a curated subset is mirrored into the activity-log dock.
 
 ### Added
+- **Episode timeline.** Right-click an episode in the Library → **Show
+  timeline…** to see how long each phase took (queue wait, download,
+  transcribe, total), computed from the recorded events.
 - **Webhooks / on-event hooks.** Configure webhooks in `settings.yaml` to run a
   local script (event JSON on stdin) or HTTP POST the event JSON when matching
   events fire. Dispatch is non-blocking and failure-isolated; POST targets are

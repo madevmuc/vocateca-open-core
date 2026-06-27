@@ -144,6 +144,10 @@ per-test `_reset_event_bus` fixture was also added for subscriber isolation
   dispatch, settings read live). Wired into app.py + CLI check. AGENTS documents
   the settings.yaml config. 6 tests. **Best-assumption:** webhooks configured
   via settings.yaml (operator surface); GUI list-editor deferred.
+- **Task 17 — episode timeline (7.2)** ✅ `core/timeline.py` `phase_durations`
+  (queue_wait/download/transcribe/total from event ts, missing phases omitted)
+  + `format_timeline`. Library episode context-menu "Show timeline…" reads
+  `query_events(guid=...)` into a dialog. 4 tests.
 - **Task 11 — wire use_etag_cache (8.5)** ✅ `rss.conditional_validators`
   gates stored ETag/Last-Modified by the setting; worker uses it (off → sends
   no conditional headers). respx tests confirm header present/absent. Settings
