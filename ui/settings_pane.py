@@ -864,6 +864,18 @@ class SettingsPane(QWidget):
         drift_row.addWidget(self._drift_label, stretch=1)
         self._drift_button = QPushButton()
         self._drift_button.setVisible(False)
+        # Explicit button chrome so it reads as a button (not plain text) under
+        # the themed dark QSS, which otherwise renders bare QPushButtons flat.
+        _dtk = _theme_tokens()
+        self._drift_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._drift_button.setStyleSheet(
+            f"QPushButton {{ background: {_dtk['surface']}; color: {_dtk['ink']}; "
+            f"border: 1px solid {_dtk['line']}; border-radius: 5px; padding: 5px 12px; }}"
+            f"QPushButton:hover {{ background: {_dtk['surface_alt']}; }}"
+            f"QPushButton:pressed {{ background: {_dtk['accent_tint']}; "
+            f"border: 1px solid {_dtk['accent']}; }}"
+            f"QPushButton:disabled {{ color: {_dtk['ink_3']}; }}"
+        )
         self._drift_button.clicked.connect(self._on_retranscribe_all_clicked)
         drift_row.addWidget(self._drift_button)
         self._add_field(f4, "Engine/model drift", self._drift_row_widget)
@@ -1213,6 +1225,12 @@ class SettingsPane(QWidget):
             ).fetchone()
             return int(row["n"]) if row else 0
 
+    @staticmethod
+    def _both(a: dict, b: dict, key: str) -> bool:
+        """True iff both fingerprints carry a (truthy) value for ``key`` — so a
+        field merely absent on one side never counts as drift."""
+        return bool(a.get(key)) and bool(b.get(key))
+
     def _refresh_drift_row(self) -> None:
         """Update the drift hint label + button visibility.
 
@@ -1247,23 +1265,39 @@ class SettingsPane(QWidget):
             self._drift_button.setVisible(False)
             return
 
-        # Compare the triple that matters. Missing keys on either side
-        # compare equal only if both are missing.
-        keys = ("whisper_version", "whisper_model", "model_sha256")
-        drifted = any(current.get(k) != last.get(k) for k in keys)
+        # Compare the fields that matter — but only count a field as DRIFT when
+        # BOTH sides actually have a value and they differ. A field that's merely
+        # absent on one side (e.g. transcripts recorded before model-hash
+        # pinning existed → no model_sha256) is "unknown", not a change; treating
+        # it as drift produced false "(was large-v3-turbo/?)" warnings even when
+        # nothing was upgraded.
+        changes: list[str] = []
+        if (
+            self._both(current, last, "whisper_model")
+            and current["whisper_model"] != last["whisper_model"]
+        ):
+            changes.append(f"model {last['whisper_model']} → {current['whisper_model']}")
+        if (
+            self._both(current, last, "model_sha256")
+            and current["model_sha256"] != last["model_sha256"]
+        ):
+            changes.append(
+                f"model file changed ({last['model_sha256'][:8]} → {current['model_sha256'][:8]})"
+            )
+        if (
+            self._both(current, last, "whisper_version")
+            and current["whisper_version"] != last["whisper_version"]
+        ):
+            changes.append("whisper engine updated")
 
-        if not drifted:
+        if not changes:
             self._drift_label.setText("✓ Engine + model match last transcribe batch")
             self._drift_label.setStyleSheet(f"color: {tokens['ok']}; font-size: 11px;")
             self._drift_button.setVisible(False)
             return
 
         n = self._count_done_transcripts()
-        self._drift_label.setText(
-            f"⚠ Engine or model upgraded since last batch "
-            f"(was {last.get('whisper_model', '?')}/"
-            f"{(last.get('model_sha256') or '?')[:8]})"
-        )
+        self._drift_label.setText("⚠ " + "; ".join(changes) + " since the last transcribe batch")
         self._drift_label.setStyleSheet(f"color: {tokens['warn']}; font-size: 11px;")
         self._drift_button.setText(f"Re-transcribe all ({n} transcripts)")
         self._drift_button.setEnabled(n > 0)
