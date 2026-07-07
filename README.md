@@ -121,7 +121,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding conventions
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE) *(license pending final confirmation — straightforward to swap to MIT if preferred)*.
+Licensed under the [Apache License 2.0](LICENSE).
 
 ## Trademarks & non-affiliation
 
