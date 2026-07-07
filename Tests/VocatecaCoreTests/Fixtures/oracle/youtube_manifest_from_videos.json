@@ -1,0 +1,216 @@
+[
+  {
+    "input": {
+      "id": "dQw4w9WgXcQ",
+      "title": "Never Gonna Give You Up",
+      "timestamp": 1609459200,
+      "duration": 212
+    },
+    "output": {
+      "guid": "dQw4w9WgXcQ",
+      "title": "Never Gonna Give You Up",
+      "pubDate": "2021-01-01",
+      "mp3_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "description": "",
+      "duration_sec": 212
+    }
+  },
+  {
+    "input": {
+      "id": "abc1234567A",
+      "title": "Float TS and dur",
+      "timestamp": 1609459200.9,
+      "duration": 90.5
+    },
+    "output": {
+      "guid": "abc1234567A",
+      "title": "Float TS and dur",
+      "pubDate": "2021-01-01",
+      "mp3_url": "https://www.youtube.com/watch?v=abc1234567A",
+      "description": "",
+      "duration_sec": 90
+    }
+  },
+  {
+    "input": {
+      "id": "abc1234567B",
+      "title": "Upload Date fallback",
+      "timestamp": 0,
+      "upload_date": "20210101",
+      "duration": null
+    },
+    "output": {
+      "guid": "abc1234567B",
+      "title": "Upload Date fallback",
+      "pubDate": "2021-01-01",
+      "mp3_url": "https://www.youtube.com/watch?v=abc1234567B",
+      "description": "",
+      "duration_sec": null
+    }
+  },
+  {
+    "input": {
+      "id": "abc1234567D",
+      "title": "None TS upload_date",
+      "timestamp": null,
+      "upload_date": "20231231"
+    },
+    "output": {
+      "guid": "abc1234567D",
+      "title": "None TS upload_date",
+      "pubDate": "2023-12-31",
+      "mp3_url": "https://www.youtube.com/watch?v=abc1234567D",
+      "description": "",
+      "duration_sec": null
+    }
+  },
+  {
+    "input": {
+      "id": "abc1234567C",
+      "title": "No Date"
+    },
+    "output": {
+      "guid": "abc1234567C",
+      "title": "No Date",
+      "pubDate": "",
+      "mp3_url": "https://www.youtube.com/watch?v=abc1234567C",
+      "description": "",
+      "duration_sec": null
+    }
+  },
+  {
+    "input": {
+      "id": "badUpload123",
+      "upload_date": "abc",
+      "duration": 60
+    },
+    "output": {
+      "guid": "badUpload123",
+      "title": "badUpload123",
+      "pubDate": "abc",
+      "mp3_url": "https://www.youtube.com/watch?v=badUpload123",
+      "description": "",
+      "duration_sec": 60
+    }
+  },
+  {
+    "input": {
+      "id": "shortDate123",
+      "upload_date": "2021010",
+      "duration": 60
+    },
+    "output": {
+      "guid": "shortDate123",
+      "title": "shortDate123",
+      "pubDate": "2021010",
+      "mp3_url": "https://www.youtube.com/watch?v=shortDate123",
+      "description": "",
+      "duration_sec": 60
+    }
+  },
+  {
+    "input": {
+      "id": "floatZero123",
+      "title": "Float Zero TS",
+      "timestamp": 0.0,
+      "upload_date": "20220601"
+    },
+    "output": {
+      "guid": "floatZero123",
+      "title": "Float Zero TS",
+      "pubDate": "2022-06-01",
+      "mp3_url": "https://www.youtube.com/watch?v=floatZero123",
+      "description": "",
+      "duration_sec": null
+    }
+  },
+  {
+    "input": {
+      "id": "boolTrue1234",
+      "title": "Bool True dur",
+      "duration": true
+    },
+    "output": {
+      "guid": "boolTrue1234",
+      "title": "Bool True dur",
+      "pubDate": "",
+      "mp3_url": "https://www.youtube.com/watch?v=boolTrue1234",
+      "description": "",
+      "duration_sec": null
+    }
+  },
+  {
+    "input": {
+      "id": "boolFalse123",
+      "title": "Bool False dur",
+      "duration": false
+    },
+    "output": {
+      "guid": "boolFalse123",
+      "title": "Bool False dur",
+      "pubDate": "",
+      "mp3_url": "https://www.youtube.com/watch?v=boolFalse123",
+      "description": "",
+      "duration_sec": null
+    }
+  },
+  {
+    "input": {
+      "id": "zeroDur12345",
+      "title": "Zero Dur",
+      "timestamp": 1609459200,
+      "duration": 0
+    },
+    "output": {
+      "guid": "zeroDur12345",
+      "title": "Zero Dur",
+      "pubDate": "2021-01-01",
+      "mp3_url": "https://www.youtube.com/watch?v=zeroDur12345",
+      "description": "",
+      "duration_sec": 0
+    }
+  },
+  {
+    "input": {
+      "id": "noTitle12345"
+    },
+    "output": {
+      "guid": "noTitle12345",
+      "title": "noTitle12345",
+      "pubDate": "",
+      "mp3_url": "https://www.youtube.com/watch?v=noTitle12345",
+      "description": "",
+      "duration_sec": null
+    }
+  },
+  {
+    "input": {
+      "url": "https://www.youtube.com/watch?v=urlOnly1234",
+      "title": "URL Only"
+    },
+    "output": {
+      "guid": "https://www.youtube.com/watch?v=urlOnly1234",
+      "title": "URL Only",
+      "pubDate": "",
+      "mp3_url": "https://www.youtube.com/watch?v=https://www.youtube.com/watch?v=urlOnly1234",
+      "description": "",
+      "duration_sec": null
+    }
+  },
+  {
+    "input": {
+      "id": "future123456",
+      "title": "Future Video",
+      "timestamp": 1893456000,
+      "duration": 3600
+    },
+    "output": {
+      "guid": "future123456",
+      "title": "Future Video",
+      "pubDate": "2030-01-01",
+      "mp3_url": "https://www.youtube.com/watch?v=future123456",
+      "description": "",
+      "duration_sec": 3600
+    }
+  }
+]

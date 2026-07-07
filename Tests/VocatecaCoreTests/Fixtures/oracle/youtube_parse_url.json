@@ -1,0 +1,181 @@
+[
+  {
+    "input": "https://youtu.be/dQw4w9WgXcQ",
+    "kind": "video",
+    "value": "dQw4w9WgXcQ"
+  },
+  {
+    "input": "https://youtu.be/dQw4w9WgXcQ?t=42",
+    "kind": "video",
+    "value": "dQw4w9WgXcQ"
+  },
+  {
+    "input": "HTTPS://YOUTU.BE/dQw4w9WgXcQ",
+    "kind": "video",
+    "value": "dQw4w9WgXcQ"
+  },
+  {
+    "input": "https://youtu.be/shortid",
+    "error": true
+  },
+  {
+    "input": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "kind": "video",
+    "value": "dQw4w9WgXcQ"
+  },
+  {
+    "input": "https://YouTube.COM/watch?v=dQw4w9WgXcQ",
+    "kind": "video",
+    "value": "dQw4w9WgXcQ"
+  },
+  {
+    "input": "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
+    "kind": "video",
+    "value": "dQw4w9WgXcQ"
+  },
+  {
+    "input": "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+    "kind": "video",
+    "value": "dQw4w9WgXcQ"
+  },
+  {
+    "input": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLrEnWoR732",
+    "kind": "video",
+    "value": "dQw4w9WgXcQ"
+  },
+  {
+    "input": "https://youtube.com/watch",
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/watch?v=",
+    "error": true
+  },
+  {
+    "input": "https://www.youtube.com/playlist?list=PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-",
+    "kind": "playlist",
+    "value": "PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-"
+  },
+  {
+    "input": "https://m.youtube.com/playlist?list=PLabc123",
+    "kind": "playlist",
+    "value": "PLabc123"
+  },
+  {
+    "input": "https://youtube.com/playlist",
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/playlist?list=",
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/channel/UCBcRF18a7Qf58cCRy5xuWwQ",
+    "kind": "channel_id",
+    "value": "UCBcRF18a7Qf58cCRy5xuWwQ"
+  },
+  {
+    "input": "https://youtube.com/channel/UCBcRF18a7Qf58cCRy5xuWwQ/videos",
+    "kind": "channel_id",
+    "value": "UCBcRF18a7Qf58cCRy5xuWwQ"
+  },
+  {
+    "input": "https://youtube.com/channel/ABCDEFGHIJKLMNOPQRSTUVWXyz",
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/@MrBeast",
+    "kind": "handle",
+    "value": "MrBeast"
+  },
+  {
+    "input": "https://www.youtube.com/@handle",
+    "kind": "handle",
+    "value": "handle"
+  },
+  {
+    "input": "https://youtube.com/@handle/",
+    "kind": "handle",
+    "value": "handle"
+  },
+  {
+    "input": "https://youtube.com/@channel.name",
+    "kind": "handle",
+    "value": "channel.name"
+  },
+  {
+    "input": "https://youtube.com/@",
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/c/MrBeast",
+    "kind": "channel_url",
+    "value": "https://youtube.com/c/MrBeast"
+  },
+  {
+    "input": "https://youtube.com/c/SomeChannel/videos",
+    "kind": "channel_url",
+    "value": "https://youtube.com/c/SomeChannel/videos"
+  },
+  {
+    "input": "https://youtube.com/user/MrBeast",
+    "kind": "channel_url",
+    "value": "https://youtube.com/user/MrBeast"
+  },
+  {
+    "input": "https://youtube.com/user/SomeUser/playlists",
+    "kind": "channel_url",
+    "value": "https://youtube.com/user/SomeUser/playlists"
+  },
+  {
+    "input": "https://www.youtube.com/shorts/abcde12345f",
+    "error": true
+  },
+  {
+    "input": "https://www.youtube.com/embed/dQw4w9WgXcQ",
+    "error": true
+  },
+  {
+    "input": "https://www.youtube.com/live/dQw4w9WgXcQ",
+    "error": true
+  },
+  {
+    "input": "@MrBeast",
+    "kind": "channel_url",
+    "value": "https://www.youtube.com/@MrBeast"
+  },
+  {
+    "input": "MrBeast",
+    "kind": "channel_url",
+    "value": "https://www.youtube.com/@MrBeast"
+  },
+  {
+    "input": "@channel.name",
+    "kind": "channel_url",
+    "value": "https://www.youtube.com/@channel.name"
+  },
+  {
+    "input": "@chan/sub",
+    "error": true
+  },
+  {
+    "input": "",
+    "error": true
+  },
+  {
+    "input": "   ",
+    "error": true
+  },
+  {
+    "input": "youtube.com/watch?v=dQw4w9WgXcQ",
+    "error": true
+  },
+  {
+    "input": "https://youtube.com/../../etc/passwd",
+    "error": true
+  },
+  {
+    "input": "https://example.com/watch?v=dQw4w9WgXcQ",
+    "error": true
+  }
+]

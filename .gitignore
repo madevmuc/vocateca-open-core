@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+xcuserdata/
+.DS_Store
+# Package.resolved IS committed on purpose — reproducible, byte-pinned builds.

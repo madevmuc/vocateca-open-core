@@ -1,0 +1,38 @@
+[
+  {
+    "input": "whisper_full_with_state: auto-detected language: de (p = 0.98)",
+    "output": "de"
+  },
+  {
+    "input": "auto-detected language: en (p = 0.95)",
+    "output": "en"
+  },
+  {
+    "input": "auto-detected language: fr (p = 0.70)",
+    "output": "fr"
+  },
+  {
+    "input": "auto-detected language:de (p = 0.70)",
+    "output": "de"
+  },
+  {
+    "input": "some log: auto-detected language: zh (p = 0.50) more text",
+    "output": "zh"
+  },
+  {
+    "input": "auto-detected language: zho (p = 0.80)",
+    "output": "zho"
+  },
+  {
+    "input": "no language here",
+    "output": null
+  },
+  {
+    "input": "whisper finished",
+    "output": null
+  },
+  {
+    "input": "",
+    "output": null
+  }
+]

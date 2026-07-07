@@ -1,0 +1,4 @@
+shows:
+- slug: my-show
+  title: My Show
+  rss: https://example.com/feed.xml

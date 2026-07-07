@@ -1,0 +1,52 @@
+[
+  {
+    "description": "two cues",
+    "input": "1\n00:00:01,000 --> 00:00:04,000\nHello, world.\n\n2\n00:00:05,000 --> 00:00:08,000\nThis is a test.\n\n",
+    "output": "Hello, world.\nThis is a test."
+  },
+  {
+    "description": "empty",
+    "input": "",
+    "output": ""
+  },
+  {
+    "description": "no text",
+    "input": "1\n00:00:01,000 --> 00:00:04,000\n",
+    "output": ""
+  },
+  {
+    "description": "stripped whitespace",
+    "input": "1\n00:00:01,000 --> 00:00:04,000\n  leading spaces  \n\n",
+    "output": "leading spaces"
+  },
+  {
+    "description": "multi-line",
+    "input": "1\n00:00:01,000 --> 00:00:04,000\nLine one\nLine two\n\n",
+    "output": "Line one\nLine two"
+  },
+  {
+    "description": "no timestamps",
+    "input": "Hello world\nThis is text\n",
+    "output": "Hello world\nThis is text"
+  },
+  {
+    "description": "non-numeric cue id",
+    "input": "1\n00:00:01,000 --> 00:00:04,000\nText here\n\nnot-a-number\n00:00:05,000 --> 00:00:08,000\nMore text\n\n",
+    "output": "Text here\nnot-a-number\nMore text"
+  },
+  {
+    "description": "blank first last",
+    "input": "\n\n1\n00:00:01,000 --> 00:00:04,000\nText.\n\n",
+    "output": "Text."
+  },
+  {
+    "description": "multi digit cue number",
+    "input": "42\n00:00:01,000 --> 00:00:04,000\nText.\n\n",
+    "output": "Text."
+  },
+  {
+    "description": "decimal not digit",
+    "input": "1.5\n00:00:01,000 --> 00:00:04,000\nText.\n\n",
+    "output": "1.5\nText."
+  }
+]

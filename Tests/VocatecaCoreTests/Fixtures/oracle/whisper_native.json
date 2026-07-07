@@ -1,0 +1,333 @@
+[
+  {
+    "description": "WAV RIFF/WAVE",
+    "header_bytes": [
+      82,
+      73,
+      70,
+      70,
+      0,
+      0,
+      0,
+      0,
+      87,
+      65,
+      86,
+      69,
+      102,
+      109,
+      116,
+      32
+    ],
+    "output": true
+  },
+  {
+    "description": "RIFF not WAV",
+    "header_bytes": [
+      82,
+      73,
+      70,
+      70,
+      0,
+      0,
+      0,
+      0,
+      65,
+      86,
+      73,
+      32,
+      102,
+      109,
+      116,
+      32
+    ],
+    "output": false
+  },
+  {
+    "description": "RIFF 8 bytes only",
+    "header_bytes": [
+      82,
+      73,
+      70,
+      70,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output": false
+  },
+  {
+    "description": "MP3 ID3",
+    "header_bytes": [
+      73,
+      68,
+      51,
+      3,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output": true
+  },
+  {
+    "description": "MP3 0xFFFB",
+    "header_bytes": [
+      255,
+      251,
+      144,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output": true
+  },
+  {
+    "description": "MP3 0xFFF3",
+    "header_bytes": [
+      255,
+      243,
+      144,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output": true
+  },
+  {
+    "description": "MP3 0xFFF2",
+    "header_bytes": [
+      255,
+      242,
+      144,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output": true
+  },
+  {
+    "description": "Not MP3 0xFFF0",
+    "header_bytes": [
+      255,
+      240,
+      144,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output": false
+  },
+  {
+    "description": "FLAC fLaC",
+    "header_bytes": [
+      102,
+      76,
+      97,
+      67,
+      0,
+      0,
+      0,
+      34,
+      128,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output": true
+  },
+  {
+    "description": "M4A ftyp",
+    "header_bytes": [
+      102,
+      116,
+      121,
+      112,
+      77,
+      52,
+      65,
+      32,
+      0,
+      0,
+      0,
+      0,
+      77,
+      52,
+      65,
+      32,
+      109,
+      112,
+      52,
+      50
+    ],
+    "output": false
+  },
+  {
+    "description": "MP4 ftyp",
+    "header_bytes": [
+      0,
+      0,
+      0,
+      24,
+      102,
+      116,
+      121,
+      112,
+      109,
+      112,
+      52,
+      50,
+      0,
+      0,
+      0,
+      0,
+      109,
+      112,
+      52,
+      50,
+      105,
+      115,
+      111,
+      109
+    ],
+    "output": false
+  },
+  {
+    "description": "3 bytes",
+    "header_bytes": [
+      73,
+      68,
+      51
+    ],
+    "output": false
+  },
+  {
+    "description": "4 bytes ID3",
+    "header_bytes": [
+      73,
+      68,
+      51,
+      3
+    ],
+    "output": true
+  },
+  {
+    "description": "4 bytes fLaC",
+    "header_bytes": [
+      102,
+      76,
+      97,
+      67
+    ],
+    "output": true
+  },
+  {
+    "description": "empty",
+    "header_bytes": [],
+    "output": false
+  },
+  {
+    "description": "1 byte",
+    "header_bytes": [
+      255
+    ],
+    "output": false
+  },
+  {
+    "description": "OGG OggS",
+    "header_bytes": [
+      79,
+      103,
+      103,
+      83,
+      0,
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output": false
+  },
+  {
+    "description": "AAC ADTS 0xFFF1",
+    "header_bytes": [
+      255,
+      241,
+      80,
+      128,
+      2,
+      31,
+      252,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "output": false
+  }
+]

@@ -1,0 +1,435 @@
+import Foundation
+import CryptoKit
+
+// MARK: - Managed tool enum
+
+/// The set of external binaries that `BinaryManager` knows about.
+public enum ManagedTool: String, Sendable, CaseIterable {
+    /// yt-dlp: self-managed, downloaded from GitHub releases.
+    case ytDlp = "yt-dlp"
+    /// gallery-dl: self-managed, downloaded from GitHub releases.
+    case galleryDL = "gallery-dl"
+    /// ffmpeg: detection-only (Homebrew); not self-installed in this phase.
+    case ffmpeg
+}
+
+// MARK: - Errors
+
+public enum BinaryManagerError: Error, Sendable, LocalizedError {
+    /// The tool is not self-managed by this class (e.g. ffmpeg).
+    case toolNotManaged(ManagedTool)
+    /// The tool binary is absent or not executable.
+    case notInstalled(ManagedTool)
+    /// A network download failed.
+    case downloadFailed(String)
+    /// A subprocess returned a non-zero exit code or produced unexpected output.
+    case subprocessFailed(String)
+    /// The downloaded asset's SHA-256 did not match the pinned hash (H-1).
+    /// The partial download is deleted before this is thrown.
+    case checksumMismatch(tool: ManagedTool, expected: String, actual: String)
+
+    /// Plain-English message consumed by `error.localizedDescription`.
+    ///
+    /// `VocatecaCore` has no localisation dependency (`L()` lives in
+    /// `VocatecaUI`, which depends on Core, not the reverse — see
+    /// `Package.swift`), so this is intentionally English-only. The
+    /// UI layer (`FirstRunWizard.SetupStepModel`) pattern-matches
+    /// `BinaryManagerError.checksumMismatch` specifically to show the
+    /// localized user-facing string; every other case falls back to this
+    /// description, matching the pre-existing (pre-hardening) behaviour for
+    /// those cases.
+    public var errorDescription: String? {
+        switch self {
+        case .toolNotManaged(let tool):
+            return "\(tool.rawValue) is not self-installed by Vocateca."
+        case .notInstalled(let tool):
+            return "\(tool.rawValue) is not installed."
+        case .downloadFailed(let reason):
+            return "Download failed — \(reason)"
+        case .subprocessFailed(let reason):
+            return reason
+        case .checksumMismatch(let tool, let expected, let actual):
+            return "Checksum mismatch for \(tool.rawValue): expected \(expected), got \(actual)"
+        }
+    }
+}
+
+// MARK: - Pinned release table (H-1)
+//
+// Security hardening (2026-07-05): yt-dlp/gallery-dl were previously fetched
+// from a floating `releases/latest` redirect with no integrity check beyond
+// "file is non-empty" — see docs/audits/audit-security-report-2026-07-05.md
+// finding H-1. Both tools are now pinned to a specific release tag + asset
+// SHA-256, verified after every download. Bumping a pin is a one-line diff
+// to this table; NEVER re-point at `releases/latest`.
+//
+// Pins recorded 2026-07-05:
+//   yt-dlp 2026.07.04 — sha256 from the upstream `SHA2-256SUMS` release asset
+//     (https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/SHA2-256SUMS),
+//     independently re-verified by downloading `yt-dlp_macos` and hashing it.
+//   gallery-dl v1.32.5 — upstream binary releases moved from GitHub to
+//     Codeberg (github.com/mikf/gallery-dl/releases/latest now redirects to a
+//     GitHub tag with ZERO assets — the old floating URL was already dead).
+//     Codeberg publishes only a GPG `.sig` for `gallery-dl.bin`, no plaintext
+//     checksum file, so the sha256 below was computed directly from the
+//     asset at the pinned URL (github.com/mikf/gallery-dl/issues/9374 —
+//     "Moving to Codeberg" announcement).
+private struct PinnedRelease {
+    let version: String
+    let url: URL
+    let sha256: String
+}
+
+private let pinnedReleases: [ManagedTool: PinnedRelease] = [
+    .ytDlp: PinnedRelease(
+        version: "2026.07.04",
+        url: URL(string:
+            "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp_macos"
+        )!,
+        sha256: "498bd0dae17855c599d371d68ec5bafc439a9d8640e838be25c765a9792f261b"
+    ),
+    .galleryDL: PinnedRelease(
+        version: "v1.32.5",
+        url: URL(string:
+            "https://codeberg.org/mikf/gallery-dl/releases/download/v1.32.5/gallery-dl.bin"
+        )!,
+        sha256: "9e9c432d0c90f11794d6e2555ca56c195efd08afdf988977c6e6ab671372049b"
+    ),
+]
+
+// MARK: - Download URLs
+
+private extension ManagedTool {
+    /// The pinned GitHub/Codeberg release asset URL for this tool's macOS
+    /// standalone build. NEVER a `releases/latest` floating redirect (H-1) —
+    /// see `pinnedReleases` above.
+    var downloadURL: URL {
+        get throws {
+            guard let pin = pinnedReleases[self] else {
+                throw BinaryManagerError.toolNotManaged(self)
+            }
+            return pin.url
+        }
+    }
+
+    /// The pinned SHA-256 hex digest this tool's download must match.
+    var expectedSHA256: String? {
+        pinnedReleases[self]?.sha256
+    }
+
+    /// The version-flag arguments for this tool.
+    var versionArgs: [String] {
+        switch self {
+        case .ytDlp:     return ["--version"]
+        case .galleryDL: return ["--version"]
+        case .ffmpeg:    return ["-version"]
+        }
+    }
+}
+
+// MARK: - Homebrew candidate paths for ffmpeg
+
+private let homebrewFFmpegCandidates: [URL] = [
+    URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg"),   // Apple Silicon
+    URL(fileURLWithPath: "/usr/local/bin/ffmpeg"),       // Intel Mac
+    URL(fileURLWithPath: "/opt/local/bin/ffmpeg"),       // MacPorts
+]
+
+// MARK: - BinaryManager
+
+/// Manages external binary tools (yt-dlp, gallery-dl) and detects ffmpeg.
+///
+/// yt-dlp and gallery-dl are downloaded on demand from GitHub releases and stored
+/// in `<userDataDir>/bin/`.  They are chmod +x after download and atomically moved
+/// into place so a partial download never leaves a broken binary.
+///
+/// ffmpeg is resolved by detection only: first the managed path (in case the user
+/// places one there), then the standard Homebrew locations.
+public struct BinaryManager: Sendable {
+
+    // MARK: - Properties
+
+    /// The directory that holds self-managed binaries.
+    public let binDir: URL
+
+    private let subprocess: Subprocess
+
+    // MARK: - Init
+
+    public init(
+        binDir: URL = Paths.userDataDir().appendingPathComponent("bin", isDirectory: true),
+        subprocess: Subprocess = Subprocess()
+    ) {
+        self.binDir = binDir
+        self.subprocess = subprocess
+    }
+
+    // MARK: - Path resolution
+
+    /// Returns `<binDir>/<tool.rawValue>` regardless of whether the binary exists.
+    public func managedPath(for tool: ManagedTool) -> URL {
+        binDir.appendingPathComponent(tool.rawValue)
+    }
+
+    /// Returns the executable URL for `tool`, or `nil` if not found.
+    ///
+    /// - For yt-dlp / gallery-dl: the managed path if it exists and is executable.
+    /// - For ffmpeg: managed path first, then Homebrew candidates, else nil.
+    public func resolvedPath(for tool: ManagedTool) -> URL? {
+        let managed = managedPath(for: tool)
+        if isExecutable(managed) {
+            return managed
+        }
+        switch tool {
+        case .ytDlp, .galleryDL:
+            return nil
+        case .ffmpeg:
+            return homebrewFFmpegCandidates.first(where: isExecutable)
+        }
+    }
+
+    /// Returns `true` when `resolvedPath(for:)` is non-nil.
+    public func isInstalled(_ tool: ManagedTool) -> Bool {
+        resolvedPath(for: tool) != nil
+    }
+
+    /// Returns the set of **required** tools that are not currently installed.
+    ///
+    /// "Required" means the pipeline cannot function without them:
+    /// - `yt-dlp` — needed for YouTube and generic URL downloads.
+    /// - `ffmpeg` — needed for audio extraction from video files.
+    ///
+    /// `gallery-dl` is NOT included here (Instagram is optional).
+    /// `whisper-cli` / WhisperKit is checked separately by the transcription engine.
+    ///
+    /// This check is **cheap** (no network, no subprocess) — it only tests
+    /// whether the binary exists and is executable. Safe to call at launch.
+    ///
+    /// - Returns: Array of ``ManagedTool`` values that are missing.
+    public func requiredToolsMissing() -> [ManagedTool] {
+        let required: [ManagedTool] = [.ytDlp, .ffmpeg]
+        return required.filter { !isInstalled($0) }
+    }
+
+    // MARK: - Version
+
+    /// Runs the tool and returns its version string, or `nil` if the tool is
+    /// not installed.
+    ///
+    /// - Throws: `BinaryManagerError.subprocessFailed` when the tool exits
+    ///   non-zero and we cannot parse a version from its output.
+    public func version(of tool: ManagedTool) async throws -> String? {
+        guard let path = resolvedPath(for: tool) else { return nil }
+        let result = try await subprocess.run(path, tool.versionArgs, timeout: 30)
+        // ffmpeg writes its banner to stdout; yt-dlp and gallery-dl to stdout.
+        let combined = result.stdout + result.stderr
+        return Self.parseVersion(toolOutput: combined, for: tool)
+    }
+
+    // MARK: - Version parsing (pure — testable without IO)
+
+    /// Parse the version string from the combined stdout + stderr of the tool.
+    ///
+    /// - yt-dlp:     bare `2025.01.01` on the first line of stdout.
+    /// - gallery-dl: bare `1.27.0` on the first line of stdout.
+    /// - ffmpeg:     `ffmpeg version 6.1.1 ...` — extract the token after "version".
+    public static func parseVersion(toolOutput: String, for tool: ManagedTool) -> String? {
+        let lines = toolOutput.components(separatedBy: .newlines)
+        switch tool {
+        case .ytDlp, .galleryDL:
+            // First non-empty line is the bare version.
+            return lines.first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        case .ffmpeg:
+            // First line: "ffmpeg version <X> Copyright ..."
+            // We want the token immediately after the word "version".
+            for line in lines {
+                let tokens = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                if let idx = tokens.firstIndex(of: "version"), tokens.indices.contains(idx + 1) {
+                    return tokens[idx + 1]
+                }
+            }
+            return nil
+        }
+    }
+
+    // MARK: - Install
+
+    /// Downloads and installs `tool` to `binDir`.
+    ///
+    /// Progress is reported as `(bytesReceived, totalBytes)` where `totalBytes`
+    /// may be 0 if the server does not send `Content-Length`.
+    ///
+    /// After download, the file's SHA-256 is compared against the pinned hash
+    /// in `pinnedReleases` (H-1 fix). On mismatch the partial file is deleted
+    /// and `BinaryManagerError.checksumMismatch` is thrown — this NEVER installs
+    /// an unverified binary.
+    ///
+    /// - Throws: `BinaryManagerError.toolNotManaged` for ffmpeg.
+    ///   `BinaryManagerError.downloadFailed` on network or empty-file errors.
+    ///   `BinaryManagerError.checksumMismatch` when the SHA-256 doesn't match.
+    public func install(
+        _ tool: ManagedTool,
+        progress: (@Sendable (Int64, Int64) -> Void)? = nil
+    ) async throws {
+        let downloadURL = try tool.downloadURL   // throws for ffmpeg
+        let destination = managedPath(for: tool)
+
+        // Ensure the bin directory exists.
+        try FileManager.default.createDirectory(
+            at: binDir,
+            withIntermediateDirectories: true
+        )
+
+        // Download to a temp file in the same directory so the atomic rename
+        // stays on the same filesystem and never crosses a volume boundary.
+        let tmpURL = binDir.appendingPathComponent("\(tool.rawValue).part")
+
+        // Clean up any stale partial download from a previous interrupted run.
+        try? FileManager.default.removeItem(at: tmpURL)
+
+        do {
+            let (localURL, totalBytes) = try await downloadWithProgress(
+                url: downloadURL,
+                destination: tmpURL,
+                progress: progress
+            )
+
+            // Verify non-empty.
+            let attrs = try FileManager.default.attributesOfItem(atPath: localURL.path)
+            let size = (attrs[.size] as? Int64) ?? 0
+            guard size > 0 else {
+                try? FileManager.default.removeItem(at: tmpURL)
+                throw BinaryManagerError.downloadFailed("Downloaded file is empty (0 bytes)")
+            }
+            _ = totalBytes  // already used in progress; silence unused warning
+
+            // SHA-256 verification against the pinned hash (H-1). Every managed
+            // tool in `pinnedReleases` has an expected hash, so this always runs
+            // for yt-dlp/gallery-dl; a tool with no pin (shouldn't happen —
+            // `downloadURL` already throws first) would skip verification.
+            if let expected = tool.expectedSHA256 {
+                let data = try Data(contentsOf: tmpURL)
+                let actual = Self.sha256Hex(of: data)
+                guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
+                    try? FileManager.default.removeItem(at: tmpURL)
+                    Log.error("BinaryManager: checksum mismatch — download rejected",
+                              component: "BinaryManager",
+                              context: [("tool", tool.rawValue), ("expected", expected), ("actual", actual)])
+                    throw BinaryManagerError.checksumMismatch(tool: tool, expected: expected, actual: actual)
+                }
+                Log.info("BinaryManager: checksum verified",
+                         component: "BinaryManager",
+                         context: [("tool", tool.rawValue), ("sha256", actual)])
+            }
+
+            // chmod +x
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755 as NSNumber],
+                ofItemAtPath: tmpURL.path
+            )
+
+            // Atomic replace.
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: tmpURL)
+        } catch let e as BinaryManagerError {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw e
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw BinaryManagerError.downloadFailed(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Hash verification (pure — testable without IO)
+
+    /// Returns the lowercase hex SHA-256 digest of `data`.
+    public static func sha256Hex(of data: Data) -> String {
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    // MARK: - Self-update
+    //
+    // POLICY (H-1): self-update NEVER runs the tool's own `-U`/`--update`
+    // mechanism — that would fetch and execute an arbitrary future release
+    // with no hash pin, defeating the whole point of `pinnedReleases`. The
+    // only sanctioned way to move to a newer version is bumping the pinned
+    // `(version, url, sha256)` tuple in `pinnedReleases` and re-running the
+    // normal `install()` path. `selfUpdate` below simply re-installs the
+    // CURRENT pin (useful to repair a corrupted/tampered local binary); it
+    // can never move the app off the reviewed pin.
+
+    /// Re-installs `tool` from the current pinned, hash-verified release.
+    /// This is NOT an update mechanism — it re-fetches and re-verifies the
+    /// SAME pin recorded in `pinnedReleases`. To move to a newer release,
+    /// bump the pin in source and ship a new app version.
+    public func selfUpdate(_ tool: ManagedTool) async throws {
+        Log.info("BinaryManager: re-installing pinned release (never -U)",
+                 component: "BinaryManager", context: [("tool", tool.rawValue)])
+        try await install(tool)
+    }
+
+    // MARK: - Private helpers
+
+    private func isExecutable(_ url: URL) -> Bool {
+        let path = url.path
+        return FileManager.default.fileExists(atPath: path)
+            && FileManager.default.isExecutableFile(atPath: path)
+    }
+
+    /// Downloads `url` to `destination`, calling `progress` periodically.
+    /// Returns `(destination, totalBytes)`.
+    private func downloadWithProgress(
+        url: URL,
+        destination: URL,
+        progress: (@Sendable (Int64, Int64) -> Void)?
+    ) async throws -> (URL, Int64) {
+        return try await withCheckedThrowingContinuation { continuation in
+            let session = URLSession(configuration: .vocateca(requestTimeout: 60, resourceTimeout: 1800))
+            let task = session.downloadTask(with: url) { tmpURL, response, error in
+                if let error {
+                    continuation.resume(throwing: BinaryManagerError.downloadFailed(
+                        error.localizedDescription
+                    ))
+                    return
+                }
+                guard let tmpURL else {
+                    continuation.resume(throwing: BinaryManagerError.downloadFailed(
+                        "No temporary file returned by URLSession"
+                    ))
+                    return
+                }
+                do {
+                    // URLSession writes to a system temp; move it to our destination.
+                    if FileManager.default.fileExists(atPath: destination.path) {
+                        try FileManager.default.removeItem(at: destination)
+                    }
+                    try FileManager.default.moveItem(at: tmpURL, to: destination)
+                    let total = (response as? HTTPURLResponse)
+                        .flatMap { $0.expectedContentLength == -1 ? nil : Optional($0.expectedContentLength) }
+                        ?? 0
+                    continuation.resume(returning: (destination, Int64(total)))
+                } catch {
+                    continuation.resume(throwing: BinaryManagerError.downloadFailed(
+                        error.localizedDescription
+                    ))
+                }
+            }
+
+            // Wire up progress reporting if a callback was provided.
+            if let progress {
+                let observation = task.progress.observe(\.fractionCompleted) { p, _ in
+                    let total = p.totalUnitCount
+                    let done  = p.completedUnitCount
+                    progress(done, total)
+                }
+                // Keep the observation alive for the lifetime of the task by
+                // storing it in a local that is retained by the closure below.
+                task.resume()
+                _ = observation   // retain until task completion path runs
+            } else {
+                task.resume()
+            }
+        }
+    }
+}

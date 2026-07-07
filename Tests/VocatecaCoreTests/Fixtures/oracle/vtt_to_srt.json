@@ -1,0 +1,62 @@
+[
+  {
+    "description": "basic",
+    "input": "WEBVTT\n\n00:00:00.000 --> 00:00:04.000\nHello, world.\n\n00:00:05.000 --> 00:00:08.000\nThis is a test.\n",
+    "output": "1\n00:00:00,000 --> 00:00:04,000\nHello, world.\n\n2\n00:00:05,000 --> 00:00:08,000\nThis is a test.\n"
+  },
+  {
+    "description": "cue settings",
+    "input": "WEBVTT\n\n00:00:00.000 --> 00:00:04.000  align:start position:0%\nHello with settings.\n\n00:00:05.000 --> 00:00:08.000  line:90%\nSecond line.\n",
+    "output": "1\n00:00:00,000 --> 00:00:04,000\nHello with settings.\n\n2\n00:00:05,000 --> 00:00:08,000\nSecond line.\n"
+  },
+  {
+    "description": "named cue",
+    "input": "WEBVTT\n\nintro\n00:00:00.000 --> 00:00:04.000\nNamed cue.\n",
+    "output": "1\n00:00:00,000 --> 00:00:04,000\nNamed cue.\n"
+  },
+  {
+    "description": "multi-line text",
+    "input": "WEBVTT\n\n00:00:00.000 --> 00:00:04.000\nLine one\nLine two\n",
+    "output": "1\n00:00:00,000 --> 00:00:04,000\nLine one\nLine two\n"
+  },
+  {
+    "description": "header only",
+    "input": "WEBVTT\n",
+    "output": ""
+  },
+  {
+    "description": "no blank after header",
+    "input": "WEBVTT\n00:00:00.000 --> 00:00:04.000\nText",
+    "output": "1\n00:00:00,000 --> 00:00:04,000\nText\n"
+  },
+  {
+    "description": "with STYLE block",
+    "input": "WEBVTT\n\nSTYLE\n::cue {\n  color: red;\n}\n\n00:00:00.000 --> 00:00:04.000\nStyled text.\n",
+    "output": "1\n00:00:00,000 --> 00:00:04,000\nStyled text.\n"
+  },
+  {
+    "description": "empty cue body",
+    "input": "WEBVTT\n\n00:00:00.000 --> 00:00:04.000\n\n00:00:05.000 --> 00:00:08.000\nHas text.\n",
+    "output": "1\n00:00:05,000 --> 00:00:08,000\nHas text.\n"
+  },
+  {
+    "description": "single cue no trailing blank",
+    "input": "WEBVTT\n\n00:01:23.456 --> 00:01:45.678\nSingle cue text.",
+    "output": "1\n00:01:23,456 --> 00:01:45,678\nSingle cue text.\n"
+  },
+  {
+    "description": "hour timestamps",
+    "input": "WEBVTT\n\n01:02:03.456 --> 01:02:07.890\nHour-range cue.",
+    "output": "1\n01:02:03,456 --> 01:02:07,890\nHour-range cue.\n"
+  },
+  {
+    "description": "three cues",
+    "input": "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nFirst.\n\n00:00:03.000 --> 00:00:05.000\nSecond.\n\n00:00:06.000 --> 00:00:08.000\nThird.\n",
+    "output": "1\n00:00:00,000 --> 00:00:02,000\nFirst.\n\n2\n00:00:03,000 --> 00:00:05,000\nSecond.\n\n3\n00:00:06,000 --> 00:00:08,000\nThird.\n"
+  },
+  {
+    "description": "empty string",
+    "input": "",
+    "output": ""
+  }
+]

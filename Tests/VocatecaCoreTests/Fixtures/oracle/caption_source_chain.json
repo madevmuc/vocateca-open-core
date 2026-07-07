@@ -1,0 +1,84 @@
+[
+  {
+    "pref": "",
+    "fallback_mode": "manual_whisper",
+    "chain": [
+      "manual",
+      "whisper"
+    ]
+  },
+  {
+    "pref": "",
+    "fallback_mode": "manual_auto_whisper",
+    "chain": [
+      "manual",
+      "auto",
+      "whisper"
+    ]
+  },
+  {
+    "pref": "captions",
+    "fallback_mode": "manual_whisper",
+    "chain": [
+      "manual",
+      "whisper"
+    ]
+  },
+  {
+    "pref": "captions",
+    "fallback_mode": "manual_auto_whisper",
+    "chain": [
+      "manual",
+      "auto",
+      "whisper"
+    ]
+  },
+  {
+    "pref": "auto-captions",
+    "fallback_mode": "manual_whisper",
+    "chain": [
+      "manual",
+      "auto",
+      "whisper"
+    ]
+  },
+  {
+    "pref": "auto-captions",
+    "fallback_mode": "manual_auto_whisper",
+    "chain": [
+      "manual",
+      "auto",
+      "whisper"
+    ]
+  },
+  {
+    "pref": "whisper",
+    "fallback_mode": "manual_whisper",
+    "chain": [
+      "whisper"
+    ]
+  },
+  {
+    "pref": "whisper",
+    "fallback_mode": "manual_auto_whisper",
+    "chain": [
+      "whisper"
+    ]
+  },
+  {
+    "pref": "",
+    "fallback_mode": "unknown_mode",
+    "chain": [
+      "manual",
+      "whisper"
+    ]
+  },
+  {
+    "pref": "captions",
+    "fallback_mode": "unknown_mode",
+    "chain": [
+      "manual",
+      "whisper"
+    ]
+  }
+]

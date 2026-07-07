@@ -1,0 +1,182 @@
+[
+  {
+    "input": "1a LAGE - Der Immobilienpodcast",
+    "output": "1a-lage-der-immobilienpodcast"
+  },
+  {
+    "input": "Der immocation Podcast | Lerne Immobilien",
+    "output": "der-immocation-podcast-lerne-immobilien"
+  },
+  {
+    "input": "L'Immo – Der Podcast für die Immobilienwirtschaft",
+    "output": "l-immo-der-podcast-fur-die-immobilienwirtschaft"
+  },
+  {
+    "input": "HAUSVERWALTER inside  I  Wissen I Experten",
+    "output": "hausverwalter-inside-i-wissen-i-experten"
+  },
+  {
+    "input": "Café Crème & Croissants",
+    "output": "cafe-creme-croissants"
+  },
+  {
+    "input": "Straße über Brücke",
+    "output": "strae-uber-brucke"
+  },
+  {
+    "input": "Æther ÆON œuvre",
+    "output": "ther-on-uvre"
+  },
+  {
+    "input": "naïve façade jalapeño",
+    "output": "naive-facade-jalapeno"
+  },
+  {
+    "input": "ZÜRICH — Grüße aus Köln",
+    "output": "zurich-grue-aus-koln"
+  },
+  {
+    "input": "Hello, World!!!  ",
+    "output": "hello-world"
+  },
+  {
+    "input": "   leading and trailing   ",
+    "output": "leading-and-trailing"
+  },
+  {
+    "input": "../../etc/passwd",
+    "output": "etc-passwd"
+  },
+  {
+    "input": "..\\..\\windows\\system32",
+    "output": "windows-system32"
+  },
+  {
+    "input": "file/with:forbidden*chars?\"<>|",
+    "output": "file-with-forbidden-chars"
+  },
+  {
+    "input": "emoji 🎙️ podcast 🔥 episode",
+    "output": "emoji-podcast-episode"
+  },
+  {
+    "input": "日本語のタイトル",
+    "output": "show"
+  },
+  {
+    "input": "Ελληνικά",
+    "output": "show"
+  },
+  {
+    "input": "Кириллица текст",
+    "output": "show"
+  },
+  {
+    "input": "multiple     spaces\tand\ttabs",
+    "output": "multiple-spaces-and-tabs"
+  },
+  {
+    "input": "...dots...everywhere...",
+    "output": "dots-everywhere"
+  },
+  {
+    "input": "",
+    "output": "show"
+  },
+  {
+    "input": "   ",
+    "output": "show"
+  },
+  {
+    "input": "----",
+    "output": "show"
+  },
+  {
+    "input": "###$$$%%%",
+    "output": "show"
+  },
+  {
+    "input": "MiXeD CaSe Title 2024",
+    "output": "mixed-case-title-2024"
+  },
+  {
+    "input": "episode #42: the answer (re-upload)",
+    "output": "episode-42-the-answer-re-upload"
+  },
+  {
+    "input": "a.b.c.d.e",
+    "output": "a-b-c-d-e"
+  },
+  {
+    "input": "trailing dots...",
+    "output": "trailing-dots"
+  },
+  {
+    "input": ".hidden",
+    "output": "hidden"
+  },
+  {
+    "input": "CON",
+    "output": "con"
+  },
+  {
+    "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+    "input": "ääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääää",
+    "output": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "input": "€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€",
+    "output": "show"
+  },
+  {
+    "input": "ΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩΩ!!!!!",
+    "output": "show"
+  },
+  {
+    "input": "a​b",
+    "output": "ab"
+  },
+  {
+    "input": "x﻿y",
+    "output": "xy"
+  },
+  {
+    "input": "c‍d",
+    "output": "cd"
+  },
+  {
+    "input": "word‌join",
+    "output": "wordjoin"
+  },
+  {
+    "input": "é combining",
+    "output": "e-combining"
+  },
+  {
+    "input": "ﬁle system",
+    "output": "file-system"
+  },
+  {
+    "input": "①②③ circled",
+    "output": "123-circled"
+  },
+  {
+    "input": "Ⅷ roman",
+    "output": "viii-roman"
+  },
+  {
+    "input": "ab",
+    "output": "ab"
+  },
+  {
+    "input": "a b",
+    "output": "a-b"
+  },
+  {
+    "input": "   padded nel  ",
+    "output": "padded-nel"
+  }
+]

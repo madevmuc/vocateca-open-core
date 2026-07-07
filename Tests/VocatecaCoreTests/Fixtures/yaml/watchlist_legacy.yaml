@@ -1,0 +1,23 @@
+shows:
+- slug: legacy-podcast
+  title: The Legacy Podcast
+  rss: https://example.com/legacy.xml
+  whisper_prompt: Legacy prompt.
+  enabled: true
+  output_override: null
+  language: de
+  artwork_url: https://example.com/legacy-art.jpg
+  source: podcast
+  youtube_transcript_pref: ''
+  skip_shorts: true
+- slug: legacy-youtube
+  title: Legacy YouTube Channel
+  rss: https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123
+  whisper_prompt: YouTube prompt.
+  enabled: true
+  output_override: null
+  language: en
+  artwork_url: https://example.com/yt-art.jpg
+  source: youtube
+  youtube_transcript_pref: captions
+  skip_shorts: true

@@ -1,0 +1,52 @@
+[
+  {
+    "kind": "rss_channel",
+    "input": "UCBcRF18a7Qf58cCRy5xuWwQ",
+    "output": "https://www.youtube.com/feeds/videos.xml?channel_id=UCBcRF18a7Qf58cCRy5xuWwQ"
+  },
+  {
+    "kind": "rss_channel",
+    "input": "UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+    "output": "https://www.youtube.com/feeds/videos.xml?channel_id=UC-lHJZR3Gqxm24_Vd_AJ5Yw"
+  },
+  {
+    "kind": "rss_channel",
+    "input": "UC29ju8bIPH5as8OGnQzwJyA",
+    "output": "https://www.youtube.com/feeds/videos.xml?channel_id=UC29ju8bIPH5as8OGnQzwJyA"
+  },
+  {
+    "kind": "rss_playlist",
+    "input": "PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-",
+    "output": "https://www.youtube.com/feeds/videos.xml?playlist_id=PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-"
+  },
+  {
+    "kind": "rss_playlist",
+    "input": "PLabc123",
+    "output": "https://www.youtube.com/feeds/videos.xml?playlist_id=PLabc123"
+  },
+  {
+    "kind": "channel_id_from_feed_url",
+    "input": "https://www.youtube.com/feeds/videos.xml?channel_id=UCBcRF18a7Qf58cCRy5xuWwQ",
+    "output": "UCBcRF18a7Qf58cCRy5xuWwQ"
+  },
+  {
+    "kind": "channel_id_from_feed_url",
+    "input": "https://www.youtube.com/feeds/videos.xml?channel_id=UC-lHJZR3Gqxm24_Vd_AJ5Yw",
+    "output": "UC-lHJZR3Gqxm24_Vd_AJ5Yw"
+  },
+  {
+    "kind": "channel_id_from_feed_url",
+    "input": "https://feeds.example.com/podcast.rss",
+    "output": ""
+  },
+  {
+    "kind": "channel_id_from_feed_url",
+    "input": "",
+    "output": ""
+  },
+  {
+    "kind": "channel_id_from_feed_url",
+    "input": "https://www.youtube.com/feeds/videos.xml?playlist_id=PLfoo",
+    "output": ""
+  }
+]

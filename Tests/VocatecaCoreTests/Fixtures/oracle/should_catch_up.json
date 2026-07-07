@@ -1,0 +1,86 @@
+[
+  {
+    "last_check_iso": null,
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T10:00:00+00:00",
+    "output": true
+  },
+  {
+    "last_check_iso": "2026-06-27T20:00:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T08:00:00+00:00",
+    "output": false
+  },
+  {
+    "last_check_iso": "2026-06-27T20:00:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T09:00:00+00:00",
+    "output": true
+  },
+  {
+    "last_check_iso": "2026-06-27T08:00:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T10:00:00+00:00",
+    "output": true
+  },
+  {
+    "last_check_iso": "2026-06-28T09:30:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T10:00:00+00:00",
+    "output": false
+  },
+  {
+    "last_check_iso": "2026-06-28T09:00:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T10:00:00+00:00",
+    "output": false
+  },
+  {
+    "last_check_iso": "2026-06-27T09:00:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T08:59:59+00:00",
+    "output": false
+  },
+  {
+    "last_check_iso": null,
+    "daily_time_hhmm": "23:59",
+    "now_iso": "2026-06-28T00:00:00+00:00",
+    "output": true
+  },
+  {
+    "last_check_iso": "2026-06-28T08:00:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T10:00:00+00:00",
+    "output": true
+  },
+  {
+    "last_check_iso": "2026-06-28T08:59:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T09:00:00+00:00",
+    "output": true
+  },
+  {
+    "last_check_iso": "2026-06-27T23:00:00+00:00",
+    "daily_time_hhmm": "00:00",
+    "now_iso": "2026-06-28T00:01:00+00:00",
+    "output": true
+  },
+  {
+    "last_check_iso": "2026-06-27T23:00:00+00:00",
+    "daily_time_hhmm": "00:00",
+    "now_iso": "2026-06-27T23:59:00+00:00",
+    "output": false
+  },
+  {
+    "last_check_iso": "2026-06-26T10:00:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T10:00:00+00:00",
+    "output": true
+  },
+  {
+    "last_check_iso": "2026-06-28T09:00:00+00:00",
+    "daily_time_hhmm": "09:00",
+    "now_iso": "2026-06-28T09:00:00+00:00",
+    "output": false
+  }
+]

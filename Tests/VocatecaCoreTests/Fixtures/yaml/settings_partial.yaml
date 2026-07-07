@@ -1,0 +1,8 @@
+output_root: /custom/path
+daily_check_time: "14:30"
+mp3_retention_days: 14
+whisper_model: small
+notify_events:
+  episode.transcribed: true
+  run.finished: false
+  episode.failed: true

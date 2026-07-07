@@ -1,0 +1,21 @@
+shows:
+- slug: full-show
+  title: Full Show
+  rss: https://example.com/full.xml
+  whisper_prompt: "Custom prompt here."
+  enabled: false
+  output_override: /tmp/out
+  language: en
+  artwork_url: https://example.com/art.jpg
+  source: youtube
+  youtube_transcript_pref: whisper
+  skip_shorts: false
+  auto_vocab: true
+  min_duration_sec: 120
+  max_duration_sec: 7200
+  notify: false
+  ig_reels: false
+  ig_posts: false
+  ig_stories: false
+  ig_backfill_mode: last_n
+  ig_backfill_n: 10

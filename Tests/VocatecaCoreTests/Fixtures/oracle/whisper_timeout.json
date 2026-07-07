@@ -1,0 +1,42 @@
+[
+  {
+    "file_size_bytes": 0,
+    "output": 1800
+  },
+  {
+    "file_size_bytes": 1,
+    "output": 1800
+  },
+  {
+    "file_size_bytes": 1024,
+    "output": 1800
+  },
+  {
+    "file_size_bytes": 1048576,
+    "output": 1800
+  },
+  {
+    "file_size_bytes": 10485760,
+    "output": 1800
+  },
+  {
+    "file_size_bytes": 20971520,
+    "output": 1920
+  },
+  {
+    "file_size_bytes": 41943040,
+    "output": 3720
+  },
+  {
+    "file_size_bytes": 83886080,
+    "output": 7320
+  },
+  {
+    "file_size_bytes": 157286400,
+    "output": 13620
+  },
+  {
+    "file_size_bytes": 209715200,
+    "output": 18120
+  }
+]

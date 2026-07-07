@@ -1,0 +1,257 @@
+[
+  {
+    "input": {
+      "live_status": "is_live"
+    },
+    "category": "live",
+    "message": "Live/premiere — will retry once it finishes."
+  },
+  {
+    "input": {
+      "live_status": "is_upcoming"
+    },
+    "category": "live",
+    "message": "Live/premiere — will retry once it finishes."
+  },
+  {
+    "input": {
+      "live_status": "post_live"
+    },
+    "category": "live",
+    "message": "Live/premiere — will retry once it finishes."
+  },
+  {
+    "input": {
+      "is_live": true
+    },
+    "category": "live",
+    "message": "Live/premiere — will retry once it finishes."
+  },
+  {
+    "input": {
+      "live_status": null,
+      "is_live": false
+    },
+    "category": "ok",
+    "message": ""
+  },
+  {
+    "input": {
+      "url": "https://www.youtube.com/shorts/abcde12345f",
+      "duration": 200
+    },
+    "category": "short",
+    "message": "YouTube Short."
+  },
+  {
+    "input": {
+      "webpage_url": "https://www.youtube.com/shorts/xyz",
+      "duration": 90
+    },
+    "category": "short",
+    "message": "YouTube Short."
+  },
+  {
+    "input": {
+      "duration": 60
+    },
+    "category": "short",
+    "message": "YouTube Short."
+  },
+  {
+    "input": {
+      "duration": 59
+    },
+    "category": "short",
+    "message": "YouTube Short."
+  },
+  {
+    "input": {
+      "duration": 0
+    },
+    "category": "short",
+    "message": "YouTube Short."
+  },
+  {
+    "input": {
+      "duration": 61
+    },
+    "category": "ok",
+    "message": ""
+  },
+  {
+    "input": {
+      "duration": 120,
+      "title": "Normal video"
+    },
+    "category": "ok",
+    "message": ""
+  },
+  {
+    "input": {
+      "duration": null
+    },
+    "category": "ok",
+    "message": ""
+  },
+  {
+    "input": {},
+    "category": "ok",
+    "message": ""
+  },
+  {
+    "input": {
+      "availability": "subscriber_only"
+    },
+    "category": "members_only",
+    "message": "Members-only video — can't be downloaded."
+  },
+  {
+    "input": {
+      "availability": "subscriber_only",
+      "age_limit": 18
+    },
+    "category": "members_only",
+    "message": "Members-only video — can't be downloaded."
+  },
+  {
+    "input": {
+      "availability": "needs_auth"
+    },
+    "category": "age_restricted",
+    "message": "Age-restricted — needs sign-in, can't be downloaded."
+  },
+  {
+    "input": {
+      "age_limit": 18
+    },
+    "category": "age_restricted",
+    "message": "Age-restricted — needs sign-in, can't be downloaded."
+  },
+  {
+    "input": {
+      "age_limit": 19
+    },
+    "category": "age_restricted",
+    "message": "Age-restricted — needs sign-in, can't be downloaded."
+  },
+  {
+    "input": {
+      "age_limit": 17
+    },
+    "category": "ok",
+    "message": ""
+  },
+  {
+    "input": {
+      "age_limit": 0
+    },
+    "category": "ok",
+    "message": ""
+  },
+  {
+    "input": {
+      "live_status": null,
+      "duration": 300,
+      "availability": "public",
+      "age_limit": 0
+    },
+    "category": "ok",
+    "message": ""
+  },
+  {
+    "input": "ERROR: Join this channel to get access",
+    "category": "members_only",
+    "message": "Members-only video — can't be downloaded."
+  },
+  {
+    "input": "members-only content here",
+    "category": "members_only",
+    "message": "Members-only video — can't be downloaded."
+  },
+  {
+    "input": "This is members only stuff",
+    "category": "members_only",
+    "message": "Members-only video — can't be downloaded."
+  },
+  {
+    "input": "Sign in to confirm your age",
+    "category": "age_restricted",
+    "message": "Age-restricted — needs sign-in, can't be downloaded."
+  },
+  {
+    "input": "Confirm your age to watch",
+    "category": "age_restricted",
+    "message": "Age-restricted — needs sign-in, can't be downloaded."
+  },
+  {
+    "input": "age-restricted video",
+    "category": "age_restricted",
+    "message": "Age-restricted — needs sign-in, can't be downloaded."
+  },
+  {
+    "input": "Inappropriate for some users",
+    "category": "age_restricted",
+    "message": "Age-restricted — needs sign-in, can't be downloaded."
+  },
+  {
+    "input": "not made this video available in your country",
+    "category": "region_locked",
+    "message": "Blocked in this region."
+  },
+  {
+    "input": "not available in your country",
+    "category": "region_locked",
+    "message": "Blocked in this region."
+  },
+  {
+    "input": "geo restrict",
+    "category": "region_locked",
+    "message": "Blocked in this region."
+  },
+  {
+    "input": "This live event will begin soon",
+    "category": "live",
+    "message": "Live/premiere — will retry once it finishes."
+  },
+  {
+    "input": "live event will begin at 3pm",
+    "category": "live",
+    "message": "Live/premiere — will retry once it finishes."
+  },
+  {
+    "input": "Premiere will begin in 10 minutes",
+    "category": "live",
+    "message": "Live/premiere — will retry once it finishes."
+  },
+  {
+    "input": "Premieres in 5 minutes",
+    "category": "live",
+    "message": "Live/premiere — will retry once it finishes."
+  },
+  {
+    "input": "is live and streaming now",
+    "category": "live",
+    "message": "Live/premiere — will retry once it finishes."
+  },
+  {
+    "input": "SIGN IN TO CONFIRM YOUR AGE",
+    "category": "age_restricted",
+    "message": "Age-restricted — needs sign-in, can't be downloaded."
+  },
+  {
+    "input": "GEO RESTRICT - not available",
+    "category": "region_locked",
+    "message": "Blocked in this region."
+  },
+  {
+    "input": "Some random error that doesnt match anything",
+    "category": "ok",
+    "message": ""
+  },
+  {
+    "input": "",
+    "category": "ok",
+    "message": ""
+  }
+]
