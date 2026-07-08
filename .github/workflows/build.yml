@@ -14,7 +14,11 @@ permissions:
 jobs:
   build:
     name: swift build (macOS)
-    runs-on: macos-15
+    # macOS 26 / Xcode 26 ships Swift 6.3, which the dependency graph requires:
+    # the Qwen3-ASR engine (soniqo/speech-swift) pulls in mlx-swift 0.31.x, whose
+    # Package.swift declares swift-tools-version 6.3. The default macos-15 image
+    # only has Swift 6.1 and fails at dependency resolution before compiling.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
