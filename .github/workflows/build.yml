@@ -20,7 +20,7 @@ jobs:
     # only has Swift 6.1 and fails at dependency resolution before compiling.
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show Swift version
         run: swift --version
