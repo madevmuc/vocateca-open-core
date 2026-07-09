@@ -4,35 +4,8 @@ import Foundation
 
 // MARK: - KeywordWatchTests
 
-/// Tests for ``KeywordWatch`` — pure matcher and event evaluator.
+/// Tests for ``KeywordWatch`` — pure matcher.
 final class KeywordWatchTests: XCTestCase {
-
-    // MARK: - Async collection helper
-
-    /// Collects up to `count` events from `stream` within `timeout` seconds.
-    /// Returns as soon as `count` events arrive or the deadline expires.
-    private func collect(
-        _ count: Int,
-        from stream: AsyncStream<Event>,
-        timeout: Double = 2.0
-    ) async -> [Event] {
-        final class Box: @unchecked Sendable { var value: [Event] = [] }
-        let box = Box()
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                for await event in stream {
-                    box.value.append(event)
-                    if box.value.count >= count { break }
-                }
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-            }
-            await group.next()
-            group.cancelAll()
-        }
-        return box.value
-    }
 
     // MARK: - Pure matcher: basic matching
 
@@ -178,76 +151,4 @@ final class KeywordWatchTests: XCTestCase {
         XCTAssertEqual(hits[0].ranges.count, 2, "Must return a range for each occurrence")
     }
 
-    // MARK: - Evaluator: emits keyword.match events via EventBus
-
-    func testEvaluatorEmitsKeywordMatchEvents() async throws {
-        let bus = EventBus()
-        let stream = await bus.subscribe(.exact(EventType.keywordMatch))
-
-        await KeywordWatch.evaluate(
-            text: "We talk about AI and Machine Learning today",
-            keywords: ["AI", "Machine Learning", "Blockchain"],
-            showSlug: "tech-show",
-            guid: "ep-001",
-            bus: bus
-        )
-
-        // Collect up to 2 events (AI + Machine Learning); "Blockchain" has no match.
-        let events = await collect(2, from: stream, timeout: 3.0)
-
-        XCTAssertEqual(events.count, 2, "Must emit one event per matching keyword")
-
-        let emittedKeywords = events.compactMap { event -> String? in
-            guard case .string(let k) = event.payload["keyword"] else { return nil }
-            return k
-        }
-        XCTAssertTrue(emittedKeywords.contains("AI"), "Must emit event for 'AI'")
-        XCTAssertTrue(emittedKeywords.contains("Machine Learning"), "Must emit event for 'Machine Learning'")
-
-        for event in events {
-            XCTAssertEqual(event.showSlug, "tech-show")
-            XCTAssertEqual(event.guid, "ep-001")
-            XCTAssertEqual(event.type, EventType.keywordMatch)
-        }
-    }
-
-    func testEvaluatorEmitsNoEventsWhenNoMatch() async throws {
-        let bus = EventBus()
-        let stream = await bus.subscribe(.exact(EventType.keywordMatch))
-
-        await KeywordWatch.evaluate(
-            text: "Hello world",
-            keywords: ["Haskell", "Erlang"],
-            showSlug: "show",
-            guid: "ep-x",
-            bus: bus
-        )
-
-        // Collect with short timeout — no events should arrive.
-        let events = await collect(1, from: stream, timeout: 0.3)
-        XCTAssertTrue(events.isEmpty, "No events must be emitted when no keywords match")
-    }
-
-    func testEvaluatorPayloadContainsCount() async throws {
-        let bus = EventBus()
-        let stream = await bus.subscribe(.exact(EventType.keywordMatch))
-
-        let text = "Swift is great. Swift is fast. Swift for life!"
-        await KeywordWatch.evaluate(
-            text: text,
-            keywords: ["Swift"],
-            showSlug: "swift-show",
-            guid: "ep-swift",
-            bus: bus
-        )
-
-        let events = await collect(1, from: stream, timeout: 3.0)
-
-        XCTAssertEqual(events.count, 1)
-        if let countVal = events.first?.payload["count"], case .number(let n) = countVal {
-            XCTAssertEqual(n, 3.0, "Count in payload must reflect 3 occurrences")
-        } else {
-            XCTFail("payload['count'] must be a number")
-        }
-    }
 }

@@ -156,6 +156,13 @@ extension StateStore {
     ///   - restrictToSlugs: Optional allowlist of show slugs.
     ///     - `nil` or `[]` → claim any pending episode (unchanged legacy behaviour).
     ///     - non-empty array → only claim episodes whose `show_slug` is in the set.
+    ///   - excludeSlugs: Optional denylist of show slugs (QA item 9 — "pausing a
+    ///     show pauses its episodes"). `nil`/`[]` → no exclusion. A non-empty array
+    ///     skips episodes of those shows entirely, WITHOUT touching their `pending`
+    ///     status — re-enabling monitoring makes them claimable again on the very
+    ///     next claim with no data migration. Orthogonal to `restrictToSlugs`
+    ///     (both may be supplied; a slug excluded here is skipped even if it would
+    ///     otherwise match the allowlist).
     ///
     /// The nil/empty-array == claim-all convention keeps call sites simple: the
     /// daemon guards on `!enabled.isEmpty` before calling, so an empty array
@@ -175,6 +182,7 @@ extension StateStore {
     public func claimNextPending(
         queueOrder: String,
         restrictToSlugs: [String]? = nil,
+        excludeSlugs: [String]? = nil,
         backoffSeconds: TimeInterval = StateStore.retryBackoffSeconds,
         now: Date = Date()
     ) throws -> Episode? {
@@ -206,6 +214,26 @@ extension StateStore {
                       component: "StateStore")
         }
 
+        // QA item 9 — paused-show guard: an EXCLUDE denylist, orthogonal to the
+        // INCLUDE allowlist above. `AND show_slug NOT IN (?, ?, …)`, fully
+        // parameterised. Rows for a paused show simply never match this claim —
+        // they stay `pending` untouched, so re-enabling monitoring needs no
+        // migration or backfill, just lets the very next claim see them again.
+        let excluded = excludeSlugs.flatMap { $0.isEmpty ? nil : $0 }
+        let excludeFilter: String
+        let excludeArguments: [DatabaseValue]
+        if let excluded {
+            let placeholders = Array(repeating: "?", count: excluded.count).joined(separator: ", ")
+            excludeFilter = "AND show_slug NOT IN (\(placeholders))"
+            excludeArguments = excluded.map { $0.databaseValue }
+            Log.debug("claimNextPending: excluding \(excluded.count) paused show(s)",
+                      component: "StateStore",
+                      context: [("slugs", excluded.joined(separator: ","))])
+        } else {
+            excludeFilter = ""
+            excludeArguments = []
+        }
+
         return try dbQueue.write { db in
             // Atomic claim: flip exactly one pending row to downloading and
             // return it. The ORDER BY fragment is whitelisted (never raw input).
@@ -226,6 +254,7 @@ extension StateStore {
                     WHERE status = 'pending'
                     AND (attempted_at IS NULL OR attempted_at < ?)
                     \(slugFilter)
+                    \(excludeFilter)
                     ORDER BY \(orderFragment)
                     LIMIT 1
                 )
@@ -234,6 +263,7 @@ extension StateStore {
             // Build arguments: [nowISO (SET)] + [cutoffISO (backoff)] + optional slug values.
             var args: [DatabaseValue] = [nowISO.databaseValue, cutoffISO.databaseValue]
             args.append(contentsOf: slugArguments)
+            args.append(contentsOf: excludeArguments)
             return try Episode.fetchOne(db, SQLRequest(sql: sql, arguments: StatementArguments(args)))
         }
     }

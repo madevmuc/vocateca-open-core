@@ -223,6 +223,9 @@ public final class QueueRunner {
     ///   - diarizer: Optional speaker-diarization engine (Package D) forwarded to
     ///     the `Pipeline`. `nil` (default) = no diarization (tests/preview); the
     ///     real app + CLI inject a `FluidAudioDiarizer`.
+    ///   - excludedSlugsProvider: Optional live-evaluated denylist of paused
+    ///     shows' slugs (QA item 9), forwarded to `QueueWorker`. `nil` (default)
+    ///     = no exclusion.
     public func start(
         store: StateStore,
         downloader: any EpisodeDownloader,
@@ -235,7 +238,8 @@ public final class QueueRunner {
         pollIntervalNanos: UInt64 = 500_000_000,
         restrictToSlugs: [String]? = nil,
         diskSpaceFull: (@Sendable () -> Bool)? = nil,
-        diarizer: (any Diarizer)? = nil
+        diarizer: (any Diarizer)? = nil,
+        excludedSlugsProvider: (@Sendable () -> [String])? = nil
     ) {
         guard runState != .running else { return }
 
@@ -256,7 +260,8 @@ public final class QueueRunner {
             taskQoS: config.taskQoS,
             bus: bus,
             restrictToSlugs: restrictToSlugs,
-            diskSpaceFull: diskSpaceFull
+            diskSpaceFull: diskSpaceFull,
+            excludedSlugsProvider: excludedSlugsProvider
         )
         worker = newWorker
         activeStore = store

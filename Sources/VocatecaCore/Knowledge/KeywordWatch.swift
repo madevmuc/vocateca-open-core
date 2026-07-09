@@ -22,12 +22,13 @@ public struct KeywordHit: Sendable, Equatable {
 
 // MARK: - KeywordWatch
 
-/// Pure keyword matching and event emission for transcript watch lists.
+/// Pure keyword matching for transcript watch lists.
 ///
-/// ## Storage
-/// Keywords are stored in `Settings.keywordWatch: [String]` — a v2-only field
-/// (not present in the Python oracle). See ``Settings`` for the full field
-/// definition. Each string in the array is a keyword/phrase to watch for.
+/// This is only the low-level matching primitive. The production keyword-watch
+/// feature is a separate code path — `WatchTerm` + `WatchlistScanner`, driven
+/// from `AppShell`'s watchlist-scan hooks and persisted to the `watchlist_hits`
+/// table. `Settings.keywordWatch` is `[WatchTerm]` (v2-only, excluded from
+/// oracle parity; YAML key `keyword_watch`).
 ///
 /// ## Matching rules
 ///
@@ -44,16 +45,6 @@ public struct KeywordHit: Sendable, Equatable {
 ///
 /// ### Substring mode (`wholeWord: false`)
 /// Simple case-insensitive substring scan. "rate" matches "accurate".
-///
-/// ## Event emission
-/// After transcription completes, call ``evaluate(text:keywords:showSlug:guid:bus:)``
-/// to scan the text and emit `keyword.match` events via the provided `EventBus`.
-/// Each keyword that appears at least once produces one event with the keyword
-/// and match count in the payload.
-///
-/// ## Keyword storage field
-/// `Settings.keywordWatch: [String]` is a v2-only field excluded from oracle parity.
-/// YAML key: `keyword_watch`. Default: empty array.
 public struct KeywordWatch: Sendable {
 
     // MARK: - Pure matcher
@@ -83,56 +74,6 @@ public struct KeywordWatch: Sendable {
         }
 
         return hits
-    }
-
-    // MARK: - Event evaluator
-
-    /// Scans transcript text for watched keywords and emits `keyword.match`
-    /// events for each hit via `bus`.
-    ///
-    /// Call this after a new episode has been successfully transcribed. Each
-    /// keyword that matches produces exactly one `keyword.match` event with:
-    ///
-    /// ```
-    /// payload = {
-    ///   "keyword":   .string(keyword),
-    ///   "count":     .number(Double(hit.count)),
-    ///   "show_slug": .string(showSlug),   // also in Event.showSlug
-    ///   "guid":      .string(guid)         // also in Event.guid
-    /// }
-    /// ```
-    ///
-    /// Uses `wholeWord: false` (substring matching) — users can include spaces
-    /// or punctuation in their keywords if they need phrase-level precision.
-    ///
-    /// - Parameters:
-    ///   - text:     Transcript text to scan.
-    ///   - keywords: List of keywords to watch for.
-    ///   - showSlug: Show slug for the event payload.
-    ///   - guid:     Episode guid for the event payload.
-    ///   - bus:      EventBus to emit on.
-    public static func evaluate(
-        text: String,
-        keywords: [String],
-        showSlug: String,
-        guid: String,
-        bus: EventBus
-    ) async {
-        let hits = matches(text: text, keywords: keywords, wholeWord: false)
-        for hit in hits {
-            let event = Event(
-                type: EventType.keywordMatch,
-                showSlug: showSlug,
-                guid: guid,
-                payload: [
-                    "keyword":   .string(hit.keyword),
-                    "count":     .number(Double(hit.count)),
-                    "show_slug": .string(showSlug),
-                    "guid":      .string(guid),
-                ]
-            )
-            await bus.emit(event)
-        }
     }
 
     // MARK: - Private helpers

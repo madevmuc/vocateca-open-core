@@ -79,6 +79,15 @@ public actor QueueWorker {
     /// for each run anyway).
     private let restrictToSlugs: [String]?
 
+    /// QA item 9 — optional live-evaluated provider of show slugs to EXCLUDE from
+    /// claiming (paused shows: monitoring disabled). Unlike `restrictToSlugs`
+    /// (fixed for the worker's lifetime), this is a closure re-invoked on every
+    /// claim so toggling a show's monitoring mid-run takes effect on the very
+    /// next claim without restarting the queue. `nil` (default) = no exclusion.
+    /// Must be pure / side-effect-free (called on the actor, mirrors
+    /// `diskSpaceFull`).
+    private let excludedSlugsProvider: (@Sendable () -> [String])?
+
     /// Task QoS applied to new drain tasks spawned after an `applyConfig()` call.
     /// Existing tasks are not retroactively re-prioritised (that's not possible).
     private var taskQoS: QualityOfService
@@ -112,6 +121,9 @@ public actor QueueWorker {
     ///     `StateStore.claimNextPending`. `nil` (default) = claim any pending
     ///     episode (manual queue behaviour). Non-empty = daemon mode, only
     ///     auto-download shows' episodes are claimed.
+    ///   - excludedSlugsProvider: Optional live-evaluated denylist of paused
+    ///     shows' slugs (QA item 9), forwarded to `StateStore.claimNextPending`
+    ///     as `excludeSlugs` on every claim. `nil` (default) = no exclusion.
     public init(
         store: StateStore,
         pipeline: Pipeline,
@@ -120,7 +132,8 @@ public actor QueueWorker {
         taskQoS: QualityOfService = .utility,
         bus: EventBus = .shared,
         restrictToSlugs: [String]? = nil,
-        diskSpaceFull: (@Sendable () -> Bool)? = nil
+        diskSpaceFull: (@Sendable () -> Bool)? = nil,
+        excludedSlugsProvider: (@Sendable () -> [String])? = nil
     ) {
         self.store = store
         self.pipeline = pipeline
@@ -130,6 +143,7 @@ public actor QueueWorker {
         self.bus = bus
         self.restrictToSlugs = restrictToSlugs
         self.diskSpaceFull = diskSpaceFull
+        self.excludedSlugsProvider = excludedSlugsProvider
         if let slugs = restrictToSlugs, !slugs.isEmpty {
             Log.info("QueueWorker init: daemon-scoped claim",
                      component: "QueueWorker",
@@ -341,11 +355,15 @@ public actor QueueWorker {
                 // Atomically claim the next pending episode (flips to downloading).
                 // When restrictToSlugs is set (daemon mode), only episodes from
                 // those shows are claimed — manual-queue workers pass nil (claim all).
+                // QA item 9: excludedSlugsProvider is re-evaluated on EVERY claim
+                // (not cached at init) so pausing/resuming a show's monitoring
+                // mid-run takes effect on the very next claim.
                 let episode: Episode?
                 do {
                     episode = try store.claimNextPending(
                         queueOrder: queueOrder,
-                        restrictToSlugs: restrictToSlugs
+                        restrictToSlugs: restrictToSlugs,
+                        excludeSlugs: excludedSlugsProvider?()
                     )
                 } catch {
                     Log.error("QueueWorker: DB error claiming next episode — stopping run",
