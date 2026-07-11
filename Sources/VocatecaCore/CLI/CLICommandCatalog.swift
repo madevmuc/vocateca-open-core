@@ -526,12 +526,12 @@ public enum CLICommandCatalog {
         CLICommandDoc(
             group: "Library",
             command: "library export <guid>",
-            summary: "Export one transcript. md/srt/html copy the on-disk sidecar; txt is synthesized. Writes to --out (file or dir) or prints the resolved source path.",
-            options: ["--format md|txt|html|srt", "--out PATH", "--json"],
+            summary: "Export one transcript. md/srt/html/okf copy the on-disk sidecar; txt is synthesized. Writes to --out (file or dir) or prints the resolved source path.",
+            options: ["--format md|txt|html|srt|okf", "--out PATH", "--json"],
             example: "vocateca-cli library export local:ab12cd34 --format srt --out ~/Desktop/ --json",
             arguments: [
                 CLIArg(name: "guid", type: .string, required: true, description: "Episode guid to export.", isFlag: false),
-                CLIArg(name: "format", type: .string, required: false, description: "Export format: md, txt, html, or srt.", isFlag: true),
+                CLIArg(name: "format", type: .string, required: false, description: "Export format: md, txt, html, srt, or okf (okf needs save_okf enabled at transcribe time).", isFlag: true),
                 CLIArg(name: "out", type: .string, required: false, description: "Output file or directory path.", isFlag: true),
                 CLIArg(name: "json", type: .boolean, required: false, description: "Emit JSON instead of human-readable text.", isFlag: true),
             ],

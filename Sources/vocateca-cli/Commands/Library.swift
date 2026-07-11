@@ -86,8 +86,8 @@ enum LibraryCommands {
             throw CLIError("library export requires a <guid>", exitCode: 2)
         }
         let format = args.opts["format"] ?? "md"
-        guard ["md", "txt", "html", "srt"].contains(format) else {
-            throw CLIError("invalid --format '\(format)' (expected md|txt|html|srt)", exitCode: 2)
+        guard ["md", "txt", "html", "srt", "okf"].contains(format) else {
+            throw CLIError("invalid --format '\(format)' (expected md|txt|html|srt|okf)", exitCode: 2)
         }
 
         let reader = try openReader()
@@ -114,6 +114,15 @@ enum LibraryCommands {
             sourceURL = mdURL.deletingPathExtension().appendingPathExtension("html")
             guard FileManager.default.fileExists(atPath: sourceURL.path) else {
                 throw CLIError("no .html sidecar for '\(guid)' (enable save_html at transcribe time)")
+            }
+        case "okf":
+            // OKF uses the double extension `<slug>.okf.md` and is written only
+            // when save_okf was enabled at transcribe time (no independent
+            // transcription state to regenerate it from here).
+            let base = mdURL.deletingPathExtension().lastPathComponent
+            sourceURL = mdURL.deletingLastPathComponent().appendingPathComponent("\(base).okf.md")
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                throw CLIError("no .okf.md sidecar for '\(guid)' (enable save_okf at transcribe time)")
             }
         case "txt":
             sourceURL = mdURL   // synthesized from the .md body
@@ -176,9 +185,17 @@ enum LibraryCommands {
         let exists = FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir)
         let looksLikeDir = out.hasSuffix("/") || (exists && isDir.boolValue)
         if looksLikeDir {
-            let base = sourceURL.deletingPathExtension().lastPathComponent
+            // OKF keeps its source name verbatim (`<slug>.okf.md`) — its double
+            // extension doesn't map to the single `format` token the others use.
+            let filename: String
+            if format == "okf" {
+                filename = sourceURL.lastPathComponent
+            } else {
+                let base = sourceURL.deletingPathExtension().lastPathComponent
+                filename = "\(base).\(format)"
+            }
             return URL(fileURLWithPath: expanded, isDirectory: true)
-                .appendingPathComponent("\(base).\(format)")
+                .appendingPathComponent(filename)
         }
         return URL(fileURLWithPath: expanded)
     }
