@@ -19,6 +19,11 @@ import Foundation
 /// ## SRT sidecar
 /// Pass `writeSRT: true` at initialisation to also write `<slug>.srt` next to the
 /// `.md` file. Defaults to `true`.
+///
+/// ## OKF sidecar
+/// Pass `writeOKF: true` at initialisation to also write `<slug>.okf.md` — an
+/// Open Knowledge Format transcript (Markdown + YAML frontmatter) — next to the
+/// `.md` file. Defaults to `false`.
 public struct MarkdownLibraryWriter: LibraryWriter {
 
     // MARK: - Configuration
@@ -35,6 +40,11 @@ public struct MarkdownLibraryWriter: LibraryWriter {
     /// When `true`, writes a styled, self-contained `.html` sidecar alongside the `.md`.
     public let writeHTML: Bool
 
+    /// When `true`, writes an Open Knowledge Format `.okf.md` sidecar alongside the
+    /// `.md` — a Markdown file with a small, minimally-opinionated YAML frontmatter
+    /// block, per https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf.
+    public let writeOKF: Bool
+
     /// Extra Knowledge-Hub / export destination roots the `.md` is mirrored into
     /// (best-effort). Built from `KnowledgeHub.exportRoots(...)`. Empty = disabled.
     public let exportRoots: [URL]
@@ -46,12 +56,14 @@ public struct MarkdownLibraryWriter: LibraryWriter {
         writeSRT: Bool = true,
         writeTXT: Bool = false,
         writeHTML: Bool = false,
+        writeOKF: Bool = false,
         exportRoots: [URL] = []
     ) {
         self.outputRoot = outputRoot
         self.writeSRT = writeSRT
         self.writeTXT = writeTXT
         self.writeHTML = writeHTML
+        self.writeOKF = writeOKF
         self.exportRoots = exportRoots
     }
 
@@ -207,6 +219,22 @@ public struct MarkdownLibraryWriter: LibraryWriter {
                 )
                 try atomicWrite(content: html, to: htmlURL)
             }
+        }
+
+        // Optional Open Knowledge Format sidecar (transcription path only). Uses
+        // the extension `.okf.md` (not `.okf`) so it never collides with the
+        // plain library `.md`. Reuses the same segments/timestamps/speaker data
+        // as the primary `.md` — no independent transcription state.
+        if writeOKF, let t = transcript {
+            let okfURL = showDir.appendingPathComponent("\(slug).okf.md")
+            let okfContent = Self.renderOKF(
+                episode: episode,
+                source: source,
+                segments: segments,
+                hasSpeakers: hasSpeakers,
+                fallbackText: t.text
+            )
+            try atomicWrite(content: okfContent, to: okfURL)
         }
 
         // Mirror to the configured Knowledge-Hub / export roots (best-effort).
@@ -471,6 +499,107 @@ public struct MarkdownLibraryWriter: LibraryWriter {
             out.append(contentsOf: visible)
         }
         return out.joined(separator: "\n")
+    }
+
+    // MARK: - OKF (Open Knowledge Format) export
+
+    /// Renders an Open Knowledge Format transcript: a Markdown file with a
+    /// small, minimally-opinionated YAML frontmatter block, per
+    /// https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf.
+    ///
+    /// Reuses the same segment/timestamp/speaker data as the primary `.md`
+    /// export — no independent transcription state. `speakers` is omitted
+    /// entirely when `hasSpeakers` is false, and per-line speaker prefixes are
+    /// dropped in the body too.
+    static func renderOKF(
+        episode: Episode,
+        source: String,
+        segments: [TranscriptionSegment],
+        hasSpeakers: Bool,
+        fallbackText: String
+    ) -> String {
+        var fm: [String] = ["---"]
+        fm.append("type: reference")
+        fm.append("title: \(Self.yamlQuote(episode.title))")
+        fm.append("resource: \(Self.yamlQuote(episode.mp3Url))")
+        fm.append("source: \(Self.yamlQuote(source))")
+        if hasSpeakers {
+            let labels = Self.speakerLabelsOKF(segments: segments)
+            if !labels.isEmpty {
+                fm.append("speakers: [\(labels.map(Self.yamlQuote).joined(separator: ", "))]")
+            }
+        }
+        let showTag = TextNormalization.slugify(episode.showSlug)
+        // showTag is a slug (alphanumeric + `-`), always a safe unquoted YAML
+        // flow scalar — matches the OKF spec's `tags: [transcript, <show-slug>]`.
+        fm.append("tags: [transcript, \(showTag)]")
+        let ts = episode.pubDate.isEmpty ? Self.isoNow() : episode.pubDate
+        fm.append("timestamp: \(Self.yamlQuote(ts))")
+        if let origin = episode.transcriptOrigin, !origin.isEmpty {
+            fm.append("origin: \(Self.yamlQuote(origin))")
+        }
+        fm.append("---")
+        let frontmatter = fm.joined(separator: "\n") + "\n\n"
+
+        var body: [String] = []
+        body.append("# \(episode.title)")
+        body.append("")
+        body.append("## Transcript")
+        body.append("")
+        if segments.isEmpty {
+            let text = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { body.append(text) }
+        } else {
+            for seg in segments {
+                let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                let stamp = "**[\(Self.formatMMSS(seg.start))]**"
+                if hasSpeakers, let spk = seg.speaker {
+                    body.append("\(stamp) Speaker \(spk + 1): \(text)")
+                } else {
+                    body.append("\(stamp) \(text)")
+                }
+            }
+        }
+        return frontmatter + body.joined(separator: "\n") + "\n"
+    }
+
+    /// Ordered, de-duplicated "Speaker N" labels (1-based) present in `segments`,
+    /// in order of first appearance.
+    static func speakerLabelsOKF(segments: [TranscriptionSegment]) -> [String] {
+        var seen = Set<Int>()
+        var labels: [String] = []
+        for seg in segments {
+            guard let spk = seg.speaker, !seen.contains(spk) else { continue }
+            seen.insert(spk)
+            labels.append("Speaker \(spk + 1)")
+        }
+        return labels
+    }
+
+    /// Formats non-negative seconds as zero-padded `MM:SS` (minutes grow past
+    /// two digits for long episodes rather than wrapping).
+    static func formatMMSS(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.down)))
+        let m = total / 60
+        let s = total % 60
+        return String(format: "%02d:%02d", m, s)
+    }
+
+    /// Current UTC time in ISO-8601 — the OKF `timestamp` fallback when the
+    /// episode has no `pub_date`.
+    static func isoNow() -> String {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fmt.string(from: Date())
+    }
+
+    /// Double-quotes a YAML scalar, escaping embedded backslashes/quotes.
+    static func yamlQuote(_ s: String) -> String {
+        let escaped = s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     // MARK: - Slug helper

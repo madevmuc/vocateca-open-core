@@ -347,6 +347,88 @@ final class MarkdownLibraryWriterTests: XCTestCase {
         XCTAssertFalse(content2.contains("First version"), "Old content must be gone")
     }
 
+    // MARK: - OKF (Open Knowledge Format) sidecar
+
+    /// `writeOKF: true` must emit a `<slug>.okf.md` sidecar with valid YAML
+    /// frontmatter (type/title/resource/source/tags/timestamp) and a
+    /// timestamped `## Transcript` body built from the same segments as the
+    /// primary `.md`. No `speakers:` key when diarization is absent.
+    func testOKFSidecarWrittenWhenEnabled() async throws {
+        let tmpDir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let episode = makePodcastEpisode(
+            guid: "ep-okf-1", showSlug: "my-show", title: "My Episode Title", pubDate: "2024-03-10"
+        )
+        let segments = [
+            TranscriptionSegment(start: 0.0, end: 2.5, text: "Hello world"),
+            TranscriptionSegment(start: 65.0, end: 68.0, text: "this is a test"),
+        ]
+        let transcript = TranscriptionResult(text: "Hello world this is a test", segments: segments, language: "en")
+
+        let writer = MarkdownLibraryWriter(outputRoot: tmpDir, writeSRT: false, writeOKF: true)
+        let mdURL = try await writer.write(episode: episode, transcript: transcript, ocrText: nil, mediaPath: nil)
+
+        let okfURL = mdURL.deletingLastPathComponent()
+            .appendingPathComponent(mdURL.deletingPathExtension().lastPathComponent + ".okf.md")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: okfURL.path), "expected .okf.md sidecar at \(okfURL.path)")
+
+        let okf = try String(contentsOf: okfURL, encoding: .utf8)
+        XCTAssertTrue(okf.hasPrefix("---\n"), "OKF must start with a YAML frontmatter block")
+        XCTAssertTrue(okf.contains("type: reference"), "frontmatter must declare type: reference")
+        XCTAssertTrue(okf.contains("title: \"My Episode Title\""), "frontmatter must carry the title")
+        XCTAssertTrue(okf.contains("resource: \"\(episode.mp3Url)\""), "frontmatter must carry the source URL")
+        XCTAssertTrue(okf.contains("source: \"podcast\""), "frontmatter must classify the source")
+        XCTAssertTrue(okf.contains("tags: [transcript, my-show]"), "frontmatter must tag transcript + show slug")
+        XCTAssertTrue(okf.contains("timestamp: \"2024-03-10\""), "frontmatter must carry the pub date as timestamp")
+        XCTAssertFalse(okf.contains("speakers:"), "no diarization ⇒ no speakers key")
+
+        XCTAssertTrue(okf.contains("# My Episode Title"), "body must open with an H1 title")
+        XCTAssertTrue(okf.contains("## Transcript"), "body must have a Transcript section")
+        XCTAssertTrue(okf.contains("**[00:00]** Hello world"), "first segment timestamped MM:SS, no speaker prefix")
+        XCTAssertTrue(okf.contains("**[01:05]** this is a test"), "second segment timestamp rolls minutes correctly")
+    }
+
+    /// When diarization has assigned speakers, the OKF frontmatter lists them
+    /// and the body prefixes each line with `Speaker N:`.
+    func testOKFSidecarIncludesSpeakersWhenDiarized() async throws {
+        let tmpDir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let episode = makePodcastEpisode(guid: "ep-okf-2", showSlug: "my-show", pubDate: "2024-03-10")
+        let segments = [
+            TranscriptionSegment(start: 0.0, end: 2.0, text: "Hi there", speaker: 0),
+            TranscriptionSegment(start: 2.0, end: 4.0, text: "Hello back", speaker: 1),
+        ]
+        let transcript = TranscriptionResult(text: "Hi there Hello back", segments: segments, language: "en")
+
+        let writer = MarkdownLibraryWriter(outputRoot: tmpDir, writeSRT: false, writeOKF: true)
+        let mdURL = try await writer.write(episode: episode, transcript: transcript, ocrText: nil, mediaPath: nil)
+        let okfURL = mdURL.deletingLastPathComponent()
+            .appendingPathComponent(mdURL.deletingPathExtension().lastPathComponent + ".okf.md")
+        let okf = try String(contentsOf: okfURL, encoding: .utf8)
+
+        XCTAssertTrue(okf.contains("speakers: [\"Speaker 1\", \"Speaker 2\"]"), "frontmatter must list distinct speakers")
+        XCTAssertTrue(okf.contains("**[00:00]** Speaker 1: Hi there"))
+        XCTAssertTrue(okf.contains("**[00:02]** Speaker 2: Hello back"))
+    }
+
+    /// `writeOKF: false` (the default) must not write a `.okf.md` sidecar.
+    func testOKFSidecarSkippedWhenDisabled() async throws {
+        let tmpDir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let episode = makePodcastEpisode(guid: "ep-okf-3", showSlug: "my-show", pubDate: "2024-03-10")
+        let segments = [TranscriptionSegment(start: 0, end: 1, text: "Hello")]
+        let transcript = TranscriptionResult(text: "Hello", segments: segments, language: "en")
+
+        let writer = MarkdownLibraryWriter(outputRoot: tmpDir, writeSRT: false)
+        let mdURL = try await writer.write(episode: episode, transcript: transcript, ocrText: nil, mediaPath: nil)
+        let okfURL = mdURL.deletingLastPathComponent()
+            .appendingPathComponent(mdURL.deletingPathExtension().lastPathComponent + ".okf.md")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: okfURL.path), "no .okf.md sidecar unless writeOKF is true")
+    }
+
     // MARK: - Slug sanitisation
 
     func testSlugSanitisesSpecialChars() {

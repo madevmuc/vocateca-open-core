@@ -91,7 +91,7 @@ public struct Settings: Codable, Sendable, Equatable {
     public var obsidianVaultPath: String
     public var obsidianVaultName: String
     public var exportRoot: String
-    /// Default transcript export format: "md" | "txt" | "srt".
+    /// Default transcript export format: "md" | "txt" | "srt" | "okf".
     public var defaultExportFormat: String
     /// Preferred app UI language: "system" | "en" | "de". Applied via the
     /// AppleLanguages UserDefaults override on the next launch.
@@ -132,6 +132,9 @@ public struct Settings: Codable, Sendable, Equatable {
     public var saveTxt: Bool
     /// Also write a styled, self-contained `.html` sidecar next to the `.md`.
     public var saveHtml: Bool
+    /// Also write an Open Knowledge Format `.okf.md` sidecar (Markdown +
+    /// YAML frontmatter, minimally-opinionated) next to the `.md`.
+    public var saveOkf: Bool
     public var sourcesPodcasts: Bool
     public var sourcesYoutube: Bool
     public var ytdlpLastSelfUpdateAt: String
@@ -219,7 +222,7 @@ public struct Settings: Codable, Sendable, Equatable {
     public var disclaimerVersion: String
     public var dailyCheckEnabled: Bool
     /// v2-only. How often to show the upsell prompt. Values: "daily" | "weekly". Default "daily".
-    /// Never shown to Pro subscribers. Minimum enforced by the app's upsell throttle: once per week.
+    /// Never shown to Pro subscribers. Minimum enforced by ``UpsellThrottle``: once per week.
     public var upsellFrequency: String
 
     // MARK: - Welle D1 additions
@@ -315,7 +318,7 @@ public struct Settings: Codable, Sendable, Equatable {
 
     // MARK: - Defaults
 
-    public static let defaultOutputRoot                    = "~/Desktop/Vocateca/transcripts"
+    public static let defaultOutputRoot                    = "~/Documents/transcripts - vocateca"
     public static let defaultDailyCheckTime               = "09:00"
     public static let defaultCatchUpMissed                = true
     public static let defaultUpdateCheckEnabled           = true
@@ -335,7 +338,7 @@ public struct Settings: Codable, Sendable, Equatable {
     public static let defaultLoadLevel                    = "balanced"
     public static let defaultObsidianVaultPath            = ""
     public static let defaultObsidianVaultName            = "knowledge-hub"
-    public static let defaultExportRoot                   = "~/Downloads"
+    public static let defaultExportRoot                   = "~/Documents/transcripts - vocateca"
     public static let defaultDefaultExportFormat          = "md"
     public static let defaultAppLanguage                  = "system"
     public static let defaultWhisperModel                 = "large-v3-turbo"
@@ -352,6 +355,7 @@ public struct Settings: Codable, Sendable, Equatable {
     public static let defaultSaveSrt                      = true
     public static let defaultSaveTxt                      = false
     public static let defaultSaveHtml                     = false
+    public static let defaultSaveOkf                      = false
     public static let defaultSourcesPodcasts              = true
     public static let defaultSourcesYoutube               = true
     public static let defaultYtdlpLastSelfUpdateAt        = ""
@@ -483,6 +487,7 @@ public struct Settings: Codable, Sendable, Equatable {
         saveSrt: Bool                         = defaultSaveSrt,
         saveTxt: Bool                         = defaultSaveTxt,
         saveHtml: Bool                        = defaultSaveHtml,
+        saveOkf: Bool                         = defaultSaveOkf,
         sourcesPodcasts: Bool                 = defaultSourcesPodcasts,
         sourcesYoutube: Bool                  = defaultSourcesYoutube,
         ytdlpLastSelfUpdateAt: String         = defaultYtdlpLastSelfUpdateAt,
@@ -594,6 +599,7 @@ public struct Settings: Codable, Sendable, Equatable {
         self.saveSrt                         = saveSrt
         self.saveTxt                         = saveTxt
         self.saveHtml                        = saveHtml
+        self.saveOkf                         = saveOkf
         self.sourcesPodcasts                 = sourcesPodcasts
         self.sourcesYoutube                  = sourcesYoutube
         self.ytdlpLastSelfUpdateAt           = ytdlpLastSelfUpdateAt
@@ -709,6 +715,7 @@ public struct Settings: Codable, Sendable, Equatable {
         case saveSrt                        = "save_srt"
         case saveTxt                        = "save_txt"
         case saveHtml                       = "save_html"
+        case saveOkf                        = "save_okf"
         case sourcesPodcasts                = "sources_podcasts"
         case sourcesYoutube                 = "sources_youtube"
         case ytdlpLastSelfUpdateAt          = "ytdlp_last_self_update_at"
@@ -852,6 +859,7 @@ public struct Settings: Codable, Sendable, Equatable {
         saveSrt                        = try c.decodeIfPresent(Bool.self,              forKey: .saveSrt)                        ?? Self.defaultSaveSrt
         saveTxt                        = try c.decodeIfPresent(Bool.self,              forKey: .saveTxt)                        ?? Self.defaultSaveTxt
         saveHtml                       = try c.decodeIfPresent(Bool.self,              forKey: .saveHtml)                       ?? Self.defaultSaveHtml
+        saveOkf                        = try c.decodeIfPresent(Bool.self,              forKey: .saveOkf)                        ?? Self.defaultSaveOkf
         sourcesPodcasts                = try c.decodeIfPresent(Bool.self,              forKey: .sourcesPodcasts)                ?? Self.defaultSourcesPodcasts
         sourcesYoutube                 = try c.decodeIfPresent(Bool.self,              forKey: .sourcesYoutube)                 ?? Self.defaultSourcesYoutube
         ytdlpLastSelfUpdateAt          = try c.decodeIfPresent(String.self,            forKey: .ytdlpLastSelfUpdateAt)          ?? Self.defaultYtdlpLastSelfUpdateAt

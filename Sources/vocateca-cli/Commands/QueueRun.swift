@@ -35,6 +35,7 @@ enum QueueDrive {
         let saveSrt  = loaded?.saveSrt ?? true
         let saveTxt  = loaded?.saveTxt ?? false
         let saveHtml = loaded?.saveHtml ?? false
+        let saveOkf  = (loaded?.saveOkf ?? false) || (loaded?.defaultExportFormat == "okf")
         let exportRoots = loaded.map {
             KnowledgeHub.exportRoots(
                 exportRoot: $0.exportRoot,
@@ -84,7 +85,8 @@ enum QueueDrive {
             ocrProcessor: InstagramImageOCRProcessor(),
             libraryWriter: MarkdownLibraryWriter(
                 outputRoot: Paths.userDataDir(), writeSRT: saveSrt,
-                writeTXT: saveTxt, writeHTML: saveHtml, exportRoots: exportRoots),
+                writeTXT: saveTxt, writeHTML: saveHtml, writeOKF: saveOkf,
+                exportRoots: exportRoots),
             queueOrder: loaded?.queueOrder ?? "oldest_first",
             // Package D: the CLI diarizes like the app (I/O-free to construct;
             // models download lazily on first use; gated by diarizationEnabled).
