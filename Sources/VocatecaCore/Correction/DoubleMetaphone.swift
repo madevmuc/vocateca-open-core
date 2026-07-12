@@ -32,7 +32,13 @@ public enum DoubleMetaphone {
         let last = length - 1
 
         // Helpers -------------------------------------------------------------
-        func at(_ i: Int) -> Character { letters[i] }
+        // Bounds-safe: returns a space sentinel for out-of-range indices (the
+        // same pattern the encodeC/G/S handlers use for their local `at`). A
+        // lookahead like `at(current + 1)` at the end of the word must never
+        // trap — e.g. a word ending in a vowel+"J" ("RAJ") reaches the `J`
+        // rule's `at(current + 1)` with `current == last`, which previously
+        // subscripted `letters[length]` and crashed the whole app mid-correction.
+        func at(_ i: Int) -> Character { (i >= 0 && i < length) ? letters[i] : " " }
         func isVowel(_ i: Int) -> Bool {
             guard i >= 0, i < length else { return false }
             return "AEIOUY".contains(letters[i])
