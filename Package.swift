@@ -39,7 +39,7 @@ let package = Package(
         // Optional Qwen3-ASR engine (loads mlx-community/Qwen3-ASR-1.7B-bf16).
         .package(url: "https://github.com/soniqo/speech-swift", exact: "0.0.21"),
         // On-device Parakeet-TDT (CoreML/ANE).
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.4"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.5"),
     ],
     targets: [
         .target(
