@@ -35,7 +35,8 @@ If you're deciding whether something belongs here or in the app: if it's about *
 
 - **Three on-device ASR engines** — WhisperKit (default), Parakeet-TDT (CoreML/ANE), and Qwen3-ASR (MLX) — selectable per show, no cloud calls.
 - **Multi-source ingestion** — podcast RSS feeds, YouTube channels/videos, and Instagram accounts (reels/posts/stories).
-- **Full pipeline, not just ASR** — download, transcribe, speaker diarization, proper-noun correction, and structured export (Markdown/SRT + sidecar metadata).
+- **YouTube transcript extraction** — `vocateca-cli transcript <url>` pulls a video's, playlist's, or channel's transcript captions-first (with local-engine fallback for speaker labels), without importing it into the queue.
+- **Full pipeline, not just ASR** — download, transcribe, speaker diarization, proper-noun correction, and structured export (Markdown/SRT/VTT/CSV + sidecar metadata).
 - **Integrations** — webhooks (with HMAC signing), Notion export, and Obsidian-flavored frontmatter export.
 - **Scriptable by design** — every CLI command supports `--json` for stable, snake_case machine output, and mutating commands support `--dry-run` to preview changes before writing.
 - **A real MCP server** — `vocateca-cli mcp` speaks newline-delimited JSON-RPC 2.0 over stdio, so Claude (or any MCP client) can list shows, trigger transcriptions, and read results as tool calls.

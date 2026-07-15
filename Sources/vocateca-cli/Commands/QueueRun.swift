@@ -36,6 +36,8 @@ enum QueueDrive {
         let saveTxt  = loaded?.saveTxt ?? false
         let saveHtml = loaded?.saveHtml ?? false
         let saveOkf  = (loaded?.saveOkf ?? false) || (loaded?.defaultExportFormat == "okf")
+        let saveVtt  = (loaded?.saveVtt ?? false) || (loaded?.defaultExportFormat == "vtt")
+        let saveCsv  = (loaded?.saveCsv ?? false) || (loaded?.defaultExportFormat == "csv")
         let exportRoots = loaded.map {
             KnowledgeHub.exportRoots(
                 exportRoot: $0.exportRoot,
@@ -86,6 +88,7 @@ enum QueueDrive {
             libraryWriter: MarkdownLibraryWriter(
                 outputRoot: Paths.userDataDir(), writeSRT: saveSrt,
                 writeTXT: saveTxt, writeHTML: saveHtml, writeOKF: saveOkf,
+                writeVTT: saveVtt, writeCSV: saveCsv,
                 exportRoots: exportRoots),
             queueOrder: loaded?.queueOrder ?? "oldest_first",
             // Package D: the CLI diarizes like the app (I/O-free to construct;

@@ -207,6 +207,15 @@ public enum Schema {
             try db.execute(sql: Self.trashPendingMediaCreateSQL)
         }
 
+        // ── v7_backfill_seq ────────────────────────────────────────────────
+        // Nullable backfill-batch drain-order tie-breaker (feature D). Additive:
+        // unknown to the v1 Python app (ignores unknown columns), same pattern
+        // as the v2_additive episode columns. See `BackfillSeqAssigner` +
+        // `StateStore.claimNextPending`'s backfill-aware ORDER BY tier.
+        m.registerMigration("v7_backfill_seq") { db in
+            try db.execute(sql: "ALTER TABLE episodes ADD COLUMN backfill_seq INTEGER")
+        }
+
         return m
     }
 
@@ -282,6 +291,7 @@ public enum Schema {
             ("description", "TEXT"), ("ig_shortcode", "TEXT"), ("ig_profile", "TEXT"),
             ("ig_kind", "TEXT"), ("media_type", "TEXT"), ("ocr_text", "TEXT"),
             ("image_tags", "TEXT"), ("transcript_origin", "TEXT"),
+            ("backfill_seq", "INTEGER"),
         ]
         for col in additiveColumns where !existing.contains(col.name) {
             try db.execute(sql: "ALTER TABLE episodes ADD COLUMN \(col.name) \(col.type)")

@@ -135,6 +135,29 @@ public final class QueueRunner {
     /// Called (on MainActor) whenever `runState` changes.
     public var onRunStateChanged: (@MainActor () -> Void)?
 
+    /// QA batch item 6 (fix 2) — called (on MainActor) when a run drains
+    /// naturally (`run.finished`) with `completedInRun == 0` despite there
+    /// having been pending items when `start()` was called. This is the
+    /// "Start does nothing" signature: every claim attempt this run was
+    /// excluded (paused show, retry backoff, …) so no episode ever entered
+    /// the pipeline. `QueueController` uses this to surface a message
+    /// instead of leaving the user staring at a queue that silently went
+    /// back to `.stopped`. Not called for an ordinary empty-queue drain
+    /// (`itemsCountAtRunStart == 0`) or a user-initiated `stop()`.
+    ///
+    /// 2.0.4-batch I-1 — only ever invoked for a **manual** run
+    /// (`restrictToSlugs == nil` at `start()`). `load(from:)` snapshots ALL
+    /// pending episodes regardless of `restrictToSlugs`, so
+    /// `itemsCountAtRunStart` counts every pending episode in the DB — not
+    /// just the daemon's scoped subset. A routine background poll
+    /// (`AppShell`'s daemon calling `start(restrictToSlugs:)` whenever
+    /// auto-download shows merely EXIST) that correctly claims/drains its own
+    /// scoped work would otherwise still see `completedInRun == 0` when it
+    /// happens to claim nothing THIS pass while OTHER shows' episodes sit
+    /// pending — firing the exact "Nothing was transcribed" notification
+    /// noise item 6 was meant to fix. See `handleRunEvent`.
+    public var onRunFinishedNoOp: (@MainActor () -> Void)?
+
     // MARK: - Private
 
     private var worker: QueueWorker?
@@ -154,6 +177,19 @@ public final class QueueRunner {
     /// Cleared the same way (see `cancelBackgroundTasks` / the active-guid
     /// cleanup in `refreshItemsFromDB`).
     private var phaseByGuid: [String: String] = [:]
+    /// Snapshot of `items.count` taken at the top of `start()` — the "how
+    /// much work did the user think they were starting" baseline that
+    /// `onRunFinishedNoOp` compares against `completedInRun` when the run
+    /// drains naturally (QA batch item 6, fix 2).
+    private var itemsCountAtRunStart: Int = 0
+    /// Whether the run started by the most recent `start()` call was a
+    /// MANUAL start (`restrictToSlugs == nil`) as opposed to a daemon
+    /// auto-claim (`restrictToSlugs` non-nil). Set at the top of `start()`;
+    /// `handleRunEvent` gates `onRunFinishedNoOp` on this (I-1) since
+    /// `itemsCountAtRunStart` is never scoped to `restrictToSlugs` and so
+    /// can't distinguish "this run's own claim was excluded" from "some
+    /// OTHER show has unrelated pending work".
+    private var lastRunWasManual: Bool = true
 
     // MARK: - Init
 
@@ -180,10 +216,7 @@ public final class QueueRunner {
         }
         let activeStatuses: Set<String> = ["pending", "downloading", "downloaded", "transcribing"]
         let queued = all.filter { activeStatuses.contains($0.status) }
-            .sorted { a, b in
-                if a.priority != b.priority { return a.priority > b.priority }
-                return a.pubDate < b.pubDate
-            }
+            .sorted(by: Self.isOrderedBeforeInQueue)
         items = queued.map { ep in
             QueueRunnerItem(
                 id: ep.guid,
@@ -268,6 +301,8 @@ public final class QueueRunner {
         runState = .running
         runStartedAt = Date()
         completedInRun = 0
+        itemsCountAtRunStart = items.count
+        lastRunWasManual = (restrictToSlugs == nil)
         Log.info("Queue run started",
                  component: "QueueRunner",
                  context: [("concurrency", "\(config.concurrencyLimit)"),
@@ -395,11 +430,33 @@ public final class QueueRunner {
             if let store = activeStore {
                 refreshItemsFromDB(store: store)
             }
+            // QA batch item 6 (fix 2): capture the no-op signature — pending
+            // work existed at start, but nothing ever became terminal — BEFORE
+            // resetting run-scoped state below.
+            let wasNoOp = itemsCountAtRunStart > 0 && completedInRun == 0
+            // I-1: only a MANUAL run's no-op is meaningful. `itemsCountAtRunStart`
+            // counts every pending episode in the DB (load() isn't scoped by
+            // restrictToSlugs), so a daemon auto-claim run that correctly
+            // finished its own scoped work with 0 claims still looks like a
+            // "no-op" whenever unrelated shows have pending episodes — that's
+            // routine, not a failure, and must not re-trigger the notification
+            // noise item 6 fixed.
+            let shouldReportNoOp = wasNoOp && lastRunWasManual
             cancelBackgroundTasks()
             worker = nil
             activeStore = nil
             runState = .stopped
             onRunStateChanged?()
+            if shouldReportNoOp {
+                Log.info("Queue drained with 0 completed despite pending work at start",
+                         component: "QueueRunner",
+                         context: [("itemsAtStart", "\(itemsCountAtRunStart)")])
+                onRunFinishedNoOp?()
+            } else if wasNoOp {
+                Log.debug("Daemon auto-claim run drained with 0 completed — not surfacing (unrelated pending work elsewhere)",
+                          component: "QueueRunner",
+                          context: [("itemsAtStart", "\(itemsCountAtRunStart)")])
+            }
         default:
             break
         }
@@ -524,10 +581,7 @@ public final class QueueRunner {
         // Carry forward any cached progress values from in-flight progress events
         // so a DB poll doesn't reset the progress bar mid-download/transcribe.
         let queued = all.filter { activeStatuses.contains($0.status) }
-            .sorted { a, b in
-                if a.priority != b.priority { return a.priority > b.priority }
-                return a.pubDate < b.pubDate
-            }
+            .sorted(by: Self.isOrderedBeforeInQueue)
         let newItems = queued.map { ep in
             QueueRunnerItem(
                 id: ep.guid,
@@ -555,6 +609,24 @@ public final class QueueRunner {
         if newSig != oldSig {
             items = newItems
             onItemsChanged?()
+        }
+    }
+
+    // MARK: - Ordering
+
+    /// Mirrors `StateStore.claimNextPending`'s backfill-aware ORDER BY tier for
+    /// the UI-preview list (`items`), so what the Queue screen displays matches
+    /// what actually gets claimed next. Backfill rows (non-nil `backfillSeq`)
+    /// sort by that value and rank ahead of plain live rows at the same
+    /// priority; two live rows (both nil) keep the pre-existing pubDate-ascending
+    /// comparison unchanged.
+    private static func isOrderedBeforeInQueue(_ a: Episode, _ b: Episode) -> Bool {
+        if a.priority != b.priority { return a.priority > b.priority }
+        switch (a.backfillSeq, b.backfillSeq) {
+        case let (aSeq?, bSeq?): return aSeq < bSeq
+        case (.some, nil): return true
+        case (nil, .some): return false
+        case (nil, nil): return a.pubDate < b.pubDate
         }
     }
 

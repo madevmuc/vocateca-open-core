@@ -84,6 +84,11 @@ extension StateStore {
         // Strategy: INSERT OR IGNORE to test insertion; if rowsAffected == 1 the
         // row is new. Always run the UPDATE so metadata stays fresh on existing rows.
         var isNew = false
+        // Tracks whether the conflict-path UPDATE actually changed a value, so
+        // we can skip logging the (overwhelmingly common) no-op re-upsert —
+        // every feed poll re-upserts EVERY episode of EVERY show, and most of
+        // them are unchanged since the last poll. See P15.
+        var didChange = false
         try dbQueue.write { db in
             // Step 1: try a pure insert (ignored on conflict). The status is bound
             // as a parameter (from the trusted EpisodeStatus enum) so a new row
@@ -100,6 +105,21 @@ extension StateStore {
 
             // Step 2: on conflict, update mutable metadata (mirrors ON CONFLICT DO UPDATE).
             if !isNew {
+                // Fetch the pre-update row so we can tell a genuine field change
+                // (worth logging) from a re-upsert of identical data (noise).
+                let old = try Row.fetchOne(db, sql: """
+                    SELECT title, pub_date, mp3_url, duration_sec FROM episodes WHERE guid = ?
+                    """, arguments: [guid])
+                let oldTitle: String? = old?["title"]
+                let oldPubDate: String? = old?["pub_date"]
+                let oldMp3URL: String? = old?["mp3_url"]
+                let oldDuration: Int? = old?["duration_sec"]
+                // Mirrors the COALESCE(?, duration_sec) semantics below: a nil
+                // feed value keeps the existing duration, so it's not a change.
+                let effectiveDuration = durationSec ?? oldDuration
+                didChange = oldTitle != title || oldPubDate != pubDate
+                    || oldMp3URL != mp3URL || oldDuration != effectiveDuration
+
                 try db.execute(
                     sql: """
                         UPDATE episodes SET
@@ -113,8 +133,15 @@ extension StateStore {
                 )
             }
         }
-        Log.debug("DB upsert episode from feed", component: "StateStore",
-                  context: [("guid", guid), ("show", showSlug), ("new", "\(isNew)")])
+        // P15: only log a MEANINGFUL upsert — a fresh insert or an actual field
+        // change. The overwhelming common case (re-upsert of an unchanged
+        // episode on every feed poll) is silent; the per-poll aggregate in
+        // `FeedIngestor` ("Podcast poll done … entries=N new=M existing=K")
+        // already covers it.
+        if isNew || didChange {
+            Log.debug("DB upsert episode from feed", component: "StateStore",
+                      context: [("guid", guid), ("show", showSlug), ("new", "\(isNew)")])
+        }
         return isNew ? NewEpisode(guid: guid, title: title) : nil
     }
 
@@ -127,9 +154,10 @@ extension StateStore {
     /// Idempotent: safe to call on an episode already in a terminal state
     /// (it will be re-queued) or already in `pending` (priority is bumped).
     ///
-    /// Implementation: writes `priority = Int.max` and `status = 'pending'`.
-    /// Because all claim orderings start with `priority DESC`, the episode
-    /// races to the top of the queue.
+    /// Implementation: writes `status = 'pending'` and a monotonic Unix-timestamp
+    /// priority (`strftime('%s','now')`), not a fixed `Int.max` — see the note
+    /// in the query below for why. Because all claim orderings start with
+    /// `priority DESC`, the episode races to the top of the queue.
     ///
     /// - Parameter guid: The episode to prioritise.
     /// - Throws: A GRDB error if the database is not writable.

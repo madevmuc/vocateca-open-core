@@ -65,7 +65,7 @@ enum TranscribeCommand {
 
     // MARK: - Resolve + import
 
-    private static func resolveAndImport(url: String, kind: OneOffLinkKind, titleOverride: String?) async throws -> IngestResult {
+    static func resolveAndImport(url: String, kind: OneOffLinkKind, titleOverride: String?) async throws -> IngestResult {
         let store = try openWritableStore()
         let ingest = LocalIngestService(store: store, watchlistURL: Paths.watchlistURL)
 

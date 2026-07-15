@@ -86,8 +86,8 @@ enum LibraryCommands {
             throw CLIError("library export requires a <guid>", exitCode: 2)
         }
         let format = args.opts["format"] ?? "md"
-        guard ["md", "txt", "html", "srt", "okf"].contains(format) else {
-            throw CLIError("invalid --format '\(format)' (expected md|txt|html|srt|okf)", exitCode: 2)
+        guard ["md", "txt", "html", "srt", "okf", "vtt", "csv"].contains(format) else {
+            throw CLIError("invalid --format '\(format)' (expected md|txt|html|srt|okf|vtt|csv)", exitCode: 2)
         }
 
         let reader = try openReader()
@@ -123,6 +123,28 @@ enum LibraryCommands {
             sourceURL = mdURL.deletingLastPathComponent().appendingPathComponent("\(base).okf.md")
             guard FileManager.default.fileExists(atPath: sourceURL.path) else {
                 throw CLIError("no .okf.md sidecar for '\(guid)' (enable save_okf at transcribe time)")
+            }
+        case "vtt":
+            let vttURL = mdURL.deletingPathExtension().appendingPathExtension("vtt")
+            if FileManager.default.fileExists(atPath: vttURL.path) {
+                sourceURL = vttURL
+            } else {
+                sourceURL = mdURL
+                let srt = mdURL.deletingPathExtension().appendingPathExtension("srt")
+                let segments = (try? String(contentsOf: srt, encoding: .utf8))
+                    .map(TranscriptFormat.srtToSegments) ?? []
+                synthesizedText = TranscriptFormat.vttFromSegments(segments)
+            }
+        case "csv":
+            let csvURL = mdURL.deletingPathExtension().appendingPathExtension("csv")
+            if FileManager.default.fileExists(atPath: csvURL.path) {
+                sourceURL = csvURL
+            } else {
+                sourceURL = mdURL
+                let srt = mdURL.deletingPathExtension().appendingPathExtension("srt")
+                let segments = (try? String(contentsOf: srt, encoding: .utf8))
+                    .map(TranscriptFormat.srtToSegments) ?? []
+                synthesizedText = TranscriptFormat.csvFromSegments(segments)
             }
         case "txt":
             sourceURL = mdURL   // synthesized from the .md body

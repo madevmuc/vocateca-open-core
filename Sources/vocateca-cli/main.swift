@@ -573,6 +573,9 @@ func main() async {
         case "transcribe":
             try await TranscribeCommand.run(parsed, asJSON: asJSON)
 
+        case "transcript":
+            try await TranscriptCommand.run(parsed, asJSON: asJSON)
+
         case "queue":
             try await QueueCommands.run(parsed, asJSON: asJSON)
 

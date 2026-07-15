@@ -138,6 +138,20 @@ public protocol Transcriber: Sendable {
     /// overload and `any Transcriber` calls silently route to the context-dropping
     /// default below.
     func transcribe(audioURL: URL, language: String?, context: TranscriptionContext?, progress: @escaping ProgressReporter) async throws -> TranscriptionResult
+
+    /// Releases any resident model so its memory can be reclaimed by ARC,
+    /// without discarding the engine itself — a later `transcribe` call
+    /// simply re-loads lazily, exactly like a fresh instance's first call.
+    ///
+    /// Exists so a caller that knows two large ASR models must never be
+    /// resident at once (e.g. `LanguageRoutingTranscriber`'s Parakeet→Whisper
+    /// verification fallback) can force the losing engine's memory back
+    /// before the winning engine loads, instead of relying on both staying
+    /// "warm" simultaneously. Conformers with no lazy-loaded model (test
+    /// fakes, simple wrappers) get the default no-op below; real engines with
+    /// a cached model (e.g. `ParakeetTranscriber`) override this to drop
+    /// their strong reference to it.
+    func releaseModel() async
 }
 
 public extension Transcriber {
@@ -160,4 +174,8 @@ public extension Transcriber {
     var isWarm: Bool {
         get async { true }
     }
+
+    /// Default: no-op. Correct for conformers with no lazy-loaded model
+    /// (test fakes, simple wrappers) — nothing to release.
+    func releaseModel() async {}
 }

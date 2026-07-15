@@ -45,6 +45,16 @@ public struct MarkdownLibraryWriter: LibraryWriter {
     /// block, per https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf.
     public let writeOKF: Bool
 
+    /// When `true`, writes a WebVTT `.vtt` sidecar (subtitle cues, dot-millisecond
+    /// timestamps) alongside the `.md`, built from `transcript.segments` via
+    /// `TranscriptFormat.vttFromSegments`. v2-additive; defaults to `false`.
+    public let writeVTT: Bool
+
+    /// When `true`, writes an RFC-4180 CSV `.csv` sidecar (`start,end,speaker,text`)
+    /// alongside the `.md`, built from `transcript.segments` via
+    /// `TranscriptFormat.csvFromSegments`. v2-additive; defaults to `false`.
+    public let writeCSV: Bool
+
     /// Extra Knowledge-Hub / export destination roots the `.md` is mirrored into
     /// (best-effort). Built from `KnowledgeHub.exportRoots(...)`. Empty = disabled.
     public let exportRoots: [URL]
@@ -57,6 +67,8 @@ public struct MarkdownLibraryWriter: LibraryWriter {
         writeTXT: Bool = false,
         writeHTML: Bool = false,
         writeOKF: Bool = false,
+        writeVTT: Bool = false,
+        writeCSV: Bool = false,
         exportRoots: [URL] = []
     ) {
         self.outputRoot = outputRoot
@@ -64,6 +76,8 @@ public struct MarkdownLibraryWriter: LibraryWriter {
         self.writeTXT = writeTXT
         self.writeHTML = writeHTML
         self.writeOKF = writeOKF
+        self.writeVTT = writeVTT
+        self.writeCSV = writeCSV
         self.exportRoots = exportRoots
     }
 
@@ -219,6 +233,32 @@ public struct MarkdownLibraryWriter: LibraryWriter {
                 )
                 try atomicWrite(content: html, to: htmlURL)
             }
+        }
+
+        // Optional WebVTT sidecar (transcription path only). Built directly
+        // from `transcript.segments` — no independent transcription state,
+        // matching the writeTXT/writeHTML/writeOKF sidecars above/below.
+        if writeVTT, let t = transcript {
+            let vttURL = showDir.appendingPathComponent("\(slug).vtt")
+            let vtt = TranscriptFormat.vttFromSegments(t.segments)
+            try atomicWrite(content: vtt, to: vttURL)
+            Log.debug("Library: wrote .vtt sidecar", component: "Library",
+                      context: [("dest", vttURL.path), ("segments", String(t.segments.count))])
+        }
+
+        // Optional CSV sidecar (transcription path only). Built directly from
+        // `transcript.segments`, which already carry diarization speaker
+        // indices when available — the CSV `speaker` column is only ever
+        // non-empty HERE, at auto-save time. The on-demand Library export
+        // path (Task A.5) has no independent transcription state and instead
+        // synthesizes segments from the `.srt` sidecar, which carries no
+        // speaker info — a documented, accepted caveat (see design doc).
+        if writeCSV, let t = transcript {
+            let csvURL = showDir.appendingPathComponent("\(slug).csv")
+            let csv = TranscriptFormat.csvFromSegments(t.segments)
+            try atomicWrite(content: csv, to: csvURL)
+            Log.debug("Library: wrote .csv sidecar", component: "Library",
+                      context: [("dest", csvURL.path), ("segments", String(t.segments.count))])
         }
 
         // Optional Open Knowledge Format sidecar (transcription path only). Uses
@@ -511,7 +551,10 @@ public struct MarkdownLibraryWriter: LibraryWriter {
     /// export — no independent transcription state. `speakers` is omitted
     /// entirely when `hasSpeakers` is false, and per-line speaker prefixes are
     /// dropped in the body too.
-    static func renderOKF(
+    ///
+    /// Public so the Library UI can synthesize an OKF view on demand for
+    /// episodes transcribed before save_okf was enabled (no sidecar on disk).
+    public static func renderOKF(
         episode: Episode,
         source: String,
         segments: [TranscriptionSegment],

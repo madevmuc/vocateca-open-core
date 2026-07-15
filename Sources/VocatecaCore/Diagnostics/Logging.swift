@@ -65,10 +65,22 @@ public enum LogRedaction {
 
     /// Renders `line` like `LogLine.formatted`, but with sensitive context
     /// values masked and URLs/absolute paths scrubbed from the free message.
+    ///
+    /// Context values are handled in two tiers: keys in `sensitiveKeys` are
+    /// fully replaced with `<redacted>` (their value is opaque/identifying
+    /// even if it isn't a path — a title, a slug, an email). Every OTHER
+    /// context value still passes through `scrub(_:)`, the same URL/path/email
+    /// pattern-scrub applied to the free-text message. This is a deliberate
+    /// belt-and-suspenders: call sites pass ad-hoc context keys (`db`, `dest`,
+    /// `dir`, `src`, `audio`, …) that were never added to `sensitiveKeys` and
+    /// can carry an absolute filesystem path (e.g. `db=/Users/<name>/Library/…`)
+    /// straight into an exported "redacted" log. Pattern-scrubbing every
+    /// non-sensitive value closes that gap for any key, present or future,
+    /// without requiring `sensitiveKeys` to enumerate every possible name.
     public static func redact(_ line: LogLine) -> String {
         let ts = LogLine.timeFormatter().string(from: line.date)
         let ctx = line.context.isEmpty ? "" : " " + line.context.map { key, value in
-            let masked = sensitiveKeys.contains(key.lowercased()) ? "<redacted>" : value
+            let masked = sensitiveKeys.contains(key.lowercased()) ? "<redacted>" : scrub(value)
             return "\(key)=\(masked)"
         }.joined(separator: " ")
         let message = scrub(line.message)

@@ -234,20 +234,24 @@ final class BinaryManagerTests: XCTestCase {
         }
     }
 
-    // MARK: - 6. Error: install ffmpeg throws toolNotManaged
+    // MARK: - 6. ffmpeg is now self-managed (arch-specific static build)
 
-    func testInstallFFmpegThrows() async throws {
+    /// Real download of the pinned arch-specific ffmpeg static build (gated —
+    /// ~45 MB). Proves the arch-aware URL/SHA selection + install + run path.
+    func testInstallFFmpeg() async throws {
+        guard ProcessInfo.processInfo.environment["VOCATECA_RUN_BINARY_INSTALL"] == "1" else {
+            throw XCTSkip("set VOCATECA_RUN_BINARY_INSTALL=1 to run real ffmpeg install test")
+        }
         let (dir, cleanup) = try makeTempDir()
         defer { cleanup() }
 
         let bm = BinaryManager(binDir: dir)
+        try await bm.install(.ffmpeg)   // downloads + verifies SHA-256 against the pin
+        XCTAssertTrue(bm.isInstalled(.ffmpeg), "ffmpeg should be installed after install()")
 
-        do {
-            try await bm.install(.ffmpeg)
-            XCTFail("install(.ffmpeg) should have thrown BinaryManagerError.toolNotManaged")
-        } catch BinaryManagerError.toolNotManaged(let tool) {
-            XCTAssertEqual(tool, .ffmpeg)
-        }
+        let version = try await bm.version(of: .ffmpeg)
+        XCTAssertNotNil(version, "ffmpeg version should be readable after install")
+        print("BinaryManagerTests — installed ffmpeg version: \(version ?? "nil")")
     }
 
     // MARK: - 7. SHA-256 verification (H-1) — pure, no IO

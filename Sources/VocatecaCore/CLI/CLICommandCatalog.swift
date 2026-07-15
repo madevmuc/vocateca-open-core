@@ -122,6 +122,7 @@ public enum CLICommandCatalog {
         "ig-doctor",
         "sources",
         "transcribe",
+        "transcript",
         "queue",
         "library",
         "integrations",
@@ -417,6 +418,23 @@ public enum CLICommandCatalog {
             ],
             mutating: true
         ),
+        CLICommandDoc(
+            group: "Transcribe",
+            command: "transcript <url>",
+            summary: "Extract a YouTube video's transcript (captions-first, engine fallback) WITHOUT importing/queuing it — contrast with 'transcribe', which imports+queues. Playlist/channel URLs bulk-extract every video.",
+            options: ["--format md|txt|srt|vtt|csv|json", "--out PATH", "--engine auto|whisper|qwen", "--save", "--subscribe", "--json"],
+            example: "vocateca-cli transcript \"https://youtube.com/watch?v=abc123\" --format srt --json",
+            arguments: [
+                CLIArg(name: "url", type: .string, required: true, description: "YouTube video, playlist, or channel URL to extract a transcript from.", isFlag: false),
+                CLIArg(name: "format", type: .string, required: false, description: "Output format: md, txt, srt, vtt, csv, or json.", isFlag: true),
+                CLIArg(name: "out", type: .string, required: false, description: "Output file (single video) or directory (playlist/channel bulk); omit for stdout.", isFlag: true),
+                CLIArg(name: "engine", type: .string, required: false, description: "Force local transcription (auto, whisper, or qwen) instead of/after captions, e.g. for speaker labels.", isFlag: true),
+                CLIArg(name: "save", type: .boolean, required: false, description: "Also persist the extracted transcript into the Library as a one-off episode.", isFlag: true),
+                CLIArg(name: "subscribe", type: .boolean, required: false, description: "Subscribe to the video's/playlist's YouTube channel.", isFlag: true),
+                CLIArg(name: "json", type: .boolean, required: false, description: "Emit JSON instead of human-readable text.", isFlag: true),
+            ],
+            mutating: true
+        ),
 
         // ── Queue ────────────────────────────────────────────────────────────
         CLICommandDoc(
@@ -526,12 +544,12 @@ public enum CLICommandCatalog {
         CLICommandDoc(
             group: "Library",
             command: "library export <guid>",
-            summary: "Export one transcript. md/srt/html/okf copy the on-disk sidecar; txt is synthesized. Writes to --out (file or dir) or prints the resolved source path.",
-            options: ["--format md|txt|html|srt|okf", "--out PATH", "--json"],
+            summary: "Export one transcript. md/srt/html/okf copy the on-disk sidecar; txt is synthesized from md; vtt/csv copy their sidecar if present, otherwise synthesize from .srt (speaker column empty when synthesized). Writes to --out (file or dir) or prints the resolved source path.",
+            options: ["--format md|txt|html|srt|okf|vtt|csv", "--out PATH", "--json"],
             example: "vocateca-cli library export local:ab12cd34 --format srt --out ~/Desktop/ --json",
             arguments: [
                 CLIArg(name: "guid", type: .string, required: true, description: "Episode guid to export.", isFlag: false),
-                CLIArg(name: "format", type: .string, required: false, description: "Export format: md, txt, html, srt, or okf (okf needs save_okf enabled at transcribe time).", isFlag: true),
+                CLIArg(name: "format", type: .string, required: false, description: "Export format: md, txt, html, srt, okf, vtt, or csv (okf needs save_okf enabled at transcribe time; vtt/csv fall back to synthesizing from .srt if no sidecar exists).", isFlag: true),
                 CLIArg(name: "out", type: .string, required: false, description: "Output file or directory path.", isFlag: true),
                 CLIArg(name: "json", type: .boolean, required: false, description: "Emit JSON instead of human-readable text.", isFlag: true),
             ],

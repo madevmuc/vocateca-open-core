@@ -29,6 +29,7 @@ public enum CLIDispatch {
         "ig-doctor",
         "sources",
         "transcribe",
+        "transcript",
         "queue",
         "library",
         "integrations",

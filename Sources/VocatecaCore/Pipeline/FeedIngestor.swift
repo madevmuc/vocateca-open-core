@@ -55,8 +55,12 @@ public struct PollResult: Sendable {
 /// ## Backoff
 /// Before polling, `FeedBackoff.inBackoff` is consulted. If the feed is in
 /// backoff, the call returns immediately with `inBackoff` error. On success,
-/// `FeedBackoff.onSuccess` is called. On any fetch/parse error,
-/// `FeedBackoff.onFailure` is called (backoff state escalates).
+/// `FeedBackoff.onSuccess` is called. On a transient fetch/parse error,
+/// `FeedBackoff.onFailure` is called (backoff state escalates over 3
+/// strikes). On a structural, non-retryable error — an empty/unsafe podcast
+/// `rss` URL rejected by `URLSafety.safeURL` — `FeedBackoff.onPermanentFailure`
+/// is called instead, which quarantines the feed immediately (no 3-strike
+/// grace period) since the URL can never become valid on retry.
 ///
 /// ## Thread safety
 /// `FeedIngestor` is `Sendable` (all state is injected; the struct has no mutable
@@ -170,8 +174,20 @@ public struct FeedIngestor: Sendable {
         do {
             feedURLString = try URLSafety.safeURL(show.rss)
         } catch {
-            // Safety violation is a permanent error — don't backoff.
-            Log.error("Podcast poll aborted — URL safety violation",
+            // Structural, non-retryable error (empty/unsafe rss) — quarantine
+            // immediately via FeedBackoff.onPermanentFailure rather than the
+            // normal 3-strike onFailure threshold: a URL that is empty or
+            // unsafe can never become valid on retry, so there is no reason
+            // to keep attempting + failing it every poll cycle. Once
+            // quarantined, `poll(show:store:)`'s `inBackoff` check at the top
+            // short-circuits future calls with a single throttled Log.debug
+            // instead of re-running this check (and re-logging an error) on
+            // every cycle. Fixes an OOM incident (2.0.4-batch Item 4-B2): an
+            // empty-rss show hit this path on EVERY poll — 11x in 2 minutes —
+            // each failure separately triggering a full library reload (see
+            // IngestCoordinator.ingest's dataChanged gating).
+            try? FeedBackoff.onPermanentFailure(showSlug: show.slug, store: store)
+            Log.error("Podcast poll aborted — URL safety violation (feed quarantined)",
                       component: "FeedIngestor",
                       context: [("slug", show.slug), ("url", show.rss), ("error", "\(error)")])
             throw FeedIngestorError.fetchFailed(error)

@@ -373,11 +373,35 @@ public actor QueueWorker {
                 }
 
                 guard let ep = episode else {
-                    // Queue empty — drain any remaining in-flight tasks.
-                    Log.info("QueueWorker: queue empty — draining in-flight tasks",
+                    // No pending work on THIS claim attempt. If nothing is in
+                    // flight either, the queue really is drained — stop below
+                    // (unchanged behaviour).
+                    //
+                    // If something IS still in flight (only reachable when
+                    // concurrencyLimit > 1, e.g. Power mode — an opportunistic
+                    // claim for a free slot while another episode is still
+                    // processing), draining it here can race a mid-run
+                    // front-enqueue: e.g. YouTube Explorer's "Transcribe
+                    // locally" on another video while this one is running
+                    // (`QueueController.enqueueFrontAndStart`). That write can
+                    // land on the shared store AFTER this nil claim but BEFORE
+                    // the in-flight episode actually finishes, so without a
+                    // re-check it is orphaned as undrained "pending" against a
+                    // queue that just reported itself stopped (`run.finished`
+                    // below). Re-check once more after the drain instead of
+                    // exiting unconditionally. A genuinely empty re-check
+                    // (activeCount already 0 by then) falls straight into this
+                    // same branch's `break` on the very next pass — no busy-spin.
+                    let hadInFlight = activeCount > 0
+                    Log.info("QueueWorker: no pending work claimed — draining in-flight tasks",
                              component: "QueueWorker",
-                             context: [("activeCount", "\(activeCount)")])
+                             context: [("activeCount", "\(activeCount)"), ("willRecheckAfterDrain", "\(hadInFlight)")])
                     for await _ in group { activeCount -= 1 }
+                    if hadInFlight {
+                        Log.debug("QueueWorker: re-checking for pending work after drain (mid-run enqueue race guard)",
+                                  component: "QueueWorker")
+                        continue
+                    }
                     break
                 }
 

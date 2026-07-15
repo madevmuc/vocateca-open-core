@@ -418,6 +418,67 @@ public enum TranscriptFormat: Sendable {
         return TranscriptionResult(text: text, segments: srtToSegments(srt), language: language)
     }
 
+    // MARK: - v2-additive export formats (VTT / CSV)
+    //
+    // NOT oracle-locked — there is no Python reference implementation for
+    // either of these two formats. No golden fixtures; correctness is defined
+    // by `TranscriptFormatCSVVTTTests` alone. Safe to evolve without
+    // regenerating any fixture (unlike everything else in this file).
+
+    /// Renders a standard WebVTT file from timed segments.
+    ///
+    /// v2-additive, NOT oracle-locked (see section doc above). Cue timestamps
+    /// use the WebVTT `HH:MM:SS.mmm` convention (dot millisecond separator,
+    /// unlike SRT's comma). No cue identifiers or cue settings are emitted —
+    /// just the `WEBVTT` header, a blank line, then `start --> end` / text /
+    /// blank-line cues in segment order. Empty input renders the bare header.
+    public static func vttFromSegments(_ segments: [TranscriptionSegment]) -> String {
+        let cues = segments.map { seg in
+            "\(formatVTTTime(seg.start)) --> \(formatVTTTime(seg.end))\n\(seg.text)\n"
+        }
+        return "WEBVTT\n\n" + cues.joined(separator: "\n")
+    }
+
+    /// Formats seconds as WebVTT's `HH:MM:SS.mmm` (dot millisecond separator).
+    /// Reuses the SRT formatter (`HH:MM:SS,mmm`) and swaps the separator, so
+    /// the two formats' rounding/carry behaviour stays identical by construction.
+    private static func formatVTTTime(_ seconds: Double) -> String {
+        WhisperKitTranscriptionEngine.formatSRTTime(seconds).replacingOccurrences(of: ",", with: ".")
+    }
+
+    /// Renders segments as RFC-4180 CSV with header `start,end,speaker,text`.
+    ///
+    /// v2-additive, NOT oracle-locked (see section doc above).
+    /// - `start`/`end`: seconds, 2 decimal places (`%.2f`).
+    /// - `speaker`: `nil` -> empty field; a diarization index `n` -> `"S\(n + 1)"`
+    ///   (1-based, matching `MarkdownLibraryWriter.speakerLabel`'s "Sprecher N"
+    ///   convention in the short `SN` form CSV consumers expect).
+    /// - `text` (and, defensively, every other field): RFC-4180 quoted when it
+    ///   contains a comma, double quote, or newline — inner `"` doubled.
+    public static func csvFromSegments(_ segments: [TranscriptionSegment]) -> String {
+        var lines = ["start,end,speaker,text"]
+        for seg in segments {
+            let start = String(format: "%.2f", seg.start)
+            let end = String(format: "%.2f", seg.end)
+            let speaker = seg.speaker.map { "S\($0 + 1)" } ?? ""
+            let row = [csvField(start), csvField(end), csvField(speaker), csvField(seg.text)]
+            lines.append(row.joined(separator: ","))
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// RFC-4180 field quoting: wraps in `"…"` (doubling inner `"`) only when
+    /// the field contains a comma, double quote, `\n`, or `\r`; otherwise
+    /// returned unchanged.
+    private static func csvField(_ field: String) -> String {
+        guard field.contains(",") || field.contains("\"")
+                || field.contains("\n") || field.contains("\r") else {
+            return field
+        }
+        let escaped = field.replacingOccurrences(of: "\"", with: "\"\"")
+        return "\"\(escaped)\""
+    }
+
     // MARK: - vttToSRT
     // Port of `vtt_to_srt(vtt)` from `core/youtube_captions.py`.
     //

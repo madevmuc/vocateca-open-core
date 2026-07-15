@@ -55,6 +55,11 @@ public struct Episode: Codable, Sendable, Equatable, FetchableRecord, Persistabl
     /// How the transcript was derived (see ``TranscriptOrigin/storageString``):
     /// `"captions:auto"`, `"captions:manual"`, `"whisper:<model>"`, or `"ocr"`.
     public var transcriptOrigin: String?
+    /// Batch drain-order tie-breaker for backfill-campaign top-up promotions
+    /// (see `BackfillSeqAssigner`). `nil` for every live/non-backfill row —
+    /// `StateStore.claimNextPending`'s ORDER BY treats `nil` as "not part of
+    /// a backfill batch" and falls through to the unchanged live comparator.
+    public var backfillSeq: Int?
 
     // MARK: - Memberwise initialiser
 
@@ -84,7 +89,8 @@ public struct Episode: Codable, Sendable, Equatable, FetchableRecord, Persistabl
         mediaType: String? = nil,
         ocrText: String? = nil,
         imageTags: String? = nil,
-        transcriptOrigin: String? = nil
+        transcriptOrigin: String? = nil,
+        backfillSeq: Int? = nil
     ) {
         self.guid = guid
         self.showSlug = showSlug
@@ -112,6 +118,7 @@ public struct Episode: Codable, Sendable, Equatable, FetchableRecord, Persistabl
         self.ocrText = ocrText
         self.imageTags = imageTags
         self.transcriptOrigin = transcriptOrigin
+        self.backfillSeq = backfillSeq
     }
 
     // MARK: - FetchableRecord (custom init to handle v1 / v2 column presence)
@@ -152,6 +159,7 @@ public struct Episode: Codable, Sendable, Equatable, FetchableRecord, Persistabl
         ocrText      = row.hasColumn("ocr_text")      ? row["ocr_text"]      : nil
         imageTags    = row.hasColumn("image_tags")    ? row["image_tags"]    : nil
         transcriptOrigin = row.hasColumn("transcript_origin") ? row["transcript_origin"] : nil
+        backfillSeq = row.hasColumn("backfill_seq") ? row["backfill_seq"] : nil
     }
 
     // MARK: - PersistableRecord (encode back to snake_case columns)
@@ -183,6 +191,7 @@ public struct Episode: Codable, Sendable, Equatable, FetchableRecord, Persistabl
         container["ocr_text"]          = ocrText
         container["image_tags"]        = imageTags
         container["transcript_origin"] = transcriptOrigin
+        container["backfill_seq"]      = backfillSeq
     }
 }
 

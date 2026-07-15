@@ -56,6 +56,15 @@ public struct WebhookEntry: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// What the app does when a YouTube link arrives from the Chrome extension via
+/// `vocateca://youtube?url=…`. Stored as `youtube_link_action`.
+public enum YouTubeLinkAction: String, Codable, Sendable, CaseIterable {
+    /// Bring the app forward, jump to the Explorer tab, extract (default).
+    case openAndExtract = "open_and_extract"
+    /// Extract in the background without raising the app / stealing focus.
+    case queueSilently = "queue_silently"
+}
+
 // MARK: - Settings
 
 /// Global app settings.
@@ -135,6 +144,12 @@ public struct Settings: Codable, Sendable, Equatable {
     /// Also write an Open Knowledge Format `.okf.md` sidecar (Markdown +
     /// YAML frontmatter, minimally-opinionated) next to the `.md`.
     public var saveOkf: Bool
+    /// Also write a WebVTT `.vtt` sidecar (timestamped subtitle cues) next to the `.md`.
+    public var saveVtt: Bool
+    /// Also write an RFC-4180 CSV `.csv` sidecar (`start,end,speaker,text`, one
+    /// row per segment) next to the `.md`. The `speaker` column is only
+    /// populated when diarization produced a result for that segment.
+    public var saveCsv: Bool
     public var sourcesPodcasts: Bool
     public var sourcesYoutube: Bool
     public var ytdlpLastSelfUpdateAt: String
@@ -145,6 +160,19 @@ public struct Settings: Codable, Sendable, Equatable {
     /// Keep the app resident in the menu bar + register a login item so the Pro
     /// daemon's scheduled runs fire even with no window open. Default ON.
     public var runInBackground: Bool
+    /// Governs Sparkle's `SPUUpdater.automaticallyChecksForUpdates`, set
+    /// programmatically at launch so Sparkle never shows its own surprise
+    /// first-launch "check for updates automatically?" permission prompt —
+    /// the app makes an INFORMED default choice instead (ON) and surfaces it
+    /// as an ordinary Settings toggle. Default `true`.
+    public var autoCheckForUpdates: Bool
+    /// True once the FirstRunWizard has finished. Gates `AppShell.applyBackgroundMode()`
+    /// so the macOS login item is never silently registered before onboarding has
+    /// shown the user the autostart tile. Default OFF (fresh installs must complete
+    /// onboarding first); the decode path backfills `true` for upgrading installs
+    /// that already accepted the disclaimer, so existing users don't lose background
+    /// mode / login-item management on update.
+    public var hasCompletedFirstRun: Bool
     /// While resident in the background with no window open, hide the Dock icon
     /// (menu-bar-only). Default OFF (Dock icon shown).
     public var hideDockIconInBackground: Bool
@@ -170,6 +198,14 @@ public struct Settings: Codable, Sendable, Equatable {
     /// Target Notion database id for pushed episode pages.
     public var notionDatabaseId: String
     public var queueOrder: String
+    /// How OLD episodes get drained when a backfill batch is promoted to the
+    /// queue: `"newest_first"` (default — most-relevant-first) | `"oldest_first"`
+    /// (chronological). Governs ONLY `BackfillCampaignAdvancer`'s priority-0
+    /// top-up batches (see `Episode.backfillSeq`) — the live, non-backfill
+    /// queue drain always stays governed by `queueOrder`, unaffected by this
+    /// field. Stored as `backfill_order`. Oracle-excluded — no Python model
+    /// counterpart (v2-only, StateStore §D).
+    public var backfillOrder: String
     public var defaultMinDurationSec: Int
     public var defaultMaxDurationSec: Int
     public var captionFallbackMode: String
@@ -316,6 +352,56 @@ public struct Settings: Codable, Sendable, Equatable {
     /// Oracle-excluded — no Python model counterpart.
     public var showShortcutHints: Bool
 
+    // MARK: - Welle YT-Explorer (experimental tab)
+
+    /// Master enable switch for the experimental YouTube Explorer sidebar tab
+    /// (embedded player + timestamped transcript). Default OFF — beta feature,
+    /// opt-in via Settings. Stored as `youtube_explorer_enabled`.
+    /// Oracle-excluded — no Python model counterpart.
+    public var youtubeExplorerEnabled: Bool
+
+    /// Default format used by the Explorer tab's "Copy" split-button.
+    /// Values: any `TranscriptFormat` id ("md" | "txt" | "srt" | "html" | "okf"
+    /// | "vtt" | "csv"). Default `"txt"`. Stored as `youtube_copy_format`.
+    /// Oracle-excluded — no Python model counterpart.
+    public var youtubeCopyFormat: String
+
+    /// What happens when a YouTube link is sent from the browser extension.
+    /// Default `.openAndExtract`. Stored as `youtube_link_action`.
+    /// Oracle-excluded — no Python model counterpart.
+    public var youtubeLinkAction: YouTubeLinkAction
+
+    // MARK: - Update UX (Task A1: custom Sparkle auto-update)
+
+    /// Update check interval: `false` (default) = daily, `true` = weekly. Maps
+    /// to `SPUUpdater.updateCheckInterval` via
+    /// `UpdaterSettingsBridge.updateIntervalSeconds(weekly:)` (86400 / 604800
+    /// seconds). Stored as `update_interval_weekly`.
+    /// Oracle-excluded — no Python model counterpart.
+    public var updateIntervalWeekly: Bool
+
+    /// Auto-install found updates silently (maps to
+    /// `SPUUpdater.automaticallyDownloadsUpdates`). Default `true`. When
+    /// `false`, the custom update-available popup is shown instead (see
+    /// `UpdatePolicy`, Task A2). Stored as `auto_install_updates`.
+    /// Oracle-excluded — no Python model counterpart.
+    public var autoInstallUpdates: Bool
+
+    /// "Remind me later" snooze timestamp for the custom update-available
+    /// popup (auto-install OFF path): while `Date() < updateRemindAfter`, the
+    /// popup is suppressed for the same found version. `nil` = no active
+    /// snooze. Stored as `update_remind_after`.
+    /// Oracle-excluded — no Python model counterpart.
+    public var updateRemindAfter: Date?
+
+    /// Version the user chose "Skip this version" for (custom update-available
+    /// popup, Task A3's `VocatecaUpdaterDriver`): while `foundVersion ==
+    /// skippedUpdateVersion`, `UpdatePolicy.decide` suppresses the popup for
+    /// that exact version — a NEWER version does not match and re-shows.
+    /// `nil` = no active skip. Stored as `skipped_update_version`.
+    /// Oracle-excluded — no Python model counterpart.
+    public var skippedUpdateVersion: String?
+
     // MARK: - Defaults
 
     public static let defaultOutputRoot                    = "~/Documents/transcripts - vocateca"
@@ -356,6 +442,8 @@ public struct Settings: Codable, Sendable, Equatable {
     public static let defaultSaveTxt                      = false
     public static let defaultSaveHtml                     = false
     public static let defaultSaveOkf                      = false
+    public static let defaultSaveVtt                      = false
+    public static let defaultSaveCsv                      = false
     public static let defaultSourcesPodcasts              = true
     public static let defaultSourcesYoutube               = true
     public static let defaultYtdlpLastSelfUpdateAt        = ""
@@ -364,6 +452,8 @@ public struct Settings: Codable, Sendable, Equatable {
     public static let defaultYoutubeSkipShortsDefault     = true
     public static let defaultShowLogDock                  = false
     public static let defaultRunInBackground              = true
+    public static let defaultAutoCheckForUpdates          = true
+    public static let defaultHasCompletedFirstRun         = false
     public static let defaultHideDockIconInBackground     = false
     public static let defaultConnectivityMonitorEnabled   = true
     public static let defaultAutoResumeFailedWindowHours  = 24
@@ -385,6 +475,7 @@ public struct Settings: Codable, Sendable, Equatable {
     public static let defaultNotionAutoPush               = false
     public static let defaultNotionDatabaseId             = ""
     public static let defaultQueueOrder                   = "oldest_first"
+    public static let defaultBackfillOrder                = "newest_first"
     public static let defaultDefaultMinDurationSec        = 0
     public static let defaultDefaultMaxDurationSec        = 0
     public static let defaultCaptionFallbackMode          = "manual_whisper"
@@ -446,6 +537,16 @@ public struct Settings: Codable, Sendable, Equatable {
     public static var defaultForwardToSystem: [String: Bool] { [:] }
     // v2-only, quick-nav shortcut hints (oracle-excluded)
     public static let defaultShowShortcutHints            = true
+    // v2-only, Update UX (Task A1, oracle-excluded)
+    public static let defaultUpdateIntervalWeekly         = false
+    public static let defaultAutoInstallUpdates           = true
+    public static let defaultUpdateRemindAfter: Date?     = nil
+    public static let defaultSkippedUpdateVersion: String? = nil
+
+    // v2-only, Welle YT-Explorer (oracle-excluded)
+    public static let defaultYoutubeExplorerEnabled       = false
+    public static let defaultYoutubeCopyFormat            = "txt"
+    public static let defaultYoutubeLinkAction           = YouTubeLinkAction.openAndExtract
 
     // MARK: - Memberwise init
 
@@ -488,6 +589,8 @@ public struct Settings: Codable, Sendable, Equatable {
         saveTxt: Bool                         = defaultSaveTxt,
         saveHtml: Bool                        = defaultSaveHtml,
         saveOkf: Bool                         = defaultSaveOkf,
+        saveVtt: Bool                         = defaultSaveVtt,
+        saveCsv: Bool                         = defaultSaveCsv,
         sourcesPodcasts: Bool                 = defaultSourcesPodcasts,
         sourcesYoutube: Bool                  = defaultSourcesYoutube,
         ytdlpLastSelfUpdateAt: String         = defaultYtdlpLastSelfUpdateAt,
@@ -496,6 +599,8 @@ public struct Settings: Codable, Sendable, Equatable {
         youtubeSkipShortsDefault: Bool        = defaultYoutubeSkipShortsDefault,
         showLogDock: Bool                     = defaultShowLogDock,
         runInBackground: Bool                 = defaultRunInBackground,
+        autoCheckForUpdates: Bool             = defaultAutoCheckForUpdates,
+        hasCompletedFirstRun: Bool            = defaultHasCompletedFirstRun,
         hideDockIconInBackground: Bool        = defaultHideDockIconInBackground,
         connectivityMonitorEnabled: Bool      = defaultConnectivityMonitorEnabled,
         autoResumeFailedWindowHours: Int      = defaultAutoResumeFailedWindowHours,
@@ -514,6 +619,7 @@ public struct Settings: Codable, Sendable, Equatable {
         notionAutoPush: Bool                  = defaultNotionAutoPush,
         notionDatabaseId: String              = defaultNotionDatabaseId,
         queueOrder: String                    = defaultQueueOrder,
+        backfillOrder: String                 = defaultBackfillOrder,
         defaultMinDurationSec: Int            = defaultDefaultMinDurationSec,
         defaultMaxDurationSec: Int            = defaultDefaultMaxDurationSec,
         captionFallbackMode: String           = defaultCaptionFallbackMode,
@@ -560,7 +666,14 @@ public struct Settings: Codable, Sendable, Equatable {
         openOnLastUsedTab: Bool               = defaultOpenOnLastUsedTab,
         startupTab: String                    = defaultStartupTab,
         forwardToSystem: [String: Bool]       = defaultForwardToSystem,
-        showShortcutHints: Bool               = defaultShowShortcutHints
+        showShortcutHints: Bool               = defaultShowShortcutHints,
+        updateIntervalWeekly: Bool             = defaultUpdateIntervalWeekly,
+        autoInstallUpdates: Bool               = defaultAutoInstallUpdates,
+        updateRemindAfter: Date?               = defaultUpdateRemindAfter,
+        skippedUpdateVersion: String?          = defaultSkippedUpdateVersion,
+        youtubeExplorerEnabled: Bool          = defaultYoutubeExplorerEnabled,
+        youtubeCopyFormat: String             = defaultYoutubeCopyFormat,
+        youtubeLinkAction: YouTubeLinkAction  = defaultYoutubeLinkAction
     ) {
         self.outputRoot                      = outputRoot
         self.dailyCheckTime                  = dailyCheckTime
@@ -600,6 +713,8 @@ public struct Settings: Codable, Sendable, Equatable {
         self.saveTxt                         = saveTxt
         self.saveHtml                        = saveHtml
         self.saveOkf                         = saveOkf
+        self.saveVtt                         = saveVtt
+        self.saveCsv                         = saveCsv
         self.sourcesPodcasts                 = sourcesPodcasts
         self.sourcesYoutube                  = sourcesYoutube
         self.ytdlpLastSelfUpdateAt           = ytdlpLastSelfUpdateAt
@@ -608,6 +723,8 @@ public struct Settings: Codable, Sendable, Equatable {
         self.youtubeSkipShortsDefault        = youtubeSkipShortsDefault
         self.showLogDock                     = showLogDock
         self.runInBackground              = runInBackground
+        self.autoCheckForUpdates          = autoCheckForUpdates
+        self.hasCompletedFirstRun         = hasCompletedFirstRun
         self.hideDockIconInBackground     = hideDockIconInBackground
         self.connectivityMonitorEnabled      = connectivityMonitorEnabled
         self.autoResumeFailedWindowHours     = autoResumeFailedWindowHours
@@ -626,6 +743,7 @@ public struct Settings: Codable, Sendable, Equatable {
         self.notionAutoPush                  = notionAutoPush
         self.notionDatabaseId                = notionDatabaseId
         self.queueOrder                      = queueOrder
+        self.backfillOrder                   = backfillOrder
         self.defaultMinDurationSec           = defaultMinDurationSec
         self.defaultMaxDurationSec           = defaultMaxDurationSec
         self.captionFallbackMode             = captionFallbackMode
@@ -673,6 +791,13 @@ public struct Settings: Codable, Sendable, Equatable {
         self.startupTab                      = startupTab
         self.forwardToSystem                 = forwardToSystem
         self.showShortcutHints               = showShortcutHints
+        self.updateIntervalWeekly            = updateIntervalWeekly
+        self.autoInstallUpdates              = autoInstallUpdates
+        self.updateRemindAfter               = updateRemindAfter
+        self.skippedUpdateVersion            = skippedUpdateVersion
+        self.youtubeExplorerEnabled          = youtubeExplorerEnabled
+        self.youtubeCopyFormat               = youtubeCopyFormat
+        self.youtubeLinkAction               = youtubeLinkAction
     }
 
     // MARK: - CodingKeys (camelCase ↔ snake_case YAML keys)
@@ -716,6 +841,8 @@ public struct Settings: Codable, Sendable, Equatable {
         case saveTxt                        = "save_txt"
         case saveHtml                       = "save_html"
         case saveOkf                        = "save_okf"
+        case saveVtt                        = "save_vtt"
+        case saveCsv                        = "save_csv"
         case sourcesPodcasts                = "sources_podcasts"
         case sourcesYoutube                 = "sources_youtube"
         case ytdlpLastSelfUpdateAt          = "ytdlp_last_self_update_at"
@@ -724,6 +851,8 @@ public struct Settings: Codable, Sendable, Equatable {
         case youtubeSkipShortsDefault       = "youtube_skip_shorts_default"
         case showLogDock                    = "show_log_dock"
         case runInBackground               = "run_in_background"
+        case autoCheckForUpdates           = "auto_check_for_updates"
+        case hasCompletedFirstRun          = "has_completed_first_run"
         case hideDockIconInBackground      = "hide_dock_icon_in_background"
         case connectivityMonitorEnabled     = "connectivity_monitor_enabled"
         case autoResumeFailedWindowHours    = "auto_resume_failed_window_hours"
@@ -742,6 +871,7 @@ public struct Settings: Codable, Sendable, Equatable {
         case notionAutoPush                 = "notion_auto_push"
         case notionDatabaseId               = "notion_database_id"
         case queueOrder                     = "queue_order"
+        case backfillOrder                  = "backfill_order"
         case defaultMinDurationSec          = "default_min_duration_sec"
         case defaultMaxDurationSec          = "default_max_duration_sec"
         case captionFallbackMode            = "caption_fallback_mode"
@@ -797,6 +927,14 @@ public struct Settings: Codable, Sendable, Equatable {
         case forwardToSystem                = "forward_to_system"
         // v2-only, quick-nav shortcut hints (oracle-excluded)
         case showShortcutHints              = "show_shortcut_hints"
+        // v2-only, Update UX (Task A1, oracle-excluded)
+        case updateIntervalWeekly           = "update_interval_weekly"
+        case autoInstallUpdates             = "auto_install_updates"
+        case updateRemindAfter              = "update_remind_after"
+        case skippedUpdateVersion           = "skipped_update_version"
+        case youtubeExplorerEnabled         = "youtube_explorer_enabled"
+        case youtubeCopyFormat              = "youtube_copy_format"
+        case youtubeLinkAction              = "youtube_link_action"
     }
 
     // MARK: - Custom decode (every missing key → Python-matching default)
@@ -860,6 +998,8 @@ public struct Settings: Codable, Sendable, Equatable {
         saveTxt                        = try c.decodeIfPresent(Bool.self,              forKey: .saveTxt)                        ?? Self.defaultSaveTxt
         saveHtml                       = try c.decodeIfPresent(Bool.self,              forKey: .saveHtml)                       ?? Self.defaultSaveHtml
         saveOkf                        = try c.decodeIfPresent(Bool.self,              forKey: .saveOkf)                        ?? Self.defaultSaveOkf
+        saveVtt                        = try c.decodeIfPresent(Bool.self,              forKey: .saveVtt)                        ?? Self.defaultSaveVtt
+        saveCsv                        = try c.decodeIfPresent(Bool.self,              forKey: .saveCsv)                        ?? Self.defaultSaveCsv
         sourcesPodcasts                = try c.decodeIfPresent(Bool.self,              forKey: .sourcesPodcasts)                ?? Self.defaultSourcesPodcasts
         sourcesYoutube                 = try c.decodeIfPresent(Bool.self,              forKey: .sourcesYoutube)                 ?? Self.defaultSourcesYoutube
         ytdlpLastSelfUpdateAt          = try c.decodeIfPresent(String.self,            forKey: .ytdlpLastSelfUpdateAt)          ?? Self.defaultYtdlpLastSelfUpdateAt
@@ -868,6 +1008,7 @@ public struct Settings: Codable, Sendable, Equatable {
         youtubeSkipShortsDefault       = try c.decodeIfPresent(Bool.self,              forKey: .youtubeSkipShortsDefault)       ?? Self.defaultYoutubeSkipShortsDefault
         showLogDock                    = try c.decodeIfPresent(Bool.self,              forKey: .showLogDock)                    ?? Self.defaultShowLogDock
         runInBackground              = try c.decodeIfPresent(Bool.self, forKey: .runInBackground)              ?? Self.defaultRunInBackground
+        autoCheckForUpdates          = try c.decodeIfPresent(Bool.self, forKey: .autoCheckForUpdates)          ?? Self.defaultAutoCheckForUpdates
         hideDockIconInBackground     = try c.decodeIfPresent(Bool.self, forKey: .hideDockIconInBackground)     ?? Self.defaultHideDockIconInBackground
         connectivityMonitorEnabled     = try c.decodeIfPresent(Bool.self,              forKey: .connectivityMonitorEnabled)     ?? Self.defaultConnectivityMonitorEnabled
         autoResumeFailedWindowHours    = try c.decodeIfPresent(Int.self,               forKey: .autoResumeFailedWindowHours)    ?? Self.defaultAutoResumeFailedWindowHours
@@ -893,6 +1034,7 @@ public struct Settings: Codable, Sendable, Equatable {
         notionAutoPush                 = try c.decodeIfPresent(Bool.self,              forKey: .notionAutoPush)                 ?? Self.defaultNotionAutoPush
         notionDatabaseId               = try c.decodeIfPresent(String.self,            forKey: .notionDatabaseId)               ?? Self.defaultNotionDatabaseId
         queueOrder                     = try c.decodeIfPresent(String.self,            forKey: .queueOrder)                     ?? Self.defaultQueueOrder
+        backfillOrder                  = try c.decodeIfPresent(String.self,            forKey: .backfillOrder)                  ?? Self.defaultBackfillOrder
         defaultMinDurationSec          = try c.decodeIfPresent(Int.self,               forKey: .defaultMinDurationSec)          ?? Self.defaultDefaultMinDurationSec
         defaultMaxDurationSec          = try c.decodeIfPresent(Int.self,               forKey: .defaultMaxDurationSec)          ?? Self.defaultDefaultMaxDurationSec
         captionFallbackMode            = try c.decodeIfPresent(String.self,            forKey: .captionFallbackMode)            ?? Self.defaultCaptionFallbackMode
@@ -937,6 +1079,11 @@ public struct Settings: Codable, Sendable, Equatable {
         proEntitlementCachedAt         = try c.decodeIfPresent(String.self,            forKey: .proEntitlementCachedAt)         ?? Self.defaultProEntitlementCachedAt
         lastUpsellShownAt              = try c.decodeIfPresent(String.self,            forKey: .lastUpsellShownAt)              ?? Self.defaultLastUpsellShownAt
         disclaimerAcceptedAt           = try c.decodeIfPresent(String.self,            forKey: .disclaimerAcceptedAt)           ?? Self.defaultDisclaimerAcceptedAt
+        // Migration: upgrading installs that already accepted the disclaimer (i.e.
+        // already ran the first-run wizard pre-this-flag) must not silently lose
+        // background-mode/login-item management — backfill `true` for them. Only
+        // genuinely fresh installs (empty disclaimerAcceptedAt) default to `false`.
+        hasCompletedFirstRun          = try c.decodeIfPresent(Bool.self,               forKey: .hasCompletedFirstRun)           ?? !disclaimerAcceptedAt.isEmpty
         disclaimerVersion              = try c.decodeIfPresent(String.self,            forKey: .disclaimerVersion)              ?? Self.defaultDisclaimerVersion
         dailyCheckEnabled              = try c.decodeIfPresent(Bool.self,              forKey: .dailyCheckEnabled)              ?? Self.defaultDailyCheckEnabled
         // v2-only, oracle-excluded
@@ -981,6 +1128,16 @@ public struct Settings: Codable, Sendable, Equatable {
         forwardToSystem               = try c.decodeIfPresent([String: Bool].self,    forKey: .forwardToSystem)               ?? Self.defaultForwardToSystem
         // v2-only, quick-nav shortcut hints (oracle-excluded)
         showShortcutHints             = try c.decodeIfPresent(Bool.self,               forKey: .showShortcutHints)             ?? Self.defaultShowShortcutHints
+        // v2-only, Update UX (Task A1, oracle-excluded)
+        updateIntervalWeekly          = try c.decodeIfPresent(Bool.self,               forKey: .updateIntervalWeekly)          ?? Self.defaultUpdateIntervalWeekly
+        autoInstallUpdates            = try c.decodeIfPresent(Bool.self,               forKey: .autoInstallUpdates)            ?? Self.defaultAutoInstallUpdates
+        updateRemindAfter             = try c.decodeIfPresent(Date.self,               forKey: .updateRemindAfter)             ?? Self.defaultUpdateRemindAfter
+        skippedUpdateVersion          = try c.decodeIfPresent(String.self,             forKey: .skippedUpdateVersion)          ?? Self.defaultSkippedUpdateVersion
+
+        // v2-only, Welle YT-Explorer (oracle-excluded)
+        youtubeExplorerEnabled       = try c.decodeIfPresent(Bool.self,   forKey: .youtubeExplorerEnabled)       ?? Self.defaultYoutubeExplorerEnabled
+        youtubeCopyFormat            = try c.decodeIfPresent(String.self, forKey: .youtubeCopyFormat)            ?? Self.defaultYoutubeCopyFormat
+        youtubeLinkAction            = try c.decodeIfPresent(YouTubeLinkAction.self, forKey: .youtubeLinkAction) ?? Self.defaultYoutubeLinkAction
     }
 
     // MARK: - Validation helpers

@@ -85,6 +85,19 @@ public actor LanguageRoutingTranscriber: Transcriber {
                 throw CancellationError()
             } catch {
                 Log.warn("Parakeet failed → Whisper", component: "Transcribe", context: [("error", "\(error)")])
+                // OOM guard: release Parakeet's resident model BEFORE Whisper
+                // loads its own — an incident traced ~14 GB of memory to both
+                // large ASR models being resident at once during exactly this
+                // kind of fallback. Parakeet's output is discarded either way
+                // here, so there's nothing lost by dropping it now; a later
+                // call simply re-loads it lazily.
+                // M-1 residual: this only guards a SINGLE in-flight stream (the
+                // incident case, fully fixed). Under Power-mode concurrency > 1,
+                // a second concurrent transcription can still be actively using
+                // Parakeet when this call releases it — that other stream keeps
+                // its model resident while Whisper loads here, so the ~14 GB
+                // double-residency is only partially avoided in that scenario.
+                await parakeet.releaseModel()
                 return try await whisper.transcribe(audioURL: audioURL, language: language, context: context, progress: progress)
             }
             // Verify only when we know the expected language.
@@ -95,6 +108,14 @@ public actor LanguageRoutingTranscriber: Transcriber {
                     Log.info("Parakeet output failed verification → re-run Whisper",
                              component: "Transcribe",
                              context: [("expected", expected), ("langOK", "\(langOK)"), ("confOK", "\(confOK)")])
+                    // OOM guard (see the catch branch above): free Parakeet's
+                    // model before Whisper loads so at most one large ASR
+                    // model is resident during the re-run.
+                    // M-1 residual: same caveat as above — under Power-mode
+                    // concurrency > 1 a concurrent stream can keep the model
+                    // resident through this release; single-stream (the
+                    // incident case) is fully fixed.
+                    await parakeet.releaseModel()
                     return try await whisper.transcribe(audioURL: audioURL, language: expected, context: context, progress: progress)
                 }
             }

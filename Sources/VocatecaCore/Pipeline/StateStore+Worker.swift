@@ -187,6 +187,17 @@ extension StateStore {
         now: Date = Date()
     ) throws -> Episode? {
         let orderFragment = Self.claimOrderByFragment(queueOrder)
+        // Backfill-aware tier (feature D): campaign top-up batches carry a
+        // non-null `backfill_seq` (see `BackfillSeqAssigner`) recording their
+        // batch drain order under `Settings.backfillOrder`, independent of the
+        // live `queueOrder`. Rows with a `backfill_seq` sort ahead of any
+        // priority-0 tie, ordered by that value; rows without one (every
+        // live/non-backfill row — the common case) fall straight through to
+        // the UNTOUCHED, oracle-locked `orderFragment` below. When no row in
+        // the table has `backfill_seq` set, both extra tiers are a complete
+        // no-op for every pairwise comparison and the query degenerates to
+        // exactly `orderFragment` (see `testLiveOnlyQueueOrderUnchanged`).
+        let backfillTier = "(backfill_seq IS NULL), backfill_seq ASC"
         let nowISO = Event.nowISO()
         // Backoff cutoff: rows whose `attempted_at` is >= this are still "hot" and
         // are skipped this pass. Computed from the injected `now` so tests can
@@ -255,7 +266,7 @@ extension StateStore {
                     AND (attempted_at IS NULL OR attempted_at < ?)
                     \(slugFilter)
                     \(excludeFilter)
-                    ORDER BY \(orderFragment)
+                    ORDER BY priority DESC, \(backfillTier), \(orderFragment)
                     LIMIT 1
                 )
                 RETURNING *

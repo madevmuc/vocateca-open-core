@@ -7,7 +7,7 @@ public enum Vocateca {
     /// `.app`). Bump this alongside real releases so the fallback stays
     /// close to reality, but it is never authoritative for a built `.app` —
     /// that always reads the real, templated `CFBundleShortVersionString`.
-    private static let fallbackVersion = "2.0.2"
+    private static let fallbackVersion = "2.0.4"
 
     /// Marketing version of the native v2 build (e.g. `"2.0.1"`), read live
     /// from the app bundle's `CFBundleShortVersionString` (populated at

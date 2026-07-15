@@ -60,6 +60,42 @@ public actor ParakeetTranscriber: Transcriber {
     /// actor-state read; never triggers I/O.
     public var isWarm: Bool { asr != nil }
 
+    // MARK: - Setup pre-download
+
+    /// Pre-downloads (and compiles) the parakeet-tdt-0.6b-v3 model into
+    /// FluidAudio's on-disk cache. Meant for the first-run Setup step so the
+    /// first real transcription starts instantly instead of stalling on a silent
+    /// ~450 MB fetch the pipeline could only mislabel as "Transcribing" (bug
+    /// 2026-07-10: progress appeared frozen at ~6% while the model was actually
+    /// still downloading).
+    ///
+    /// Uses `downloadAndLoad` — NOT the download-only `download` — deliberately:
+    /// verified 2026-07-10 that `download`'s progress handler fires only once
+    /// (per-file granularity), which would leave the Setup bar frozen at 0% for
+    /// the whole multi-minute fetch, whereas `downloadAndLoad` emits fine-grained
+    /// byte-level `fractionCompleted`. The loaded `AsrManager` is discarded (we
+    /// only need the populated + compiled disk cache); `transcribe`'s own lazy
+    /// load re-reads it from disk with no re-download.
+    ///
+    /// Idempotent: FluidAudio early-returns when the model already exists on
+    /// disk, so a replayed Setup (or a second launch) resolves near-instantly.
+    /// `progress` reports 0…1 completion and is invoked on an unspecified queue
+    /// — hop to the main actor at the call site before touching UI state.
+    public static func prewarmModel(
+        progress: @escaping @Sendable (Double) -> Void
+    ) async throws {
+        let start = Date()
+        Log.info("ParakeetTranscriber: pre-downloading model (Setup)",
+                 component: "ParakeetTranscriber", context: [("version", "v3")])
+        _ = try await AsrModels.downloadAndLoad(version: .v3) { downloadProgress in
+            progress(downloadProgress.fractionCompleted)
+        }
+        Log.info("ParakeetTranscriber: model pre-download complete",
+                 component: "ParakeetTranscriber",
+                 context: [("version", "v3"),
+                           ("seconds", String(format: "%.1f", Date().timeIntervalSince(start)))])
+    }
+
     public func transcribe(audioURL: URL, language: String?) async throws -> TranscriptionResult {
         try await transcribe(audioURL: audioURL, language: language, progress: { _ in })
     }
@@ -138,6 +174,37 @@ public actor ParakeetTranscriber: Transcriber {
         guard let raw = bcp47?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
         let base = raw.split(separator: "-").first.map { $0.lowercased() } ?? raw.lowercased()
         return Language(rawValue: base)
+    }
+
+    // MARK: - Model release
+
+    /// Drops the cached `AsrManager` (if any) so its CoreML buffers are freed
+    /// by ARC. `self.asr` is the only strong reference this actor holds to
+    /// the loaded model, so nil-ing it here is sufficient — unless another
+    /// concurrent `transcribe` call (Power-mode concurrency > 1) is mid-flight
+    /// on this same actor and already holds its own local `manager` reference
+    /// from `loadedManager(progress:)`; that call's copy keeps the instance
+    /// alive until it finishes, which is correct (never yanks a model out
+    /// from under an in-flight transcription) but means the actual
+    /// deallocation can lag behind this call when that happens.
+    ///
+    /// Called by `LanguageRoutingTranscriber` right before a Whisper fallback
+    /// loads its own multi-GB model: an OOM incident (~14 GB Jetsam kill on a
+    /// 2.5 h episode) was traced to Parakeet's model still being resident
+    /// when WhisperKit loaded for a post-verification-failure re-run — see
+    /// `LanguageRoutingTranscriber.transcribe`. A later call to this actor
+    /// simply re-loads (see `loadedManager`) — the normal lazy-load cost, not
+    /// a bug.
+    ///
+    /// No-op if nothing is loaded or a load is currently in flight — never
+    /// tears down a load actively in progress (in practice `isLoading` true
+    /// implies `asr` is still nil, so the `asr != nil` guard alone would
+    /// suffice; `!isLoading` is kept as an explicit belt-and-braces check).
+    public func releaseModel() {
+        guard asr != nil, !isLoading else { return }
+        asr = nil
+        Log.info("ParakeetTranscriber: model released (freeing memory before a fallback engine loads)",
+                 component: "ParakeetTranscriber")
     }
 
     // MARK: - Model loading

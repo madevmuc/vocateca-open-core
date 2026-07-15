@@ -59,13 +59,53 @@ extension StateStore {
             .prefix(limit).map(\.guid)
     }
 
-    /// Un-defers episodes into Coming up (`pending`, priority unchanged = 0).
-    /// Thin wrapper over `setStatus` for intent + logging.
-    public func undeferToComingUp(guids: [String]) throws {
-        for guid in guids { try setStatus(guid: guid, .pending) }
+    /// `pub_date` for each of `guids` that still exists, keyed by guid. Used by
+    /// the backfill-seq assignment step, which needs pubDates for a batch
+    /// `oldestDeferredInScope` already selected by guid only.
+    public func pubDates(guids: [String]) throws -> [String: String] {
+        guard !guids.isEmpty else { return [:] }
+        return try dbQueue.read { db in
+            let placeholders = Array(repeating: "?", count: guids.count).joined(separator: ", ")
+            let rows = try Row.fetchAll(db, SQLRequest(
+                sql: "SELECT guid, pub_date FROM episodes WHERE guid IN (\(placeholders))",
+                arguments: StatementArguments(guids)))
+            return Dictionary(uniqueKeysWithValues: rows.map {
+                ($0["guid"] as String, ($0["pub_date"] as String?) ?? "")
+            })
+        }
+    }
+
+    /// Next strictly-increasing `backfill_seq` base: `MAX(backfill_seq)+1` (0
+    /// when no row has one yet). Guarantees two different backfill batches —
+    /// different shows, or the same show's next top-up tick — never collide,
+    /// and an earlier-promoted batch always fully drains before a later one.
+    public func nextBackfillSeqBase() throws -> Int {
+        try dbQueue.read { db in
+            let row = try Row.fetchOne(db, sql: "SELECT MAX(backfill_seq) AS m FROM episodes")
+            let maxSeq = (row?["m"] as Int?) ?? 0
+            return maxSeq + 1
+        }
+    }
+
+    /// Un-defers episodes into Coming up (`pending`, priority unchanged = 0),
+    /// optionally stamping each with a `backfill_seq` (see `BackfillSeqAssigner`)
+    /// so the batch drains in `backfillOrder` without touching the live
+    /// (non-backfill) claim comparator. `backfillSeq` missing an entry for a
+    /// guid leaves that row's `backfill_seq` untouched (nil for a fresh promote).
+    public func undeferToComingUp(guids: [String], backfillSeq: [String: Int] = [:]) throws {
+        for guid in guids {
+            try setStatus(guid: guid, .pending)
+            if let seq = backfillSeq[guid] {
+                try dbQueue.write { db in
+                    try db.execute(sql: "UPDATE episodes SET backfill_seq = ? WHERE guid = ?",
+                                    arguments: [seq, guid])
+                }
+            }
+        }
         if !guids.isEmpty {
             Log.info("Backfill: campaign advanced", component: "Backfill",
-                     context: [("enqueued", "\(guids.count)")])
+                     context: [("enqueued", "\(guids.count)"),
+                                ("withSeq", "\(backfillSeq.count)")])
         }
     }
 }

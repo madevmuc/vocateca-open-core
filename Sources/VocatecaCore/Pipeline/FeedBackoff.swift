@@ -108,6 +108,46 @@ public enum FeedBackoff {
         return count
     }
 
+    // MARK: - onPermanentFailure
+
+    /// Immediately quarantines a feed for a **structural, non-retryable**
+    /// failure (e.g. an empty or unsafe feed URL) — skips the normal 3-strike
+    /// grace period that ``onFailure(showSlug:store:now:)`` gives transient
+    /// network/parse errors, since retrying a structurally invalid URL can
+    /// never succeed on its own.
+    ///
+    /// Forces the consecutive-failure count to at least ``threshold`` so a
+    /// backoff-until timestamp is always written on the FIRST call, then
+    /// reuses the same escalating `stagesDays` schedule as `onFailure` for
+    /// any later call (e.g. the feed is still broken after a backoff window
+    /// expires and the show is polled again) — 1 → 3 → 7 days, identical
+    /// staging, just entered immediately instead of after 3 attempts.
+    ///
+    /// Added for the OOM incident (2.0.4-batch Item 4-B2): a show with an
+    /// empty `rss` URL hit `URLSafetyError.empty` on every poll — 11x in 2
+    /// minutes — because the URL-safety-violation path never called
+    /// `onFailure` at all (a stale "don't backoff, it's permanent" comment)
+    /// and so was never throttled by ``inBackoff(showSlug:store:now:)``.
+    ///
+    /// - Parameters:
+    ///   - showSlug: The show's slug.
+    ///   - store:    The state store to write into.
+    ///   - now:      Current time (inject for deterministic tests).
+    /// - Returns: The new consecutive failure count.
+    @discardableResult
+    public static func onPermanentFailure(showSlug: String, store: StateStore, now: Date = Date()) throws -> Int {
+        let raw = try store.metaValue("feed_fail_count:\(showSlug)") ?? "0"
+        let count = max(threshold, (Int(raw) ?? 0) + 1)
+        try store.setMeta(key: "feed_fail_count:\(showSlug)", value: "\(count)")
+
+        let stageIdx = min(count - threshold, stagesDays.count - 1)
+        let days = stagesDays[stageIdx]
+        let until = now.addingTimeInterval(Double(days) * 86400.0)
+        try store.setMeta(key: "feed_backoff_until:\(showSlug)", value: isoISO8601(until))
+        try store.setMeta(key: "feed_health:\(showSlug)", value: "fail")
+        return count
+    }
+
     // MARK: - inBackoff
 
     /// Returns `true` if the feed is currently in backoff (should not be polled).

@@ -88,6 +88,21 @@ extension StateStore {
         return (toQueue.count, toDefer.count)
     }
 
+    /// Guids currently `pending` for a show (newest first, any priority).
+    ///
+    /// On an INITIAL subscribe these are exactly the episodes `applyBackfill`
+    /// just promoted from `deferred` (everything else was seeded `deferred`), so
+    /// it is the set to auto-enqueue + start right after a subscribe.
+    public func pendingGuids(showSlug: String) throws -> [String] {
+        try dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT guid FROM episodes
+                WHERE show_slug = ? AND status = 'pending'
+                ORDER BY pub_date DESC
+            """, arguments: [showSlug]).map { $0["guid"] as String }
+        }
+    }
+
     // MARK: - Private helpers
 
     /// Fetches every `(guid, pubDate)` for `showSlug` and partitions them into

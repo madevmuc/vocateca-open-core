@@ -9,7 +9,8 @@ public enum ManagedTool: String, Sendable, CaseIterable {
     case ytDlp = "yt-dlp"
     /// gallery-dl: self-managed, downloaded from GitHub releases.
     case galleryDL = "gallery-dl"
-    /// ffmpeg: detection-only (Homebrew); not self-installed in this phase.
+    /// ffmpeg: self-managed — an arch-specific static build is downloaded (no
+    /// Homebrew, no admin). An existing Homebrew ffmpeg is still honoured first.
     case ffmpeg
 }
 
@@ -97,6 +98,42 @@ private let pinnedReleases: [ManagedTool: PinnedRelease] = [
     ),
 ]
 
+// ffmpeg is arch-specific, so it can't live in the single-URL `pinnedReleases`.
+// Source: eugeneware/ffmpeg-static release b6.1.1 — self-contained static
+// binaries, already ad-hoc code-signed, so they run on Apple Silicon (AMFI)
+// straight after download with NO admin, NO Homebrew, and no re-signing on our
+// side. Hashes independently computed by downloading each asset (2026-07-10).
+private let ffmpegPinsByArch: [String: PinnedRelease] = [
+    "arm64": PinnedRelease(
+        version: "b6.1.1",
+        url: URL(string:
+            "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64"
+        )!,
+        sha256: "a90e3db6a3fd35f6074b013f948b1aa45b31c6375489d39e572bea3f18336584"
+    ),
+    "x86_64": PinnedRelease(
+        version: "b6.1.1",
+        url: URL(string:
+            "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64"
+        )!,
+        sha256: "ebdddc936f61e14049a2d4b549a412b8a40deeff6540e58a9f2a2da9e6b18894"
+    ),
+]
+
+/// The running process's CPU arch (`"arm64"` | `"x86_64"`), for arch-specific
+/// pins. Reads `uname(2)` — cheap, no allocation beyond the utsname buffer.
+private func currentCPUArch() -> String {
+    var info = utsname()
+    uname(&info)
+    let machine = withUnsafeBytes(of: &info.machine) { raw -> String in
+        String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+    }
+    return machine.hasPrefix("arm64") ? "arm64" : "x86_64"
+}
+
+/// The pinned ffmpeg release for the current arch (nil on an unknown arch).
+private func ffmpegPin() -> PinnedRelease? { ffmpegPinsByArch[currentCPUArch()] }
+
 // MARK: - Download URLs
 
 private extension ManagedTool {
@@ -105,7 +142,7 @@ private extension ManagedTool {
     /// see `pinnedReleases` above.
     var downloadURL: URL {
         get throws {
-            guard let pin = pinnedReleases[self] else {
+            guard let pin = (self == .ffmpeg ? ffmpegPin() : pinnedReleases[self]) else {
                 throw BinaryManagerError.toolNotManaged(self)
             }
             return pin.url
@@ -114,7 +151,7 @@ private extension ManagedTool {
 
     /// The pinned SHA-256 hex digest this tool's download must match.
     var expectedSHA256: String? {
-        pinnedReleases[self]?.sha256
+        (self == .ffmpeg ? ffmpegPin() : pinnedReleases[self])?.sha256
     }
 
     /// The version-flag arguments for this tool.
@@ -137,14 +174,17 @@ private let homebrewFFmpegCandidates: [URL] = [
 
 // MARK: - BinaryManager
 
-/// Manages external binary tools (yt-dlp, gallery-dl) and detects ffmpeg.
+/// Manages external binary tools (yt-dlp, gallery-dl, ffmpeg).
 ///
-/// yt-dlp and gallery-dl are downloaded on demand from GitHub releases and stored
-/// in `<userDataDir>/bin/`.  They are chmod +x after download and atomically moved
-/// into place so a partial download never leaves a broken binary.
+/// All three are downloaded on demand from pinned release URLs and stored in
+/// `<userDataDir>/bin/`. They are chmod +x after download and atomically moved
+/// into place so a partial download never leaves a broken binary. The downloaded
+/// binaries are self-contained + already ad-hoc-signed, so they run with no
+/// admin rights and no Homebrew.
 ///
-/// ffmpeg is resolved by detection only: first the managed path (in case the user
-/// places one there), then the standard Homebrew locations.
+/// ffmpeg additionally honours an existing Homebrew/MacPorts install first (so a
+/// user who already has it doesn't get a second copy), then falls back to the
+/// self-managed arch-specific static build.
 public struct BinaryManager: Sendable {
 
     // MARK: - Properties
@@ -173,11 +213,25 @@ public struct BinaryManager: Sendable {
 
     /// Returns the executable URL for `tool`, or `nil` if not found.
     ///
-    /// - For yt-dlp / gallery-dl: the managed path if it exists and is executable.
+    /// - For yt-dlp: the bundled onedir inside the .app first (fast — see
+    ///   `bundledYtDlpExecutable()`), then the managed download path, else nil.
+    /// - For gallery-dl: the managed path if it exists and is executable.
     /// - For ffmpeg: managed path first, then Homebrew candidates, else nil.
     public func resolvedPath(for tool: ManagedTool) -> URL? {
+        if tool == .ytDlp,
+           let bundled = bundledYtDlpExecutable(),
+           isExecutable(bundled),
+           matchesCurrentArch(bundled) {
+            Log.info("BinaryManager: yt-dlp resolved to bundled onedir (fast path)",
+                     component: "BinaryManager", context: [("path", bundled.path)])
+            return bundled
+        }
         let managed = managedPath(for: tool)
         if isExecutable(managed) {
+            if tool == .ytDlp {
+                Log.info("BinaryManager: yt-dlp resolved to managed download",
+                         component: "BinaryManager", context: [("path", managed.path)])
+            }
             return managed
         }
         switch tool {
@@ -186,6 +240,70 @@ public struct BinaryManager: Sendable {
         case .ffmpeg:
             return homebrewFFmpegCandidates.first(where: isExecutable)
         }
+    }
+
+    /// Path to the yt-dlp `--onedir` build bundled inside the signed .app at
+    /// `Contents/Resources/tools/yt-dlp/yt-dlp` — see
+    /// `packaging/build-ytdlp-onedir.sh` and `packaging/make-app-bundle.sh`.
+    ///
+    /// This is the perf fix: the onedir's files are deep-signed as part of
+    /// the app and are trusted (scanned once) from first launch, unlike the
+    /// managed-download onefile which self-extracts to a fresh unsigned temp
+    /// dir on every exec (~10-15s cold start).
+    ///
+    /// `Bundle.main.resourceURL` is `nil` for `swift run` / unbundled dev
+    /// builds, so this naturally returns `nil` there and falls through to
+    /// the managed-download path — no behaviour change for dev.
+    private func bundledYtDlpExecutable() -> URL? {
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        return resourceURL
+            .appendingPathComponent("tools", isDirectory: true)
+            .appendingPathComponent("yt-dlp", isDirectory: true)
+            .appendingPathComponent("yt-dlp", isDirectory: false)
+    }
+
+    /// Cheap Mach-O arch guard for the bundled onedir: the build currently
+    /// ships HOST-arch-only (arm64 on Apple Silicon — see
+    /// build-ytdlp-onedir.sh), so on an Intel Mac the bundled binary would
+    /// be unusable. Rather than spawn a subprocess (slow, and this function
+    /// must never hang a sync call), this reads only the 8-byte Mach-O
+    /// header and compares `cputype` against the current process arch.
+    ///
+    /// Fails OPEN (returns `true`) for anything it can't confidently parse
+    /// (fat binaries, unreadable files, unexpected magic) — those cases fall
+    /// through to whichever caller actually invokes the binary, where an
+    /// exec failure is handled normally; this guard only needs to catch the
+    /// common, cheap-to-detect case of a thin arm64 executable on x86_64.
+    private func matchesCurrentArch(_ url: URL) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: url.path) else { return true }
+        defer { try? handle.close() }
+        guard let header = try? handle.read(upToCount: 8), header.count == 8 else { return true }
+
+        let magic = Self.readUInt32LE(header, at: 0)
+        let cputype = Self.readUInt32LE(header, at: 4)
+
+        let machMagic64: UInt32 = 0xfeedfacf   // MH_MAGIC_64 (thin, native-endian)
+        let cpuTypeARM64: UInt32 = 0x0100_000c
+        let cpuTypeX86_64: UInt32 = 0x0100_0007
+
+        guard magic == machMagic64 else { return true }   // fat/unknown — fail open
+
+        switch currentCPUArch() {
+        case "arm64":  return cputype == cpuTypeARM64
+        case "x86_64": return cputype == cpuTypeX86_64
+        default:       return true
+        }
+    }
+
+    /// Reads 4 bytes of `data` starting at `offset` as a little-endian
+    /// `UInt32`, without relying on `Data`'s memory alignment (avoids the
+    /// trap risk of `withUnsafeBytes { $0.load(as:) }` on an unaligned slice).
+    private static func readUInt32LE(_ data: Data, at offset: Int) -> UInt32 {
+        let base = data.startIndex + offset
+        return UInt32(data[base])
+            | (UInt32(data[base + 1]) << 8)
+            | (UInt32(data[base + 2]) << 16)
+            | (UInt32(data[base + 3]) << 24)
     }
 
     /// Returns `true` when `resolvedPath(for:)` is non-nil.

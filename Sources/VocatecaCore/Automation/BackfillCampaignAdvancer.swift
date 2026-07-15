@@ -5,8 +5,14 @@ import Foundation
 public struct BackfillCampaignAdvancer: Sendable {
     private let store: StateStore
     private let campaignStore: BackfillCampaignStore
-    public init(store: StateStore, campaignStore: BackfillCampaignStore) {
-        self.store = store; self.campaignStore = campaignStore
+    /// Drain-order preference for this pass's top-up batches (`Settings.backfillOrder`).
+    /// Defaults to the Settings default so every existing call site keeps compiling
+    /// and behaving as newest-first (the default) without being touched.
+    private let backfillOrder: String
+
+    public init(store: StateStore, campaignStore: BackfillCampaignStore,
+                backfillOrder: String = Settings.defaultBackfillOrder) {
+        self.store = store; self.campaignStore = campaignStore; self.backfillOrder = backfillOrder
     }
 
     /// Advances every active, non-paused campaign whose show is in `shows`.
@@ -26,7 +32,13 @@ public struct BackfillCampaignAdvancer: Sendable {
                 batchSize: campaign.batchSize, activeCampaignCount: inFlight,
                 remainingDeferred: counts.deferredInScope)
             if n > 0, let guids = try? store.oldestDeferredInScope(showSlug: show.slug, policy: policy, limit: n) {
-                try? store.undeferToComingUp(guids: guids)
+                // Selection stays oldest-in-scope-first (unchanged) — only the
+                // DRAIN order of this selected batch respects backfillOrder.
+                let pubDates = (try? store.pubDates(guids: guids)) ?? [:]
+                let episodesForSeq = guids.map { (guid: $0, pubDate: pubDates[$0] ?? "") }
+                let base = (try? store.nextBackfillSeqBase()) ?? 1
+                let seqMap = BackfillSeqAssigner.assign(episodes: episodesForSeq, order: backfillOrder, base: base)
+                try? store.undeferToComingUp(guids: guids, backfillSeq: seqMap)
             }
 
             campaign.done = counts.transcribedInScope
