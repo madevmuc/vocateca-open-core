@@ -411,11 +411,24 @@ public struct Pipeline: Sendable {
             // before the status write so a downloaded file is retention-eligible
             // the instant it lands (a subsequent status-write failure still leaves
             // a valid, reclaimable path pointing at a real file).
+            //
+            // EXCEPT for locally imported media. `URLSessionDownloader` returns the
+            // user's own file in place (their `~/Downloads/…`, not a copy we made),
+            // so registering it here would hand it to the retention/cap sweeps —
+            // and the 7-day age-out would delete a file we never created and have
+            // no right to remove. We only reclaim media we downloaded ourselves.
+            let isImported = LocalIngestService.isOneOffGuid(guid)
             do {
-                try store.setMp3Path(guid: guid, path: mediaURL.path)
-                Log.info("Download path persisted (retention-eligible)",
-                         component: "Pipeline",
-                         context: [("guid", guid), ("show", showSlug), ("path", mediaURL.path)])
+                if isImported {
+                    Log.info("Imported media — not retention-eligible (user's own file)",
+                             component: "Pipeline",
+                             context: [("guid", guid), ("show", showSlug), ("path", mediaURL.path)])
+                } else {
+                    try store.setMp3Path(guid: guid, path: mediaURL.path)
+                    Log.info("Download path persisted (retention-eligible)",
+                             component: "Pipeline",
+                             context: [("guid", guid), ("show", showSlug), ("path", mediaURL.path)])
+                }
             } catch {
                 // Non-fatal: the file is on disk and the episode still proceeds to
                 // transcription; only retention bookkeeping is affected. Log so a
@@ -540,18 +553,30 @@ public struct Pipeline: Sendable {
                 let refreshed = refreshedForCorrection
 
                 // Build a transcription-progress closure that maps [0,1] → [0.12, 1.0] overall.
-                // Also refreshes the H7 job heartbeat on each segment callback so a
-                // long transcription (tens of minutes) keeps its ownership row fresh
-                // and a concurrent reclaim never mistakes it for an orphan.
+                // Also refreshes the H7 job heartbeat so a long transcription (tens
+                // of minutes) keeps its ownership row fresh and a concurrent reclaim
+                // never mistakes it for an orphan.
+                //
+                // Both are throttled. WhisperKit calls this back once per decoded
+                // TOKEN — O(10^4–10^5) times on a long episode — and emitting an
+                // event plus writing a SQLite heartbeat on every one of those put
+                // unbounded pressure on the event queue and real I/O on the decode's
+                // hot path (see `ProgressThrottle`; OOM incident 2026-07-16).
+                let progressThrottle = ProgressThrottle()
+                let heartbeatThrottle = HeartbeatThrottle()
                 let transcribeProgress: ProgressReporter = { [self] segFraction in
                     // Map ASR 0…1 into [start, asrEnd] (NOT …1.0): the top of the
                     // band is reserved for diarization + write so the bar keeps
                     // moving past ASR instead of freezing at 100%.
                     let overall = Self.transcribeFractionStart +
                         segFraction * (Self.asrFractionEnd - Self.transcribeFractionStart)
-                    self.emitProgress(guid: guid, showSlug: showSlug,
-                                      phase: "transcribing", fraction: overall)
-                    try? self.store.heartbeatJob(guid: guid, pid: Self.currentPID)
+                    if progressThrottle.shouldEmit(overall) {
+                        self.emitProgress(guid: guid, showSlug: showSlug,
+                                          phase: "transcribing", fraction: overall)
+                    }
+                    if heartbeatThrottle.shouldBeat() {
+                        try? self.store.heartbeatJob(guid: guid, pid: Self.currentPID)
+                    }
                 }
 
                 // YouTube caption path (1a): if this is a YouTube video (a

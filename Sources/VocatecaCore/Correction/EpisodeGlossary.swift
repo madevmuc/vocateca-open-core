@@ -28,22 +28,40 @@ public struct EpisodeGlossary: Sendable {
         self.terms = terms
     }
 
-    /// German + English articles, prepositions and other closed-class filler.
-    /// These are never glossary terms and never anchor a bigram.
+    /// German + English articles, prepositions, pronouns and other closed-class
+    /// filler. These are never glossary terms (`keepToken` below), AND — since
+    /// they are closed-class by definition, never a proper noun in disguise —
+    /// they are also never a correction TARGET: ``TranscriptGlossaryCorrector``
+    /// refuses to rewrite a transcript word that appears here, no matter how
+    /// well it phonetically collides with a glossary term. This is the fix for
+    /// a real production bug where short function words ("so", "ich", "eine",
+    /// "an") were being "corrected" into unrelated glossary terms ("CEO",
+    /// "Ache", "Anne") purely because they share a short Double-Metaphone code.
+    ///
+    /// The personal-pronoun rows were added for that fix — the original list
+    /// only had the possessive forms (his/her/its/our/your/their and
+    /// sein/seine), leaving the base subject/object pronouns (ich/du/er/es/…,
+    /// I/you/he/she/…) as an unguarded gap on both the extraction and
+    /// correction sides.
     static let stopwords: Set<String> = [
-        // de
+        // de — articles, conjunctions, prepositions, common verb forms
         "der", "die", "das", "den", "dem", "des", "ein", "eine", "einer", "eines",
         "einem", "einen", "und", "oder", "aber", "von", "vom", "zum", "zur", "mit",
         "für", "auf", "aus", "bei", "bis", "durch", "gegen", "ohne", "über", "unter",
         "vor", "nach", "seit", "wie", "als", "auch", "nur", "noch", "sehr", "mehr",
         "sein", "seine", "ist", "sind", "war", "war", "wird", "werden", "hat", "haben",
         "wir", "ihr", "sie", "man", "dann", "wenn", "weil", "dass", "damit", "hier",
-        // en
+        // de — personal pronouns (nominative/accusative/dative), all cases
+        "ich", "du", "er", "es", "mich", "dich", "ihn", "uns", "euch",
+        "mir", "dir", "ihm", "ihnen", "sich",
+        // en — articles, conjunctions, prepositions, common verb forms
         "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "by",
         "for", "with", "from", "into", "onto", "off", "out", "up", "down", "over",
         "under", "is", "are", "was", "were", "be", "been", "as", "so", "too", "not",
         "his", "her", "its", "our", "your", "their", "this", "that", "these", "those",
-        "how", "why", "what", "who", "when", "where"
+        "how", "why", "what", "who", "when", "where",
+        // en — personal pronouns
+        "i", "you", "he", "she", "we", "they", "it", "me", "him", "them", "us"
     ]
 
     /// Everyday content words that happen to sound like brand names. Kept small

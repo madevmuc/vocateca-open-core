@@ -36,20 +36,32 @@ public enum AddSourceClassifier {
     ///
     /// Signal order (first match wins):
     /// 1. Empty (after trimming whitespace) → `.none`.
-    /// 2. `@handle` or an `instagram.com` URL → `.instagram`.
+    /// 2. An `instagram.com` URL → `.instagram`.
     /// 3. A `youtube.com`/`youtu.be`/`/@` URL:
     ///    - A single **video** URL (`youtu.be/ID`, `/watch?v=ID`) is a one-off
     ///      import, not a subscribe target → `.genericURL`.
     ///    - Everything else recognised as YouTube (channel/handle/playlist) → `.youtube`.
     /// 4. An `http(s)` URL containing `rss` / `.xml` / `feed` → `.podcast`.
     /// 5. Any other `http(s)` URL (SoundCloud, Vimeo, Bandcamp, Spotify, …) → `.genericURL`.
-    /// 6. Anything else (a bare search term) → `.podcastSearch`.
+    /// 6. Anything else — including a bare `@handle` — is a search term → `.podcastSearch`.
     public static func classify(_ text: String) -> AddSourceKind {
         let t = text.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return .none }
 
-        // Instagram signals
-        if t.hasPrefix("@") || t.contains("instagram.com") {
+        // Instagram signals — the URL only.
+        //
+        // A bare `@handle` used to land here, which was wrong: `@` is not an
+        // Instagram marker. YouTube handles look identical — `@hubermanlab` is a
+        // real YouTube channel with 7.5M subscribers AND a real Instagram account,
+        // and nothing in the string says which the user meant. Because this branch
+        // ran first, EVERY bare handle became Instagram and no `@handle` could ever
+        // reach YouTube (which is only matched via `/@` — i.e. a full channel URL),
+        // while the Add field's own placeholder advertised "YouTube @handle".
+        //
+        // Ambiguous input is a search, not a guess: a bare handle now falls through
+        // to `.podcastSearch` and gets looked up. Instagram keeps the unambiguous
+        // signal it always had — an instagram.com link.
+        if t.contains("instagram.com") {
             return .instagram
         }
         // YouTube signals. A single VIDEO (youtu.be/ID, /watch?v=ID) is a one-off

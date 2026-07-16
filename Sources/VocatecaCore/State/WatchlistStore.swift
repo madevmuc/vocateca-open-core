@@ -221,6 +221,7 @@ public final class WatchlistStore {
         title: String,
         author: String,
         artworkURL: String? = nil,
+        language: String = Show.defaultLanguage,
         backfillMode: BackfillMode = .all,
         backfillN: Int = 10,
         backfillSince: String = "",
@@ -228,10 +229,16 @@ public final class WatchlistStore {
     ) throws {
         let slug = Self.slugify(title)
         let trimmedAuthor = author.trimmingCharacters(in: .whitespaces)
+        // Store only the primary subtag: the ASR engines take "de", not "de-DE",
+        // and a feed's `<language>` routinely carries a region suffix.
+        let normalizedLanguage = Show.isAutoLanguage(language)
+            ? Show.defaultLanguage
+            : Show.primaryLanguageSubtag(language)
         let show = Show(
             slug: slug,
             title: title,
             rss: feedURL,
+            language: normalizedLanguage,
             artworkUrl: artworkURL ?? Show.defaultArtworkUrl,
             source: "podcast",
             backfillMode: backfillMode.rawValue,
@@ -239,6 +246,8 @@ public final class WatchlistStore {
             backfillSince: backfillSince,
             author: trimmedAuthor.isEmpty ? nil : trimmedAuthor
         )
+        Log.info("Podcast added", component: "Watchlist",
+                 context: [("slug", slug), ("language", normalizedLanguage.isEmpty ? "auto" : normalizedLanguage)])
         add(show)
         try save(to: url)
     }

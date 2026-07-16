@@ -215,12 +215,8 @@ public enum RSSManifest {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         // Take the primary subtag before any region/script suffix ("de-DE" → "de").
-        let primary = trimmed
-            .replacingOccurrences(of: "_", with: "-")
-            .split(separator: "-", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map(String.init) ?? trimmed
-        if let name = locale.localizedString(forLanguageCode: primary.lowercased()),
+        let primary = Show.primaryLanguageSubtag(trimmed)
+        if let name = locale.localizedString(forLanguageCode: primary),
            !name.isEmpty {
             // Capitalise the first letter for locales (like German) that lower-case
             // language names mid-sentence; standalone it should read as a proper noun.

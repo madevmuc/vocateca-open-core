@@ -86,6 +86,17 @@ public struct URLSessionDownloader: EpisodeDownloader {
         Log.info("Download started", component: "Network",
                  context: [("guid", episode.guid), ("url", rawURL)])
 
+        // Locally ingested media (Add → Local & folder) is already on disk: its
+        // `mp3Url` is the user's own `file://` path, so there is nothing to fetch.
+        // Routing it through the network path below made `URLSafety.safeURL`
+        // refuse it — `refusedScheme("file")` — and every local import failed
+        // permanently (observed 2026-07-16). Short-circuit before the safety
+        // check, which is an SSRF guard for *remote* fetches and is right to
+        // refuse `file://` there.
+        if let localURL = try Self.localMediaURL(for: episode) {
+            return localURL
+        }
+
         // Safety check — throws URLSafetyError which we map to permanent.
         do {
             try URLSafety.safeURL(rawURL)
@@ -396,6 +407,43 @@ public struct URLSessionDownloader: EpisodeDownloader {
     /// True for HTTP 429, 500, 502, 503, 504 — mirrors Python's `RETRIABLE_STATUSES`.
     static func isRetriableStatus(_ code: Int) -> Bool {
         code == 429 || (code >= 500 && [500, 502, 503, 504].contains(code))
+    }
+
+    /// Resolves `episode` to an already-on-disk `file://` media URL, or `nil` when
+    /// this is a normal remote download.
+    ///
+    /// ## Why this is gated on the GUID, not just the scheme
+    ///
+    /// Accepting any `file://` `mp3Url` would let a hostile RSS feed set an
+    /// enclosure to `file:///etc/…` or any path in the user's home and have us
+    /// happily transcribe it into the library — a local-file read driven entirely
+    /// by remote input. Only media the *user* imported through
+    /// ``LocalIngestService`` may name a local path, and those rows are exactly
+    /// the ones carrying a `local:` GUID (the GUID is minted from the file path by
+    /// the ingest service itself and is never feed-controlled). Feed-sourced
+    /// episodes keep falling through to `URLSafety.safeURL`, which refuses
+    /// `file://` — unchanged.
+    ///
+    /// - Throws: `PipelineError.permanent` when the imported file is gone or is
+    ///   not a readable regular file — the user moved/deleted it, and no retry
+    ///   will bring it back.
+    static func localMediaURL(for episode: Episode) throws -> URL? {
+        guard let url = URL(string: episode.mp3Url),
+              url.isFileURL,
+              LocalIngestService.isOneOffGuid(episode.guid) else { return nil }
+
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+              !isDir.boolValue,
+              FileManager.default.isReadableFile(atPath: url.path) else {
+            Log.error("Local media missing or unreadable", component: "Network",
+                      context: [("guid", episode.guid), ("path", url.path)])
+            throw PipelineError.permanent("Imported file is missing or unreadable: \(url.path)")
+        }
+
+        Log.info("Local media — using file in place (no download)", component: "Network",
+                 context: [("guid", episode.guid), ("path", url.path)])
+        return url
     }
 
     /// True if the URL host looks like a YouTube domain.

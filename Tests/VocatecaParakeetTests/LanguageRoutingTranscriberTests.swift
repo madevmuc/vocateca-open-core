@@ -85,6 +85,52 @@ final class LanguageRoutingTranscriberTests: XCTestCase {
         XCTAssertEqual(whisperCalls, 1, "Whisper must re-run once when Parakeet's output fails language verification")
     }
 
+    /// The 2026-07-16 incident: an English podcast pinned to `de` reached here,
+    /// and the re-run forced `de` onto Whisper — decoding English audio as German.
+    /// The re-run must auto-detect: getting here means `expected` is exactly the
+    /// value we just lost trust in.
+    func testVerificationFailureRerunsWhisperWithAutoDetectNotTheFailedHint() async throws {
+        let englishGarble = "good tark this is an english looking sentence about the mailbox authority indeed"
+        let parakeet = FakeTranscriber(text: englishGarble, language: "de")
+        let whisper = FakeTranscriber(text: "the real english transcript", language: "en")
+        let router = LanguageRoutingTranscriber(parakeet: parakeet, whisper: whisper)
+
+        _ = try await router.transcribe(audioURL: testURL, language: "de")
+
+        let whisperLang = await whisper.lastLanguage
+        XCTAssertNil(whisperLang, "the re-run must not force the language that just failed verification")
+        let parakeetLang = await parakeet.lastLanguage
+        XCTAssertEqual(parakeetLang, "de", "the first pass still uses the hint — only the re-run drops it")
+    }
+
+    /// A low-confidence re-run takes the same auto-detect path.
+    func testLowConfidenceRerunAlsoDropsTheHint() async throws {
+        let germanText = "Guten Tag, dies ist ein deutscher Satz über das elektronische Postfach der Behörde."
+        let parakeet = FakeTranscriber(text: germanText, language: "de")
+        let whisper = FakeTranscriber(text: "whisper redo", language: "de")
+        let router = LanguageRoutingTranscriber(
+            parakeet: parakeet, whisper: whisper, minConfidence: 0.55,
+            confidenceProvider: { 0.1 })
+
+        _ = try await router.transcribe(audioURL: testURL, language: "de")
+
+        let whisperLang = await whisper.lastLanguage
+        XCTAssertNil(whisperLang)
+    }
+
+    /// Parakeet *failing* is not a language disagreement — the hint is still our
+    /// best information there and must survive.
+    func testParakeetErrorFallbackKeepsTheLanguageHint() async throws {
+        let parakeet = FakeTranscriber(text: "", language: "de", error: StubError())
+        let whisper = FakeTranscriber(text: "deutscher text", language: "de")
+        let router = LanguageRoutingTranscriber(parakeet: parakeet, whisper: whisper)
+
+        _ = try await router.transcribe(audioURL: testURL, language: "de")
+
+        let whisperLang = await whisper.lastLanguage
+        XCTAssertEqual(whisperLang, "de")
+    }
+
     // MARK: - Routing: low confidence → Whisper re-run even if text passes language check
 
     func testLowConfidenceTriggersWhisperRerun() async throws {

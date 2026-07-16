@@ -105,7 +105,7 @@ public actor LanguageRoutingTranscriber: Transcriber {
                 let confOK = await confidenceOK()
                 let langOK = TranscriptLanguageCheck.looksLike(expected, text: result.text)
                 if !langOK || !confOK {
-                    Log.info("Parakeet output failed verification → re-run Whisper",
+                    Log.info("Parakeet output failed verification → re-run Whisper (auto-detect)",
                              component: "Transcribe",
                              context: [("expected", expected), ("langOK", "\(langOK)"), ("confOK", "\(confOK)")])
                     // OOM guard (see the catch branch above): free Parakeet's
@@ -116,7 +116,17 @@ public actor LanguageRoutingTranscriber: Transcriber {
                     // resident through this release; single-stream (the
                     // incident case) is fully fixed.
                     await parakeet.releaseModel()
-                    return try await whisper.transcribe(audioURL: audioURL, language: expected, context: context, progress: progress)
+                    // Re-run with auto-detect (`nil`), NOT `expected`. Reaching
+                    // here means `expected` and the audio disagree — either the
+                    // per-show language is wrong or Parakeet misfired — so
+                    // `expected` is precisely the value we have just lost trust
+                    // in. Forcing it made Whisper decode, say, an English episode
+                    // as German: hallucination loops, temperature-fallback
+                    // re-decodes of the same windows, ~0.9× realtime instead of
+                    // 10×, and a transcript that code-switched mid-sentence
+                    // (observed 2026-07-16). Auto-detect is right whichever side
+                    // was wrong; a correct `expected` is what Whisper detects anyway.
+                    return try await whisper.transcribe(audioURL: audioURL, language: nil, context: context, progress: progress)
                 }
             }
             return result

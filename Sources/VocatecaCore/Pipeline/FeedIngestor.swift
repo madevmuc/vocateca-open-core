@@ -115,10 +115,14 @@ public struct FeedIngestor: Sendable {
     ///   never a transient `pending` a concurrent drain could claim. On a re-poll of
     ///   an existing row the status is preserved regardless (ON CONFLICT does not
     ///   touch it), so this only affects the first insert of a new episode.
+    /// - Parameter force: Bypass the feed backoff for THIS call. Pass `true` only
+    ///   for a poll a human explicitly asked for (subscribe, "Refresh feed",
+    ///   Repair's retry, "Try again"); leave `false` for every automatic poll.
     public func poll(
         show: Show,
         store: StateStore,
-        newEpisodeStatus: EpisodeStatus = .pending
+        newEpisodeStatus: EpisodeStatus = .pending,
+        force: Bool = false
     ) async throws -> PollResult {
         guard show.enabled else {
             Log.debug("Poll skipped — show disabled",
@@ -126,11 +130,29 @@ public struct FeedIngestor: Sendable {
             throw FeedIngestorError.showDisabled
         }
 
-        // Respect feed backoff — skip silently (caller decides whether to log).
-        if (try? FeedBackoff.inBackoff(showSlug: show.slug, store: store)) == true {
+        // Respect feed backoff — but never against an explicit user action.
+        //
+        // Backoff exists to stop the AUTOMATIC poller hammering a dead feed. It
+        // used to gate every caller, which deadlocked the only way out: the
+        // backoff is cleared solely by a successful poll (`FeedBackoff.onSuccess`),
+        // and no poll can succeed while it's in force. Re-subscribing didn't help
+        // (same slug → same backoff row), and Repair's "retry" / the episode
+        // list's "Try again" were silent no-ops for 1–7 days — the user pressed a
+        // button and nothing happened (incident 2026-07-16: a healthy feed
+        // returning HTTP 200 with 15 entries, never polled, "0 of 0" episodes).
+        //
+        // A human asking for a poll outranks a decision we made days ago, so
+        // `force` skips the check. It stays self-correcting: a successful forced
+        // poll clears the backoff via `onSuccess`, a failed one re-arms it via
+        // `onFailure`.
+        if !force, (try? FeedBackoff.inBackoff(showSlug: show.slug, store: store)) == true {
             Log.debug("Poll skipped — in backoff",
                       component: "FeedIngestor", context: [("slug", show.slug)])
             throw FeedIngestorError.inBackoff
+        }
+        if force, (try? FeedBackoff.inBackoff(showSlug: show.slug, store: store)) == true {
+            Log.info("Poll forced — bypassing backoff (user asked)",
+                     component: "FeedIngestor", context: [("slug", show.slug)])
         }
 
         Log.info("Poll starting",
@@ -262,6 +284,35 @@ public struct FeedIngestor: Sendable {
                       context: [("slug", show.slug), ("author", feedAuthor)])
             try? WatchlistStore.load(from: wlURL)
                 .updateAuthor(slug: show.slug, author: feedAuthor, to: wlURL)
+        }
+
+        // Un-pin a per-show language the feed itself contradicts.
+        //
+        // `Show.defaultLanguage` used to be a hardcoded "de", so every show added
+        // before that default was removed carries `language: de` in watchlist.yaml
+        // whether or not it is German — the code default was fixed, the already-
+        // written data never was. The damage is not cosmetic: a pinned language is
+        // passed to the transcriber as a hard constraint, so an English podcast
+        // pinned to German makes Parakeet's output fail verification and forces a
+        // full second pass through Whisper, decoding English audio as German —
+        // hallucination loops, ~0.9× realtime, and a transcript that code-switches
+        // mid-sentence (observed 2026-07-16 on "The Diary Of A CEO").
+        //
+        // The feed's own `<language>` is the only evidence we have about a show we
+        // did not record, so use it: when it plainly disagrees with the pin, drop
+        // the pin to auto-detect rather than guessing a replacement. That is safe
+        // in both directions — if the pin was a stale default, auto-detect fixes
+        // it; if the user pinned it deliberately and the feed is simply mislabelled,
+        // auto-detect still transcribes the language actually being spoken. A pin
+        // the feed agrees with, or a feed that declares nothing, is left alone.
+        if Show.languagePinConflicts(pinned: show.language, declared: channelMeta.language),
+           let wlURL = watchlistURL {
+            Log.warn("Per-show language contradicts the feed — resetting to auto-detect",
+                     component: "FeedIngestor",
+                     context: [("slug", show.slug), ("pinned", show.language),
+                                ("feedDeclares", channelMeta.language)])
+            try? WatchlistStore.load(from: wlURL)
+                .updateLanguage(slug: show.slug, language: Show.defaultLanguage, to: wlURL)
         }
 
         // Upsert each entry; collect freshly-inserted episodes.

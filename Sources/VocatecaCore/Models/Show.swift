@@ -112,6 +112,32 @@ public struct Show: Codable, Sendable, Equatable {
         return l.isEmpty || l == "auto"
     }
 
+    /// The primary subtag of a BCP-47 code, lowercased: `"de-DE"` → `"de"`,
+    /// `"en_US"` → `"en"`. Empty in, empty out.
+    public static func primaryLanguageSubtag(_ code: String) -> String {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return trimmed
+            .replacingOccurrences(of: "_", with: "-")
+            .split(separator: "-", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map { $0.lowercased() } ?? trimmed.lowercased()
+    }
+
+    /// True when a pinned per-show `language` names a different language than the
+    /// one the source itself declares — i.e. the pin is provably wrong.
+    ///
+    /// Both sides must be present and concrete: auto-detect never conflicts with
+    /// anything, and a feed that declares no `<language>` is no evidence at all.
+    /// Region differs (`de-DE` vs `de-AT`) is NOT a conflict — only the primary
+    /// subtag is compared, since that is all the ASR engines take.
+    public static func languagePinConflicts(pinned: String, declared: String) -> Bool {
+        guard !isAutoLanguage(pinned) else { return false }
+        let d = primaryLanguageSubtag(declared)
+        guard !d.isEmpty else { return false }
+        return primaryLanguageSubtag(pinned) != d
+    }
+
     /// The BCP-47 hint to pass the transcriber, or `nil` for auto-detect.
     public var languageHint: String? {
         Show.isAutoLanguage(language) ? nil : language

@@ -30,10 +30,16 @@ final class AddSourceClassifierTests: XCTestCase {
         Case(input: "", expected: .none, name: "empty string"),
         Case(input: "   ", expected: .none, name: "whitespace only"),
 
-        // Instagram.
-        Case(input: "@natgeo", expected: .instagram, name: "bare @handle"),
+        // Instagram — the URL is the only unambiguous signal.
         Case(input: "https://instagram.com/natgeo", expected: .instagram, name: "instagram.com URL"),
         Case(input: "https://www.instagram.com/p/Cabc123/", expected: .instagram, name: "instagram post URL"),
+
+        // A bare @handle is AMBIGUOUS — YouTube handles look exactly the same —
+        // so it is a search term, not an Instagram guess. This case previously
+        // expected `.instagram`, which made every bare handle unreachable for
+        // YouTube; the expectation changed with the fix, deliberately.
+        Case(input: "@natgeo", expected: .podcastSearch, name: "bare @handle → search"),
+        Case(input: "@hubermanlab", expected: .podcastSearch, name: "bare @handle that is a real YouTube channel"),
 
         // YouTube — channel/handle/playlist forms → .youtube.
         Case(input: "https://youtube.com/@mkbhd", expected: .youtube, name: "youtube.com handle"),
@@ -83,8 +89,29 @@ final class AddSourceClassifierTests: XCTestCase {
     // MARK: - Whitespace handling
 
     func testLeadingTrailingWhitespaceTrimmed() {
-        XCTAssertEqual(AddSourceClassifier.classify("  @natgeo  "), .instagram)
+        XCTAssertEqual(AddSourceClassifier.classify("  @natgeo  "), .podcastSearch)
         XCTAssertEqual(AddSourceClassifier.classify("\thuberman\n"), .podcastSearch)
+    }
+
+    // MARK: - @handle is ambiguous (2026-07-16)
+
+    /// `@` marks a handle on BOTH platforms, so it can't route to either. It used
+    /// to short-circuit to Instagram ahead of the YouTube branch, which meant a
+    /// bare handle could never reach YouTube — only a full `/@` channel URL could.
+    func testBareHandleIsNotInstagram() {
+        XCTAssertNotEqual(AddSourceClassifier.classify("@hubermanlab"), .instagram)
+        XCTAssertNotEqual(AddSourceClassifier.classify("@mkbhd"), .instagram)
+    }
+
+    /// The unambiguous Instagram forms still work.
+    func testInstagramURLStillClassifies() {
+        XCTAssertEqual(AddSourceClassifier.classify("https://www.instagram.com/hubermanlab/"), .instagram)
+        XCTAssertEqual(AddSourceClassifier.classify("instagram.com/natgeo"), .instagram)
+    }
+
+    /// …and a YouTube channel URL carrying a handle is still YouTube, not a search.
+    func testYouTubeHandleURLUnaffected() {
+        XCTAssertEqual(AddSourceClassifier.classify("https://www.youtube.com/@SuperwallHQ"), .youtube)
     }
 
     // MARK: - Case sensitivity / host variants are NOT special-cased
