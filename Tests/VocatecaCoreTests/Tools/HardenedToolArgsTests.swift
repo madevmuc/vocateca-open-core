@@ -14,8 +14,11 @@ import XCTest
 /// (see `OCRExtensionTests.testBuildArgumentsAlwaysIncludesIgnoreConfig`).
 final class HardenedToolArgsTests: XCTestCase {
 
-    func testYtDlpHardenedArgsContainsIgnoreConfigAndNoPlugins() {
-        XCTAssertEqual(YtDlp.hardenedBaseArgs, ["--ignore-config", "--no-plugins"])
+    func testYtDlpHardenedArgsContainsIgnoreConfigAndNoPluginDirs() {
+        // NOTE: the flag is `--no-plugin-dirs`, NOT `--no-plugins` — the latter
+        // is not a real yt-dlp option and makes every download exit 2 (see the
+        // doc comment on `YtDlp.hardenedBaseArgs`).
+        XCTAssertEqual(YtDlp.hardenedBaseArgs, ["--ignore-config", "--no-plugin-dirs"])
     }
 
     func testGalleryDLHardenedArgsContainsIgnoreConfig() {
@@ -27,6 +30,6 @@ final class HardenedToolArgsTests: XCTestCase {
     func testHardenedArgsPrependCorrectlyToAnExampleArgList() {
         let exampleArgs = YtDlp.hardenedBaseArgs + ["--continue", "--no-playlist"]
         XCTAssertEqual(exampleArgs.first, "--ignore-config")
-        XCTAssertEqual(exampleArgs[1], "--no-plugins")
+        XCTAssertEqual(exampleArgs[1], "--no-plugin-dirs")
     }
 }

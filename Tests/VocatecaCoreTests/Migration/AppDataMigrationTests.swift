@@ -663,6 +663,10 @@ final class AppDataMigrationTests: XCTestCase {
             .appendingPathComponent("vocateca-cli/main.swift")
 
         for mainURL in [guiMain, cliMain] {
+            // The GUI (`Vocateca`) target is excluded from the open-core repo,
+            // so its main.swift is absent there — check only the mains that
+            // exist (the CLI main is always present in both repos).
+            guard FileManager.default.fileExists(atPath: mainURL.path) else { continue }
             let src = try String(contentsOf: mainURL, encoding: .utf8)
             XCTAssertTrue(
                 src.contains("runIfNeeded"),
@@ -671,7 +675,9 @@ final class AppDataMigrationTests: XCTestCase {
         }
 
         // GUI main must NOT run migration in --snapshot mode (snapshot branches
-        // exit before reaching the migration call).
+        // exit before reaching the migration call). Only checked when the GUI
+        // target is present (absent in the open-core build).
+        guard FileManager.default.fileExists(atPath: guiMain.path) else { return }
         let guiSrc = try String(contentsOf: guiMain, encoding: .utf8)
         // The --snapshot branch calls exit(0) before migration — verify
         // the migration call appears AFTER the snapshot branch in the file.

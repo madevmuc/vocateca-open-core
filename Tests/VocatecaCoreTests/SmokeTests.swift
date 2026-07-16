@@ -3,7 +3,11 @@ import XCTest
 
 final class SmokeTests: XCTestCase {
     func testVersion() {
-        XCTAssertEqual(Vocateca.version, "2.0.0")
+        // `Vocateca.version` is read live from the bundle's
+        // CFBundleShortVersionString (host-dependent under `swift test`) with a
+        // dev fallback — so assert it resolves to a non-empty version string
+        // rather than a hardcoded release number.
+        XCTAssertFalse(Vocateca.version.isEmpty)
     }
 
     func testUserDataDirEndsWithVocateca() {
