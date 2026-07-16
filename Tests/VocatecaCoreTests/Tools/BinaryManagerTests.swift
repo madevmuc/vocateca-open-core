@@ -176,6 +176,41 @@ final class BinaryManagerTests: XCTestCase {
         XCTAssertNil(BinaryManager.parseVersion(toolOutput: "", for: .ffmpeg))
     }
 
+    // MARK: - ffprobe (2026-07-16: yt-dlp post-processing needs it too)
+
+    func testFFprobeManagedPathAndVersionParse() throws {
+        let (dir, cleanup) = try makeTempDir()
+        defer { cleanup() }
+        let bm = BinaryManager(binDir: dir)
+        XCTAssertEqual(bm.managedPath(for: .ffprobe).lastPathComponent, "ffprobe")
+
+        // Real `ffprobe -version` first line — same "…version <X>…" shape as ffmpeg.
+        let out = "ffprobe version 6.0 Copyright (c) 2007-2023 the FFmpeg developers\n"
+        XCTAssertEqual(BinaryManager.parseVersion(toolOutput: out, for: .ffprobe), "6.0")
+    }
+
+    /// ffprobe is tracked as a REQUIRED tool (yt-dlp post-processing needs it
+    /// alongside ffmpeg). On a fresh binDir with no Homebrew ffprobe it must show
+    /// up as missing; this guards against a regression that drops it from the set.
+    func testFFprobeIsRequired() throws {
+        let (dir, cleanup) = try makeTempDir()
+        defer { cleanup() }
+        // Only meaningful when the host has no Homebrew/MacPorts ffprobe to
+        // resolve — otherwise `resolvedPath` finds it and it's legitimately not
+        // "missing". Assert membership in the required set via a fresh dir where
+        // the managed copy is absent AND no system ffprobe exists.
+        let bm = BinaryManager(binDir: dir)
+        let systemFFprobe = ["/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe", "/opt/local/bin/ffprobe"]
+            .contains { FileManager.default.isExecutableFile(atPath: $0) }
+        if systemFFprobe {
+            XCTAssertFalse(bm.requiredToolsMissing().contains(.ffprobe),
+                           "system ffprobe present → should resolve, not be missing")
+        } else {
+            XCTAssertTrue(bm.requiredToolsMissing().contains(.ffprobe),
+                          "no managed or system ffprobe → must be reported missing")
+        }
+    }
+
     // MARK: - 4. Real yt-dlp probe (auto-skip if absent)
 
     func testRealYtDlpVersion() async throws {

@@ -125,6 +125,32 @@ public enum DiskGuard {
 /// first) until the total is back under the cap. No I/O — `MaintenanceRunner`
 /// applies the decision against the filesystem/DB. Wires
 /// `Settings.mediaStorageCapGb` + `mediaStorageCapEnabled`.
+// MARK: - DiskSpace
+
+/// Volume free/total space for the disk holding Vocateca's data dir. Used by the
+/// media-cap 50%-safety clamp and the Status „Storage" card.
+public enum DiskSpace {
+
+    /// Free (available) bytes on the volume holding `Paths.userDataDir()`, or `0`
+    /// when the volume can't be probed. Decimal-free raw byte count.
+    public static func freeBytes(at url: URL = Paths.userDataDir()) -> Int64 {
+        guard
+            let vals = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+            let free = vals.volumeAvailableCapacity, free >= 0
+        else { return 0 }
+        return Int64(free)
+    }
+
+    /// Total capacity bytes of the same volume, or `0` when unreadable.
+    public static func totalBytes(at url: URL = Paths.userDataDir()) -> Int64 {
+        guard
+            let vals = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey]),
+            let total = vals.volumeTotalCapacity, total >= 0
+        else { return 0 }
+        return Int64(total)
+    }
+}
+
 public enum MediaCapPolicy {
 
     /// One on-disk media file candidate for eviction.
@@ -156,6 +182,49 @@ public enum MediaCapPolicy {
 
     /// GB→bytes uses the decimal (1e9) convention, consistent with `DiskGuard`.
     public static func capBytes(forGb gb: Int) -> Int64 { Int64(gb) * 1_000_000_000 }
+
+    // MARK: - 50%-of-available safety clamp (2026-07-16)
+    //
+    // Vocateca must never be *configured* to occupy more than half of the disk
+    // space actually available to it, no matter what the user types into the
+    // cap field. "Available to Vocateca" = the volume's current free space PLUS
+    // the media Vocateca already holds (so the bound is stable: freeing our own
+    // media doesn't move the ceiling, which would otherwise cause evict/re-
+    // download churn near the limit). The user's configured cap is honoured when
+    // it's below this ceiling; above it, the EFFECTIVE cap is the ceiling.
+
+    /// The fraction of Vocateca-addressable disk the media cap may never exceed.
+    public static let maxAddressableFraction: Double = 0.5
+
+    /// The largest cap (bytes) allowed given the current free disk and the bytes
+    /// Vocateca's media already occupies. `addressable = free + currentMedia`;
+    /// the ceiling is `maxAddressableFraction` of that. A non-positive
+    /// `freeDiskBytes` (unknown/unreadable) disables the clamp (returns `.max`)
+    /// so a failed disk probe can never spuriously shrink the cap to zero.
+    public static func maxAllowedCapBytes(freeDiskBytes: Int64, currentMediaBytes: Int64) -> Int64 {
+        guard freeDiskBytes > 0 else { return .max }
+        let addressable = freeDiskBytes + max(0, currentMediaBytes)
+        return Int64(Double(addressable) * maxAddressableFraction)
+    }
+
+    /// The EFFECTIVE media cap in bytes: the user's configured cap, clamped so it
+    /// never exceeds half of Vocateca-addressable disk. THIS is the value every
+    /// enforcement + status surface must use — not the raw `capBytes(forGb:)`.
+    public static func effectiveCapBytes(
+        configuredGb: Int, freeDiskBytes: Int64, currentMediaBytes: Int64
+    ) -> Int64 {
+        min(capBytes(forGb: configuredGb),
+            maxAllowedCapBytes(freeDiskBytes: freeDiskBytes, currentMediaBytes: currentMediaBytes))
+    }
+
+    /// The 50%-ceiling expressed in whole GB (floored) — for the Settings hint
+    /// ("limited to N GB — half of your free disk"). Returns `nil` when the disk
+    /// probe failed (unknown), so the UI can omit the hint rather than lie.
+    public static func maxAllowedCapGb(freeDiskBytes: Int64, currentMediaBytes: Int64) -> Int? {
+        guard freeDiskBytes > 0 else { return nil }
+        let ceiling = maxAllowedCapBytes(freeDiskBytes: freeDiskBytes, currentMediaBytes: currentMediaBytes)
+        return Int(ceiling / 1_000_000_000)
+    }
 
     /// The total size of all entries, in bytes.
     public static func totalBytes(_ entries: [FileEntry]) -> Int64 {

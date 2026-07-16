@@ -84,4 +84,35 @@ final class SubprocessTests: XCTestCase {
             // ok — launchFailed
         }
     }
+
+    // MARK: - PATH hardening (2026-07-16: GUI-launch minimal-PATH fix)
+
+    /// With no explicit override, the spawned env's PATH must be led by the
+    /// Homebrew/MacPorts/managed tool dirs so a child tool (and its children,
+    /// e.g. yt-dlp → ffmpeg) can find binaries the login shell would see but a
+    /// Finder-launched app's minimal PATH would not.
+    func testResolvedEnvironmentPrependsToolDirs() {
+        let env = Subprocess.resolvedEnvironment(nil)
+        let path = env["PATH"] ?? ""
+        let dirs = path.split(separator: ":").map(String.init)
+        XCTAssertEqual(Array(dirs.prefix(Subprocess.toolSearchDirs.count)),
+                       Subprocess.toolSearchDirs,
+                       "tool dirs must lead PATH; got \(path)")
+        XCTAssertTrue(dirs.contains("/opt/homebrew/bin"))
+    }
+
+    /// PATH entries are de-duplicated (a tool dir already present in the login
+    /// PATH must not appear twice).
+    func testResolvedEnvironmentDeduplicatesPath() {
+        let env = Subprocess.resolvedEnvironment(nil)
+        let dirs = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        XCTAssertEqual(dirs.count, Set(dirs).count, "PATH has duplicates: \(dirs)")
+    }
+
+    /// An explicit environment override is honoured verbatim — the caller owns
+    /// the whole environment and PATH is NOT rewritten.
+    func testResolvedEnvironmentHonoursOverride() {
+        let override = ["PATH": "/only/this", "FOO": "bar"]
+        XCTAssertEqual(Subprocess.resolvedEnvironment(override), override)
+    }
 }

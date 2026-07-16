@@ -96,4 +96,34 @@ final class MediaCapPolicyTests: XCTestCase {
         XCTAssertTrue(decision.toEvict.isEmpty)
         XCTAssertFalse(MediaCapPolicy.isNearFull(entries: [], capBytes: 1))
     }
+
+    // MARK: - 50%-of-available safety clamp (2026-07-16)
+
+    /// Configured cap BELOW the 50%-ceiling is honoured verbatim.
+    func testEffectiveCapHonoursConfiguredWhenUnderCeiling() {
+        // free 100 GB + 0 media ⇒ ceiling 50 GB; configured 10 GB stays 10 GB.
+        let eff = MediaCapPolicy.effectiveCapBytes(
+            configuredGb: 10, freeDiskBytes: 100_000_000_000, currentMediaBytes: 0)
+        XCTAssertEqual(eff, 10_000_000_000)
+    }
+
+    /// Configured cap ABOVE the ceiling is clamped to 50% of (free + current media).
+    func testEffectiveCapClampsToHalfOfAddressable() {
+        // free 20 GB + 10 GB media ⇒ addressable 30 GB ⇒ ceiling 15 GB.
+        // Configured 200 GB is clamped down to 15 GB.
+        let eff = MediaCapPolicy.effectiveCapBytes(
+            configuredGb: 200, freeDiskBytes: 20_000_000_000, currentMediaBytes: 10_000_000_000)
+        XCTAssertEqual(eff, 15_000_000_000)
+        XCTAssertEqual(MediaCapPolicy.maxAllowedCapGb(
+            freeDiskBytes: 20_000_000_000, currentMediaBytes: 10_000_000_000), 15)
+    }
+
+    /// Unknown free disk (probe failed) disables the clamp — never shrinks the
+    /// cap to zero on a failed statfs.
+    func testEffectiveCapUnclampedWhenDiskUnknown() {
+        let eff = MediaCapPolicy.effectiveCapBytes(
+            configuredGb: 50, freeDiskBytes: 0, currentMediaBytes: 0)
+        XCTAssertEqual(eff, 50_000_000_000)
+        XCTAssertNil(MediaCapPolicy.maxAllowedCapGb(freeDiskBytes: 0, currentMediaBytes: 0))
+    }
 }

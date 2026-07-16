@@ -424,9 +424,10 @@ private func checkDependencies() -> HealthRow {
     // Swift pipeline never shells out to a `whisper-cli` binary.
     let bm = BinaryManager()
     if !bm.isInstalled(.ytDlp)   { missing.append("yt-dlp") }
-    if !bm.isInstalled(.ffmpeg) { missing.append("ffmpeg") }
+    if !bm.isInstalled(.ffmpeg)  { missing.append("ffmpeg") }
+    if !bm.isInstalled(.ffprobe) { missing.append("ffprobe") }
     return missing.isEmpty
-        ? HealthRow(check: "dependencies", ok: true,  detail: "yt-dlp + ffmpeg present")
+        ? HealthRow(check: "dependencies", ok: true,  detail: "yt-dlp + ffmpeg + ffprobe present")
         : HealthRow(check: "dependencies", ok: false, detail: "missing: " + missing.joined(separator: ", "))
 }
 

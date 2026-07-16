@@ -41,6 +41,7 @@ public struct Watchlist: Codable, Sendable, Equatable {
     /// Does NOT use atomic write — callers that need crash-safety should
     /// use `saveAtomic(to:)`.
     public func save(to url: URL) throws {
+        backupIfDrasticShrink(at: url)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -52,12 +53,43 @@ public struct Watchlist: Codable, Sendable, Equatable {
     /// Crash-safe write: serialize to a sibling `.tmp` file, then
     /// `FileManager.replaceItem` (equivalent to POSIX `rename`).
     public func saveAtomic(to url: URL) throws {
+        backupIfDrasticShrink(at: url)
         let dir = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let tmp = dir.appendingPathComponent(UUID().uuidString + ".tmp")
         let text = try yamlString()
         try text.write(to: tmp, atomically: false, encoding: .utf8)
         _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+    }
+
+    // MARK: - Drastic-shrink guard (2026-07-16 data-loss prevention)
+
+    /// `true` when writing `new` shows over an on-disk file of `onDisk` shows is a
+    /// DRASTIC, suspicious shrink — the signature of a partial in-memory watchlist
+    /// silently overwriting the full file (the 18→1 loss that dropped 17 shows to
+    /// "orphaned, no artwork"). Deliberately conservative so a normal single
+    /// delete never trips it: the file must have held a non-trivial list (≥4),
+    /// and the write must drop more than half AND at least 3 shows.
+    public static func isDrasticShrink(onDisk: Int, new: Int) -> Bool {
+        onDisk >= 4 && new < onDisk && (onDisk - new) >= 3 && new * 2 < onDisk
+    }
+
+    /// Before overwriting `url`, snapshot the existing file to a
+    /// `.pre-shrink-<epoch>.bak` sibling and log loudly when the write would be a
+    /// drastic shrink (``isDrasticShrink``) — so the loss is recoverable and
+    /// visible instead of silent. Best-effort: never blocks or fails the save
+    /// (the guard must not itself break a legitimate write).
+    private func backupIfDrasticShrink(at url: URL) {
+        guard let existing = try? Watchlist.load(from: url) else { return }
+        guard Self.isDrasticShrink(onDisk: existing.shows.count, new: shows.count) else { return }
+        let backup = url.deletingPathExtension()
+            .appendingPathExtension("pre-shrink-\(Int(Date().timeIntervalSince1970)).bak")
+        try? FileManager.default.copyItem(at: url, to: backup)
+        Log.error("Watchlist: refusing to SILENTLY drop shows — backed up the fuller file before save",
+                  component: "Watchlist",
+                  context: [("onDiskShows", "\(existing.shows.count)"),
+                            ("newShows", "\(shows.count)"),
+                            ("backup", backup.lastPathComponent)])
     }
 }
 

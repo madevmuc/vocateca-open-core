@@ -156,8 +156,15 @@ public struct MaintenanceRunner {
                 let mtime = (attrs[.modificationDate] as? Date) ?? Date.distantPast
                 entries.append(MediaCapPolicy.FileEntry(guid: row.guid, path: row.mp3Path, sizeBytes: size, mtime: mtime))
             }
-            let capBytes = MediaCapPolicy.capBytes(forGb: settings.mediaStorageCapGb)
             let totalBytes = MediaCapPolicy.totalBytes(entries)
+            // EFFECTIVE cap: the configured cap, clamped so it never exceeds 50%
+            // of Vocateca-addressable disk (free + our current media). This is
+            // the app-wide safety net so a huge configured cap (or a shrinking
+            // disk) can never let Vocateca dominate the volume (2026-07-16).
+            let capBytes = MediaCapPolicy.effectiveCapBytes(
+                configuredGb: settings.mediaStorageCapGb,
+                freeDiskBytes: DiskSpace.freeBytes(),
+                currentMediaBytes: totalBytes)
             report.capUsedBytes = totalBytes
             report.capNearFull = MediaCapPolicy.isNearFull(entries: entries, capBytes: capBytes)
 

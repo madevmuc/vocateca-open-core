@@ -22,6 +22,34 @@ public enum YtDlpAudioHook {
     /// media can be large; `Subprocess` terminates the process if exceeded.
     public static let defaultTimeout: TimeInterval = 1800
 
+    /// Builds the yt-dlp argument vector for one audio download. Pure (no IO) so
+    /// the argument shape — crucially, that `--ffmpeg-location` is always passed
+    /// when an ffmpeg directory is known — is unit-testable without spawning a
+    /// process. `ffmpegDir` is the directory containing ffmpeg (+ ffprobe); when
+    /// `nil` the flag is omitted (yt-dlp falls back to PATH, its old behaviour).
+    public static func buildAudioArgs(
+        outTemplate: String,
+        ffmpegDir: String?,
+        wantMeta: Bool,
+        urlString: String
+    ) -> [String] {
+        var args = YtDlp.hardenedBaseArgs + [
+            "--continue",          // resume partial downloads across retries (Group B)
+            "--no-playlist",       // a single item even if the URL also references a list
+            "--no-progress",
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "--audio-quality", "0",
+            "-o", outTemplate,
+        ]
+        // Tell yt-dlp exactly where ffmpeg/ffprobe live so it never depends on the
+        // (minimal, Homebrew-less) PATH a GUI-launched macOS app inherits.
+        if let ffmpegDir { args += ["--ffmpeg-location", ffmpegDir] }
+        if wantMeta { args += ["--write-info-json"] }
+        args += ["--", urlString]
+        return args
+    }
+
     /// Make a `youtubeAudioHook` closure: `(Episode, URL) async throws -> URL`.
     /// Returns the local `.mp3` file URL on success.
     public static func make(
@@ -41,12 +69,24 @@ public enum YtDlpAudioHook {
                     "Install it from the first-run setup."
                 )
             }
-            // Audio extraction needs ffmpeg (detection-only — Homebrew).
-            guard binaryManager.isInstalled(.ffmpeg) else {
+            // Audio extraction needs ffmpeg (+ ffprobe). Resolve the ACTUAL path
+            // — the managed static build, or an existing Homebrew/MacPorts
+            // install — so we can hand it to yt-dlp explicitly via
+            // `--ffmpeg-location` below. yt-dlp otherwise looks for ffmpeg on its
+            // own `PATH`, which for a Finder/Launchpad-launched macOS app is
+            // launchd's minimal `/usr/bin:/bin:/usr/sbin:/sbin` (NO
+            // `/opt/homebrew/bin`), so a user's `brew install ffmpeg` is invisible
+            // to it → "ffprobe and ffmpeg not found" even though ffmpeg is
+            // installed (the reported bug, 2026-07-16).
+            guard let ffmpegPath = binaryManager.resolvedPath(for: .ffmpeg) else {
                 throw PipelineError.permanent(
-                    "ffmpeg not found — required to extract audio. Install via Homebrew: brew install ffmpeg"
+                    "ffmpeg not found — required to extract audio. Reopen Setup in Vocateca (Settings) to install it."
                 )
             }
+            // Pass the CONTAINING DIRECTORY (yt-dlp accepts a dir or a binary
+            // path) so it finds both ffmpeg AND ffprobe sitting beside it — e.g.
+            // `/opt/homebrew/bin` for a Homebrew install.
+            let ffmpegDir = ffmpegPath.deletingLastPathComponent().path
 
             // Destination mirrors URLSessionDownloader: <mediaDir>/<slug(show)>/<slug>.mp3
             let slug = URLSessionDownloader.makeSlug(episode)
@@ -76,17 +116,12 @@ public enum YtDlpAudioHook {
             // title/author/artwork. Good titles skip this entirely.
             let wantMeta = onMetadata != nil && episode.title.contains("://")
             let infoJSONURL = showDir.appendingPathComponent("\(slug).info.json")
-            var args = YtDlp.hardenedBaseArgs + [
-                "--continue",          // resume partial downloads across retries (Group B)
-                "--no-playlist",       // a single item even if the URL also references a list
-                "--no-progress",
-                "--extract-audio",
-                "--audio-format", "mp3",
-                "--audio-quality", "0",
-                "-o", outTemplate,
-            ]
-            if wantMeta { args += ["--write-info-json"] }
-            args += ["--", url.absoluteString]
+            let args = buildAudioArgs(
+                outTemplate: outTemplate,
+                ffmpegDir: ffmpegDir,
+                wantMeta: wantMeta,
+                urlString: url.absoluteString
+            )
 
             Log.info("yt-dlp audio download starting",
                      component: "YtDlpAudioHook",

@@ -12,6 +12,10 @@ public enum ManagedTool: String, Sendable, CaseIterable {
     /// ffmpeg: self-managed — an arch-specific static build is downloaded (no
     /// Homebrew, no admin). An existing Homebrew ffmpeg is still honoured first.
     case ffmpeg
+    /// ffprobe: self-managed alongside ffmpeg (yt-dlp's post-processing needs
+    /// BOTH). Same eugeneware/ffmpeg-static release, arm64-only (Vocateca is
+    /// Apple-Silicon-only). An existing Homebrew ffprobe is honoured first.
+    case ffprobe
 }
 
 // MARK: - Errors
@@ -134,15 +138,44 @@ private func currentCPUArch() -> String {
 /// The pinned ffmpeg release for the current arch (nil on an unknown arch).
 private func ffmpegPin() -> PinnedRelease? { ffmpegPinsByArch[currentCPUArch()] }
 
+// ffprobe rides the SAME eugeneware/ffmpeg-static b6.1.1 release as ffmpeg
+// (ad-hoc-signed → runs on Apple Silicon with no admin/Homebrew/re-signing).
+// yt-dlp's audio post-processing needs ffprobe as well as ffmpeg, and the
+// static ffmpeg build ships WITHOUT it — so a no-Homebrew user got only ffmpeg
+// (2026-07-16). ARM64-ONLY on purpose: Vocateca does not support x86_64, so no
+// Intel pin is carried (a Rosetta run would resolve `currentCPUArch()` to
+// arm64 anyway). Hash independently computed by downloading the asset.
+private let ffprobePinsByArch: [String: PinnedRelease] = [
+    "arm64": PinnedRelease(
+        version: "b6.1.1",
+        url: URL(string:
+            "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-arm64"
+        )!,
+        sha256: "bb2db6f5d8cef919da12fbf592119a987202a8c060a886f3cab091f9cab90b64"
+    ),
+]
+
+/// The pinned ffprobe release for the current arch (nil off arm64).
+private func ffprobePin() -> PinnedRelease? { ffprobePinsByArch[currentCPUArch()] }
+
 // MARK: - Download URLs
 
 private extension ManagedTool {
     /// The pinned GitHub/Codeberg release asset URL for this tool's macOS
     /// standalone build. NEVER a `releases/latest` floating redirect (H-1) —
     /// see `pinnedReleases` above.
+    /// The pinned release for this tool (arch-resolved for ffmpeg/ffprobe).
+    var pinnedRelease: PinnedRelease? {
+        switch self {
+        case .ffmpeg:  return ffmpegPin()
+        case .ffprobe: return ffprobePin()
+        default:       return pinnedReleases[self]
+        }
+    }
+
     var downloadURL: URL {
         get throws {
-            guard let pin = (self == .ffmpeg ? ffmpegPin() : pinnedReleases[self]) else {
+            guard let pin = pinnedRelease else {
                 throw BinaryManagerError.toolNotManaged(self)
             }
             return pin.url
@@ -150,9 +183,7 @@ private extension ManagedTool {
     }
 
     /// The pinned SHA-256 hex digest this tool's download must match.
-    var expectedSHA256: String? {
-        (self == .ffmpeg ? ffmpegPin() : pinnedReleases[self])?.sha256
-    }
+    var expectedSHA256: String? { pinnedRelease?.sha256 }
 
     /// The version-flag arguments for this tool.
     var versionArgs: [String] {
@@ -160,6 +191,7 @@ private extension ManagedTool {
         case .ytDlp:     return ["--version"]
         case .galleryDL: return ["--version"]
         case .ffmpeg:    return ["-version"]
+        case .ffprobe:   return ["-version"]
         }
     }
 }
@@ -170,6 +202,12 @@ private let homebrewFFmpegCandidates: [URL] = [
     URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg"),   // Apple Silicon
     URL(fileURLWithPath: "/usr/local/bin/ffmpeg"),       // Intel Mac
     URL(fileURLWithPath: "/opt/local/bin/ffmpeg"),       // MacPorts
+]
+
+private let homebrewFFprobeCandidates: [URL] = [
+    URL(fileURLWithPath: "/opt/homebrew/bin/ffprobe"),  // Apple Silicon
+    URL(fileURLWithPath: "/usr/local/bin/ffprobe"),      // Intel Mac
+    URL(fileURLWithPath: "/opt/local/bin/ffprobe"),      // MacPorts
 ]
 
 // MARK: - BinaryManager
@@ -239,6 +277,8 @@ public struct BinaryManager: Sendable {
             return nil
         case .ffmpeg:
             return homebrewFFmpegCandidates.first(where: isExecutable)
+        case .ffprobe:
+            return homebrewFFprobeCandidates.first(where: isExecutable)
         }
     }
 
@@ -316,6 +356,9 @@ public struct BinaryManager: Sendable {
     /// "Required" means the pipeline cannot function without them:
     /// - `yt-dlp` — needed for YouTube and generic URL downloads.
     /// - `ffmpeg` — needed for audio extraction from video files.
+    /// - `ffprobe` — yt-dlp's audio post-processing needs it alongside ffmpeg;
+    ///   the static ffmpeg build ships without it, so it's tracked separately
+    ///   (2026-07-16).
     ///
     /// `gallery-dl` is NOT included here (Instagram is optional).
     /// `whisper-cli` / WhisperKit is checked separately by the transcription engine.
@@ -325,7 +368,7 @@ public struct BinaryManager: Sendable {
     ///
     /// - Returns: Array of ``ManagedTool`` values that are missing.
     public func requiredToolsMissing() -> [ManagedTool] {
-        let required: [ManagedTool] = [.ytDlp, .ffmpeg]
+        let required: [ManagedTool] = [.ytDlp, .ffmpeg, .ffprobe]
         return required.filter { !isInstalled($0) }
     }
 
@@ -358,8 +401,8 @@ public struct BinaryManager: Sendable {
             // First non-empty line is the bare version.
             return lines.first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-        case .ffmpeg:
-            // First line: "ffmpeg version <X> Copyright ..."
+        case .ffmpeg, .ffprobe:
+            // First line: "ffmpeg version <X> …" / "ffprobe version <X> …"
             // We want the token immediately after the word "version".
             for line in lines {
                 let tokens = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }

@@ -30,6 +30,39 @@ public struct Subprocess: Sendable {
 
     public init() {}
 
+    // MARK: - Environment / PATH hardening
+    //
+    // A Finder/Launchpad-launched macOS app inherits launchd's MINIMAL PATH
+    // (`/usr/bin:/bin:/usr/sbin:/sbin`) — it does NOT read the user's shell
+    // rc, so `/opt/homebrew/bin` is absent. Any child tool we spawn (and its
+    // grandchildren — e.g. yt-dlp shelling out to ffmpeg/ffprobe) then can't
+    // find Homebrew/MacPorts binaries the user clearly installed. That was the
+    // root cause of "ffprobe and ffmpeg not found" despite `brew install`
+    // (2026-07-16). We prepend the well-known tool dirs to PATH for every
+    // spawned process so the app never silently depends on the login PATH.
+
+    /// Directories prepended to a spawned process's `PATH`: Homebrew (Apple
+    /// Silicon + Intel), MacPorts, and our own managed-binary dir.
+    public static var toolSearchDirs: [String] {
+        ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin",
+         Paths.userDataDir().appendingPathComponent("bin", isDirectory: true).path]
+    }
+
+    /// The environment a spawned process should run with. An explicit `override`
+    /// is used verbatim (callers that pass one own the whole environment);
+    /// otherwise the current process environment is returned with
+    /// ``toolSearchDirs`` prepended to `PATH` (duplicates removed, order kept).
+    /// Pure + `nil`-safe so it can be unit-tested without spawning anything.
+    static func resolvedEnvironment(_ override: [String: String]?) -> [String: String] {
+        if let override { return override }
+        var env = ProcessInfo.processInfo.environment
+        let existing = env["PATH"].map { $0.split(separator: ":").map(String.init) } ?? []
+        var seen = Set<String>()
+        let merged = (toolSearchDirs + existing).filter { seen.insert($0).inserted }
+        env["PATH"] = merged.joined(separator: ":")
+        return env
+    }
+
     /// Run `executable` with `args` and return combined output.
     ///
     /// - Parameters:
@@ -219,9 +252,7 @@ public struct Subprocess: Sendable {
                 let process = Process()
                 process.executableURL = executable
                 process.arguments = args
-                if let env = environment {
-                    process.environment = env
-                }
+                process.environment = Self.resolvedEnvironment(environment)
 
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
