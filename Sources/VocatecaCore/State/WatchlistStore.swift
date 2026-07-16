@@ -364,6 +364,43 @@ public final class WatchlistStore {
         }
     }
 
+    /// Assigns the same explicit `creator` to every show in `slugs` in a SINGLE
+    /// atomic write — used by the Library's drag-and-drop creator merge, which
+    /// reassigns a whole creator group's shows to another creator at once.
+    /// Unknown slugs are skipped. Passing nil/empty clears the assignment.
+    public func updateCreators(slugs: [String], creator: String?, to url: URL) throws {
+        let trimmed = creator?.trimmingCharacters(in: .whitespaces) ?? ""
+        let slugSet = Set(slugs)
+        try mutateAndSave(to: url) { wl in
+            for idx in wl.shows.indices where slugSet.contains(wl.shows[idx].slug) {
+                wl.shows[idx].creator = trimmed.isEmpty ? nil : trimmed
+            }
+        }
+    }
+
+    /// Groups the shows in `slugs` under one `creator` AND propagates a fallback
+    /// thumbnail, in a SINGLE atomic write — the Library's drag-a-show-onto-
+    /// another merge.
+    ///
+    /// `artworkFallback` (the first non-empty artwork among the merged shows) is
+    /// written ONLY into shows whose own `artworkUrl` is empty, so a
+    /// thumbnail-less source adopts the available one while shows that already
+    /// have their own thumbnail keep it untouched. Empty `artworkFallback` (no
+    /// source had artwork) leaves every artwork as-is. Unknown slugs are skipped.
+    public func mergeShows(slugs: [String], creator: String, artworkFallback: String, to url: URL) throws {
+        let trimmedCreator = creator.trimmingCharacters(in: .whitespaces)
+        let fallback = artworkFallback.trimmingCharacters(in: .whitespaces)
+        let slugSet = Set(slugs)
+        try mutateAndSave(to: url) { wl in
+            for idx in wl.shows.indices where slugSet.contains(wl.shows[idx].slug) {
+                wl.shows[idx].creator = trimmedCreator.isEmpty ? nil : trimmedCreator
+                if !fallback.isEmpty, wl.shows[idx].artworkUrl.trimmingCharacters(in: .whitespaces).isEmpty {
+                    wl.shows[idx].artworkUrl = fallback
+                }
+            }
+        }
+    }
+
     /// Updates the user-overridable display-name override (``Show/customTitle``)
     /// of the show identified by `slug` in memory and persists the change
     /// atomically to `url`.

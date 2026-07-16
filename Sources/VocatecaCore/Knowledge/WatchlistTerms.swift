@@ -53,9 +53,23 @@ public extension KeywordWatch {
     /// Scans `text` for every enabled `WatchTerm`, returning one `WatchlistHit`
     /// per match (in text order per term).
     ///
-    /// - Plain term → `\bTERM\b`, case-insensitive (so "AI" won't hit "chair").
+    /// - Plain term → `\bTERM` (word-boundary PREFIX match), case-insensitive.
+    ///   "ai" matches the standalone word "AI" but not "chair"/"Chairman"
+    ///   (no boundary before "ai" inside those words) — same exclusion as
+    ///   before. Unlike the old `\bTERM\b` (both boundaries), a prefix match
+    ///   also catches a term at the START of a longer word, e.g. "energie"
+    ///   now matches "Energiewende"/"Energien"/"energieeffizientere". This
+    ///   deliberately mirrors `StateStore.makeFTSMatchExpression`'s `"term"*`
+    ///   FTS5 prefix-token query — the SAME matching semantics the Library
+    ///   full-text search already uses successfully against German compound
+    ///   words — so a keyword that finds plenty of hits via Library search no
+    ///   longer silently under-counts in the Watchlist scan (2026-07-16: a
+    ///   German "Energie" term whole-word-matched only standalone "Energie"
+    ///   occurrences, missing "Energiewende"/"Energiepreis"/etc. compounds
+    ///   that make up the bulk of real hits in German transcripts).
     /// - `isRegex` term → the raw pattern, case-insensitive; an invalid pattern
-    ///   is skipped (never throws).
+    ///   is skipped (never throws). Users who want the OLD exact-word-only
+    ///   behaviour can still write `\bTERM\b` themselves via regex mode.
     /// - `snippetRadius` characters of context are captured on each side.
     static func evaluate(text: String, terms: [WatchTerm], snippetRadius: Int = 40) -> [WatchlistHit] {
         guard !text.isEmpty else { return [] }
@@ -66,8 +80,10 @@ public extension KeywordWatch {
         for term in terms where term.enabled && !term.term.isEmpty {
             let pattern = term.isRegex
                 ? term.term
-                : "\\b\(NSRegularExpression.escapedPattern(for: term.term))\\b"
+                : "\\b\(NSRegularExpression.escapedPattern(for: term.term))"
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+                Log.warn("KeywordWatch: invalid regex term skipped", component: "Watchlist",
+                         context: [("termID", term.id), ("isRegex", "\(term.isRegex)")])
                 continue  // invalid regex → skip, don't crash
             }
             for match in regex.matches(in: text, options: [], range: full) {

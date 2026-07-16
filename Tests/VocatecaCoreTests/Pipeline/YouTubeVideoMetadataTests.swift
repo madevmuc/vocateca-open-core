@@ -12,14 +12,16 @@ final class YouTubeVideoMetadataTests: XCTestCase {
     // MARK: - parseMetaLine (pure, no I/O)
 
     func testParseMetaLine_fullFields() {
-        let line = "dQw4w9WgXcQ|Never Gonna Give You Up|UCuAXFkgsw1L7xaCfnd5JJOw|@RickAstleyYT"
+        let line = "dQw4w9WgXcQ|Never Gonna Give You Up|UCuAXFkgsw1L7xaCfnd5JJOw|@RickAstleyYT|en|Rick Astley"
         let meta = YtDlpVideoMetadataFetcher.parseMetaLine(line)
 
         XCTAssertEqual(meta, YouTubeVideoMeta(
             videoID: "dQw4w9WgXcQ",
             title: "Never Gonna Give You Up",
             channelID: "UCuAXFkgsw1L7xaCfnd5JJOw",
-            channelHandle: "@RickAstleyYT"
+            channelHandle: "@RickAstleyYT",
+            channelName: "Rick Astley",
+            language: "en"
         ))
     }
 
@@ -63,6 +65,33 @@ final class YouTubeVideoMetadataTests: XCTestCase {
         let meta = YtDlpVideoMetadataFetcher.parseMetaLine(line)
 
         XCTAssertNil(meta?.language)
+    }
+
+    // MARK: - channel display name (6th `--print` column)
+
+    func testParseMetaLine_withChannelName() {
+        let line = "dQw4w9WgXcQ|Never Gonna Give You Up|UCuAXFkgsw1L7xaCfnd5JJOw|@RickAstleyYT|en|Rick Astley"
+        let meta = YtDlpVideoMetadataFetcher.parseMetaLine(line)
+
+        XCTAssertEqual(meta?.channelName, "Rick Astley")
+    }
+
+    func testParseMetaLine_channelNameNAOrEmpty_isNil() {
+        let na = YtDlpVideoMetadataFetcher.parseMetaLine("dQw4w9WgXcQ|Title|NA|NA|NA|NA")
+        let empty = YtDlpVideoMetadataFetcher.parseMetaLine("dQw4w9WgXcQ|Title|NA|NA|NA|")
+
+        XCTAssertNil(na?.channelName)
+        XCTAssertNil(empty?.channelName)
+    }
+
+    /// Lines from before the `channel` field was added (only 5 columns) must
+    /// still parse, with `channelName == nil` — additive, not a breaking
+    /// change to the `--print` contract.
+    func testParseMetaLine_missingChannelNameColumn_isNil() {
+        let line = "dQw4w9WgXcQ|Never Gonna Give You Up|UCuAXFkgsw1L7xaCfnd5JJOw|@RickAstleyYT|en"
+        let meta = YtDlpVideoMetadataFetcher.parseMetaLine(line)
+
+        XCTAssertNil(meta?.channelName)
     }
 
     // MARK: - FakeVideoMetadataFetcher self-test

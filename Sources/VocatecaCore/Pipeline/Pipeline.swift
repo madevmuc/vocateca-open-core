@@ -100,6 +100,16 @@ public struct Pipeline: Sendable {
     private static let downloadFractionEnd    = 0.12
     private static let transcribeFractionStart = 0.12
     private static let transcribeFractionEnd   = 1.0
+    // ASR (Whisper/Parakeet) reports up to `asrFractionEnd`; the remainder of the
+    // transcribe band is RESERVED for the post-ASR finalize work — speaker
+    // diarization (the slow tail) + the library write. Without this reservation
+    // the ASR callback drove the bar to 100% while diarization (which can run for
+    // tens of seconds on a long episode) still executed with no further progress
+    // events, so the bar sat pinned at "Transcribing 100%" — the reported bug.
+    private static let asrFractionEnd          = 0.90
+    // Diarization maps its own 0…1 progress into `asrFractionEnd`…`diarizeFractionEnd`;
+    // the final jump to `transcribeFractionEnd` (1.0) happens at the Done emit.
+    private static let diarizeFractionEnd      = 0.98
 
     /// Splits an overall pipeline fraction (0…1) back into the current phase's
     /// own 0…1 fraction and its step index, for a two-step UI:
@@ -210,7 +220,7 @@ public struct Pipeline: Sendable {
             case "manual", "auto":
                 if let vtt = await YtDlpCaptionFetcher.fetch(
                         videoURL: videoURL, auto: source == "auto", langHint: langHint),
-                   let result = TranscriptFormat.captionResult(fromVTT: vtt, language: langHint) {
+                   let result = TranscriptFormat.captionResult(fromVTT: vtt, language: langHint, isAuto: source == "auto") {
                     // Tag provenance: platform auto-captions vs author-provided.
                     let kind: TranscriptOrigin.CaptionKind = (source == "auto") ? .auto : .manual
                     return result.withOrigin(.captions(kind))
@@ -269,6 +279,11 @@ public struct Pipeline: Sendable {
     /// UI layer (`QueueController.syncItems()`) can match on it without
     /// duplicating the string literal.
     public static let modelLoadingPhase = "modelLoading"
+
+    /// The `phase` value for the speaker-diarization step that runs AFTER ASR
+    /// but before `.done`. Lets the UI show a distinct "Identifying speakers…"
+    /// label + a moving bar (0.90→0.98) instead of a frozen "Transcribing 100%".
+    public static let diarizingPhase = "diarizing"
 
     /// Emits a `modelLoading` progress event immediately before a cold engine's
     /// first `transcribe` call (see the `isWarm` check in `process`). The
@@ -529,8 +544,11 @@ public struct Pipeline: Sendable {
                 // long transcription (tens of minutes) keeps its ownership row fresh
                 // and a concurrent reclaim never mistakes it for an orphan.
                 let transcribeProgress: ProgressReporter = { [self] segFraction in
+                    // Map ASR 0…1 into [start, asrEnd] (NOT …1.0): the top of the
+                    // band is reserved for diarization + write so the bar keeps
+                    // moving past ASR instead of freezing at 100%.
                     let overall = Self.transcribeFractionStart +
-                        segFraction * (Self.transcribeFractionEnd - Self.transcribeFractionStart)
+                        segFraction * (Self.asrFractionEnd - Self.transcribeFractionStart)
                     self.emitProgress(guid: guid, showSlug: showSlug,
                                       phase: "transcribing", fraction: overall)
                     try? self.store.heartbeatJob(guid: guid, pid: Self.currentPID)
@@ -560,8 +578,11 @@ public struct Pipeline: Sendable {
                              component: "Pipeline",
                              context: [("guid", guid), ("show", showSlug),
                                         ("segments", "\(captionResult.segments.count)")])
+                    // Cap at the ASR end (not 1.0), same as the Whisper path, so
+                    // the shared diarize→write→done finalize band below doesn't
+                    // jump the bar backwards from 100%.
                     self.emitProgress(guid: guid, showSlug: showSlug,
-                                      phase: "transcribing", fraction: Self.transcribeFractionEnd)
+                                      phase: "transcribing", fraction: Self.asrFractionEnd)
                     transcriptResult = captionResult
                 } else {
                     // Visible model-load step (kills the "hängt es?" moment).
@@ -748,8 +769,21 @@ public struct Pipeline: Sendable {
                          context: [("guid", guid), ("show", showSlug),
                                     ("file", mediaURL.lastPathComponent),
                                     ("asrSegments", "\(transcriptResult.segments.count)")])
+                // Switch the UI to the "diarizing" phase immediately (before the
+                // first diarizer callback), so the label + bar move off
+                // "Transcribing 100%" the instant ASR ends.
+                emitProgress(guid: guid, showSlug: showSlug,
+                             phase: Self.diarizingPhase, fraction: Self.asrFractionEnd)
                 do {
-                    let speakers = try await diarizer.diarize(audioURL: mediaURL, progress: nil)
+                    // Real progress this time (was `nil`): map the diarizer's 0…1
+                    // into [asrEnd, diarizeEnd] so the bar advances through the
+                    // formerly-silent diarization tail.
+                    let speakers = try await diarizer.diarize(audioURL: mediaURL, progress: { [self] frac in
+                        let overall = Self.asrFractionEnd
+                            + max(0, min(1, frac)) * (Self.diarizeFractionEnd - Self.asrFractionEnd)
+                        self.emitProgress(guid: guid, showSlug: showSlug,
+                                          phase: Self.diarizingPhase, fraction: overall)
+                    })
                     let tagged = SpeakerAssignment.assign(transcriptResult.segments, speakers: speakers)
                     transcriptResult = TranscriptionResult(
                         text: transcriptResult.text,

@@ -6,7 +6,7 @@ final class SettingsYouTubeExplorerFieldsTests: XCTestCase {
 
     func testDefaults() {
         let s = Settings()
-        XCTAssertEqual(s.youtubeExplorerEnabled, false)
+        XCTAssertEqual(s.youtubeExplorerEnabled, true)   // default ON (ships enabled)
         XCTAssertEqual(s.youtubeCopyFormat, "txt")
     }
 
@@ -19,7 +19,7 @@ final class SettingsYouTubeExplorerFieldsTests: XCTestCase {
     func testDecodeMissingKeysFallBackToDefaults() throws {
         let yaml = "output_root: /tmp/out\n"
         let decoded = try YAMLDecoder().decode(Settings.self, from: yaml)
-        XCTAssertEqual(decoded.youtubeExplorerEnabled, false)
+        XCTAssertEqual(decoded.youtubeExplorerEnabled, true)   // absent key → default (now ON)
         XCTAssertEqual(decoded.youtubeCopyFormat, "txt")
     }
 

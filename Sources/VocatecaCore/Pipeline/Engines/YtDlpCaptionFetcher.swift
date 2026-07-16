@@ -177,8 +177,8 @@ public enum YtDlpCaptionFetcher {
     }
 
     /// Parses a single `yt-dlp --dump-json` output line into video metadata
-    /// (`id`/`title`/`channel_id`/`uploader_id`/`language`) plus the
-    /// `subtitles`/`automatic_captions` dictionaries as ``CaptionTrack``s.
+    /// (`id`/`title`/`channel_id`/`uploader_id`/`channel`/`language`) plus
+    /// the `subtitles`/`automatic_captions` dictionaries as ``CaptionTrack``s.
     /// Pure, no I/O — internal so tests can hit it directly without a
     /// subprocess.
     ///
@@ -201,6 +201,13 @@ public enum YtDlpCaptionFetcher {
             guard let s, !s.isEmpty, s != "NA" else { return nil }
             return s
         }
+        func doubleValue(_ key: String) -> Double? {
+            switch root[key] {
+            case .number(let n)?:            return n
+            case .string(let s)?:            return Double(s)  // yt-dlp sometimes emits it as a string
+            default:                         return nil
+            }
+        }
 
         let videoID = stringValue("id") ?? ""
         let meta: YouTubeVideoMeta? = videoID.isEmpty ? nil : YouTubeVideoMeta(
@@ -208,7 +215,20 @@ public enum YtDlpCaptionFetcher {
             title: stringValue("title") ?? "",
             channelID: presentOrNil(stringValue("channel_id")),
             channelHandle: presentOrNil(stringValue("uploader_id")),
-            language: presentOrNil(stringValue("language")))
+            // "channel" is yt-dlp's channel DISPLAY name (e.g. "The Diary Of
+            // A CEO"), distinct from "uploader_id" (the @handle). Needed so
+            // a saved YouTube show's author can match a same-creator
+            // podcast's author/title for CreatorAggregator grouping.
+            channelName: presentOrNil(stringValue("channel")),
+            language: presentOrNil(stringValue("language")),
+            // Video shape (width÷height) so the Explorer sizes the player to the
+            // real video instead of a fixed box. Prefer the direct `aspect_ratio`
+            // field; fall back to width/height when it's absent.
+            aspectRatio: doubleValue("aspect_ratio")
+                ?? {
+                    if let w = doubleValue("width"), let h = doubleValue("height"), h > 0 { return w / h }
+                    return nil
+                }())
 
         func tracks(from key: String, isAuto: Bool) -> [CaptionTrack] {
             guard case .object(let langs)? = root[key] else { return [] }

@@ -13,6 +13,15 @@ public struct YouTubeVideoMeta: Sendable, Equatable {
     public let channelID: String?
     public let channelHandle: String?
 
+    /// The channel's DISPLAY name — yt-dlp's `%(channel)s` — e.g. "The Diary
+    /// Of A CEO", distinct from `channelHandle` (the `@handle`-style
+    /// `uploader_id`, e.g. "@thediaryofaceo") and `channelID` (the opaque
+    /// `UC…` id). This is what lets a saved YouTube show's `author` match a
+    /// same-creator podcast's `author`/title for ``CreatorAggregator``
+    /// grouping — the handle/ID never do. `nil` when yt-dlp couldn't
+    /// determine it.
+    public let channelName: String?
+
     /// The video's ORIGINAL (creator-authored) language, e.g. `"en"` — yt-dlp's
     /// `%(language)s`. `nil` when yt-dlp couldn't determine it. Used by
     /// `YouTubeTranscriptService`'s caption selection (see
@@ -28,12 +37,23 @@ public struct YouTubeVideoMeta: Sendable, Equatable {
     /// standalone metadata-only probe for any other caller that needs one.
     public let language: String?
 
-    public init(videoID: String, title: String, channelID: String?, channelHandle: String?, language: String? = nil) {
+    /// The video's aspect ratio (width ÷ height), e.g. `1.777…` for 16:9,
+    /// `1.333…` for 4:3, `0.5625` for a 9:16 Short — yt-dlp's `%(aspect_ratio)s`.
+    /// Lets the Explorer size the player to the actual video shape instead of a
+    /// fixed box. `nil` when yt-dlp couldn't determine it (caller defaults 16:9).
+    public let aspectRatio: Double?
+
+    public init(
+        videoID: String, title: String, channelID: String?, channelHandle: String?,
+        channelName: String? = nil, language: String? = nil, aspectRatio: Double? = nil
+    ) {
         self.videoID = videoID
         self.title = title
         self.channelID = channelID
         self.channelHandle = channelHandle
+        self.channelName = channelName
         self.language = language
+        self.aspectRatio = aspectRatio
     }
 }
 
@@ -85,7 +105,7 @@ public struct YtDlpVideoMetadataFetcher: YouTubeVideoMetadataFetching {
         let args = YtDlp.hardenedBaseArgs + [
             "--skip-download",
             "--no-playlist",
-            "--print", "%(id)s|%(title)s|%(channel_id)s|%(uploader_id)s|%(language)s",
+            "--print", "%(id)s|%(title)s|%(channel_id)s|%(uploader_id)s|%(language)s|%(channel)s",
             "--", safe,
         ]
 
@@ -112,11 +132,12 @@ public struct YtDlpVideoMetadataFetcher: YouTubeVideoMetadataFetching {
     ///
     /// - Returns: `nil` if `line` does not contain at least 4 `|`-separated
     ///   fields (malformed output). `"NA"` and `""` are treated as absent for
-    ///   `channelID`/`channelHandle`/`language` (yt-dlp's placeholder for a
-    ///   missing field); `videoID`/`title` are always non-optional strings
-    ///   (empty if yt-dlp printed nothing for them, never `nil`). The 5th
-    ///   (`language`) field is optional in the input — lines from before this
-    ///   field was added still parse, with `language == nil`.
+    ///   `channelID`/`channelHandle`/`language`/`channelName` (yt-dlp's
+    ///   placeholder for a missing field); `videoID`/`title` are always
+    ///   non-optional strings (empty if yt-dlp printed nothing for them,
+    ///   never `nil`). The 5th (`language`) and 6th (`channel` display name)
+    ///   fields are both optional in the input — lines from before either
+    ///   field was added still parse, with `language`/`channelName == nil`.
     static func parseMetaLine(_ line: String) -> YouTubeVideoMeta? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         let fields = trimmed.components(separatedBy: "|")
@@ -131,6 +152,7 @@ public struct YtDlpVideoMetadataFetcher: YouTubeVideoMetadataFetching {
             title: fields[1],
             channelID: presentOrNil(fields[2]),
             channelHandle: presentOrNil(fields[3]),
+            channelName: fields.count >= 6 ? presentOrNil(fields[5]) : nil,
             language: fields.count >= 5 ? presentOrNil(fields[4]) : nil
         )
     }

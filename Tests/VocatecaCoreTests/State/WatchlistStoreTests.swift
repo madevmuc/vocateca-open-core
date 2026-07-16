@@ -459,6 +459,77 @@ final class WatchlistStoreTests: XCTestCase {
             "updateMetadata on unknown slug must not modify other shows")
     }
 
+    // MARK: - updateCreators (batch, drag-and-drop merge)
+
+    func testUpdateCreators_assignsSameCreatorToAllGivenSlugs() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = watchlistURL(in: dir)
+        let store = WatchlistStore()
+        // Distinct rss per show — `add` dedups by slug OR rss, so a shared feed
+        // URL would collapse them into one entry.
+        store.add(makeShow(slug: "a", rss: "https://example.com/a.xml"))
+        store.add(makeShow(slug: "b", rss: "https://example.com/b.xml"))
+        store.add(makeShow(slug: "c", rss: "https://example.com/c.xml"))
+        try store.save(to: url)
+
+        // Merge a + b into creator "Target"; c is untouched (not in the slug set).
+        try store.updateCreators(slugs: ["a", "b"], creator: "Target", to: url)
+
+        let reloaded = try WatchlistStore.load(from: url)
+        let byslug = Dictionary(uniqueKeysWithValues: reloaded.watchlist.shows.map { ($0.slug, $0) })
+        XCTAssertEqual(byslug["a"]?.creator, "Target")
+        XCTAssertEqual(byslug["b"]?.creator, "Target")
+        XCTAssertNil(byslug["c"]?.creator, "shows not in the slug set keep their creator")
+    }
+
+    func testUpdateCreators_emptyOrNilClearsAndUnknownSlugsSkipped() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = watchlistURL(in: dir)
+        let store = WatchlistStore()
+        store.add(makeShow(slug: "a"))
+        try store.save(to: url)
+        try store.updateCreators(slugs: ["a"], creator: "X", to: url)
+
+        // nil/empty clears; unknown slugs are silently skipped (no throw).
+        try store.updateCreators(slugs: ["a", "ghost"], creator: "   ", to: url)
+
+        let reloaded = try WatchlistStore.load(from: url)
+        XCTAssertNil(reloaded.watchlist.shows.first(where: { $0.slug == "a" })?.creator,
+            "blank creator clears the assignment")
+    }
+
+    // MARK: - mergeShows (drag-a-show-onto-another, thumbnail propagation)
+
+    func testMergeShows_groupsUnderCreatorAndFillsOnlyEmptyThumbnails() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = watchlistURL(in: dir)
+        let store = WatchlistStore()
+        var a = makeShow(slug: "a", rss: "https://example.com/a.xml"); a.artworkUrl = "https://img/a.jpg"
+        var b = makeShow(slug: "b", rss: "https://example.com/b.xml")                      // no artwork
+        var c = makeShow(slug: "c", rss: "https://example.com/c.xml"); c.artworkUrl = "https://img/c.jpg"
+        store.add(a); store.add(b); store.add(c)
+        try store.save(to: url)
+
+        // Group a + b under "Creator X"; fallback = a's thumbnail.
+        try store.mergeShows(slugs: ["a", "b"], creator: "Creator X",
+                             artworkFallback: "https://img/a.jpg", to: url)
+
+        let reloaded = try WatchlistStore.load(from: url)
+        let byslug = Dictionary(uniqueKeysWithValues: reloaded.watchlist.shows.map { ($0.slug, $0) })
+        XCTAssertEqual(byslug["a"]?.creator, "Creator X")
+        XCTAssertEqual(byslug["b"]?.creator, "Creator X")
+        XCTAssertEqual(byslug["a"]?.artworkUrl, "https://img/a.jpg", "show with its own thumbnail keeps it")
+        XCTAssertEqual(byslug["b"]?.artworkUrl, "https://img/a.jpg", "thumbnail-less show adopts the fallback")
+        XCTAssertNil(byslug["c"]?.creator, "shows not in the merge are untouched")
+        XCTAssertEqual(byslug["c"]?.artworkUrl, "https://img/c.jpg")
+    }
+
     // MARK: - addInstagram convenience
 
     /// Handle with @ prefix normalises to the same slug as one without.

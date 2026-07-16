@@ -12,6 +12,16 @@ public struct ExtractedTranscript: Sendable, Equatable {
     public let title: String
     public let channelID: String?
     public let channelHandle: String?
+    /// The channel's DISPLAY name (yt-dlp's `%(channel)s` / `--dump-json`
+    /// `"channel"`), e.g. "The Diary Of A CEO" — distinct from
+    /// `channelHandle` (the `@handle`-style `uploader_id`). This is the
+    /// value `YouTubeExplorerLibrarySave` uses as both the saved show's
+    /// title and `author`, so a same-creator podcast (whose `author`/title
+    /// normalises to the same key) gets grouped with it by
+    /// ``CreatorAggregator``. `nil` when yt-dlp couldn't determine it (e.g.
+    /// the fast known-track path in `captions(forVideoURL:track:)`, which
+    /// does no metadata fetch at all).
+    public let channelName: String?
     public let segments: [TranscriptionSegment]
     public let language: String?
 
@@ -36,24 +46,34 @@ public struct ExtractedTranscript: Sendable, Equatable {
     /// captions", not who wrote them.
     public let captionsAuto: Bool?
 
+    /// The video's aspect ratio (width ÷ height) from the yt-dlp manifest — e.g.
+    /// `1.777…` (16:9), `1.333…` (4:3), `0.5625` (9:16 Short). Lets the Explorer
+    /// size the player to the real video shape. `nil` when unknown (view
+    /// defaults to 16:9).
+    public let aspectRatio: Double?
+
     public init(
         videoID: String,
         title: String,
         channelID: String?,
         channelHandle: String?,
+        channelName: String? = nil,
         segments: [TranscriptionSegment],
         language: String?,
         source: Source,
-        captionsAuto: Bool? = nil
+        captionsAuto: Bool? = nil,
+        aspectRatio: Double? = nil
     ) {
         self.videoID = videoID
         self.title = title
         self.channelID = channelID
         self.channelHandle = channelHandle
+        self.channelName = channelName
         self.segments = segments
         self.language = language
         self.source = source
         self.captionsAuto = captionsAuto
+        self.aspectRatio = aspectRatio
     }
 }
 
@@ -150,7 +170,7 @@ public enum YouTubeTranscriptService: Sendable {
                    context: [("videoID", videoID), ("language", track.languageCode), ("auto", "\(track.isAuto)")])
 
         guard let vtt = await fetchVTT(for: track, videoURL: url, captionFetcher: captionFetcher),
-              let result = TranscriptFormat.captionResult(fromVTT: vtt, language: track.languageCode)
+              let result = TranscriptFormat.captionResult(fromVTT: vtt, language: track.languageCode, isAuto: track.isAuto)
         else {
             Log.info("YouTubeTranscriptService: fetch of known track failed", component: "Captions",
                       context: [("videoID", videoID), ("language", track.languageCode)])
@@ -272,7 +292,7 @@ public enum YouTubeTranscriptService: Sendable {
                    context: [("videoID", videoID), ("language", chosen.languageCode), ("auto", "\(chosen.isAuto)")])
 
         guard let vtt = await fetchVTT(for: chosen, videoURL: url, captionFetcher: captionFetcher),
-              let result = TranscriptFormat.captionResult(fromVTT: vtt, language: chosen.languageCode)
+              let result = TranscriptFormat.captionResult(fromVTT: vtt, language: chosen.languageCode, isAuto: chosen.isAuto)
         else {
             Log.info("YouTubeTranscriptService: fetch of selected track failed", component: "Captions",
                       context: [("videoID", videoID), ("language", chosen.languageCode)])
@@ -288,10 +308,12 @@ public enum YouTubeTranscriptService: Sendable {
             title: meta?.title.isEmpty == false ? meta!.title : videoID,
             channelID: meta?.channelID,
             channelHandle: meta?.channelHandle,
+            channelName: meta?.channelName,
             segments: result.segments,
             language: result.language,
             source: .captions,
-            captionsAuto: chosen.isAuto)
+            captionsAuto: chosen.isAuto,
+            aspectRatio: meta?.aspectRatio)
         return (transcript, tracks)
     }
 

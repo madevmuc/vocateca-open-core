@@ -280,6 +280,138 @@ public struct LibraryIndex: Sendable {
         return nil
     }
 
+    /// Batch-resolves transcript URLs for MANY episodes at once.
+    ///
+    /// **Root cause this fixes (2026-07-16 Library-load-takes-minutes
+    /// investigation):** the per-episode ``resolveTranscriptURL(for:candidateRoots:)``
+    /// above re-lists the show's directory AND re-reads every file's YAML
+    /// frontmatter for EVERY episode whose filename doesn't literally match
+    /// its guid-based slug. On a real library, `episode.transcriptPath` is
+    /// almost never persisted (measured: 3331/3360 "done" episodes, 99.1%,
+    /// had an empty `transcript_path` column) and on-disk filenames are
+    /// human-readable (`yyyy-mm-dd_title.md`, written under a user-configured
+    /// output root) rather than the guid-slug the fast path expects — so
+    /// EVERY resolution fell through to the frontmatter scan. For a show
+    /// with ~650 transcripts (a real one in the repro library) needing ~650
+    /// resolutions, that is up to ~650×650 ≈ 420,000 individual file opens +
+    /// 2 KB reads for ONE show — the confirmed dominant cost behind the
+    /// multi-minute "Loading your library…" hang (`LiveDataLoader.load()`
+    /// awaits exactly this, once per show selection, via
+    /// `LibraryViewModel.resolveHasTranscript`).
+    ///
+    /// This does the same directory listing + frontmatter read only ONCE per
+    /// file (per show, per candidate root), then resolves every requested
+    /// episode via O(1) dictionary lookups — O(files + episodes) instead of
+    /// O(files × episodes). Same match order/semantics as the per-episode
+    /// overload (DB path → filename==slug → frontmatter guid → frontmatter
+    /// title), so callers see identical results, just computed cheaply.
+    ///
+    /// - Parameters:
+    ///   - episodes: episodes to resolve — any mix of show slugs (grouped
+    ///     internally so each show directory is scanned at most once).
+    ///   - candidateRoots: roots to check IN ORDER (canonical root first,
+    ///     then any user-configured fallback), matching the per-episode
+    ///     overload's contract.
+    ///   - onProgress: optional `(done, total)` tick, called as each episode
+    ///     is accounted for (resolved OR exhausted with no match) — `total`
+    ///     is fixed to `episodes.count` up front so a caller can drive a
+    ///     determinate "N / total" progress UI. Defaults to a no-op; purely
+    ///     a side-effect hook that never affects the return value.
+    /// - Returns: `guid → URL` for every episode that resolved on ANY
+    ///   candidate root. Episodes absent from the result have no transcript
+    ///   on disk (or their show directory doesn't exist on any root).
+    public static func resolveTranscriptURLs(
+        for episodes: [Episode],
+        candidateRoots: [URL],
+        onProgress: @Sendable (_ done: Int, _ total: Int) -> Void = { _, _ in }
+    ) -> [String: URL] {
+        var result: [String: URL] = [:]
+        let total = episodes.count
+        guard total > 0 else { return result }
+        var done = 0
+
+        // 1. DB-recorded path first — cheapest check, no directory scan.
+        var remaining: [Episode] = []
+        remaining.reserveCapacity(episodes.count)
+        let fm = FileManager.default
+        for ep in episodes {
+            if let tp = ep.transcriptPath {
+                let u = URL(fileURLWithPath: tp)
+                if fm.fileExists(atPath: u.path) {
+                    result[ep.guid] = u
+                    done += 1
+                    onProgress(done, total)
+                    continue
+                }
+            }
+            remaining.append(ep)
+        }
+        guard !remaining.isEmpty else { return result }
+
+        // 2. Group the rest by show slug so each show directory is scanned
+        //    (and its files' frontmatter read) ONCE per candidate root, no
+        //    matter how many of that show's episodes need resolving.
+        let bySlug = Dictionary(grouping: remaining, by: \.showSlug)
+
+        for (showSlug, epsInShow) in bySlug {
+            var unresolved = epsInShow
+            for root in candidateRoots {
+                guard !unresolved.isEmpty else { break }
+                // Re-slugify: showSlug can originate from untrusted feed/import
+                // data, so never trust it as a bare path component (traversal
+                // guard) — mirrors the per-episode overload.
+                let showDir = root.appendingPathComponent(
+                    TextNormalization.slugify(showSlug), isDirectory: true)
+                guard let files = try? fm.contentsOfDirectory(
+                    at: showDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+                ).filter({ $0.pathExtension == "md" && $0.lastPathComponent != "index.md" }),
+                !files.isEmpty else { continue }
+
+                // Filename-stem → URL, built once for this directory.
+                var slugToURL: [String: URL] = [:]
+                slugToURL.reserveCapacity(files.count)
+                for f in files { slugToURL[f.deletingPathExtension().lastPathComponent] = f }
+
+                // guid → URL / normalizedTitle → URL from frontmatter — ALSO
+                // built once (one open + 2 KB read per FILE, not per episode).
+                var guidToURL: [String: URL] = [:]
+                var titleToURL: [String: URL] = [:]
+                guidToURL.reserveCapacity(files.count)
+                for f in files {
+                    let meta = extractFrontmatter(from: f)
+                    if let g = meta["guid"], !g.isEmpty { guidToURL[g] = f }
+                    if let t = meta["title"], !t.isEmpty { titleToURL[normalizedTitle(t)] = f }
+                }
+
+                var stillUnresolved: [Episode] = []
+                for ep in unresolved {
+                    let wantSlug = MarkdownLibraryWriter.makeSlug(ep)
+                    if let url = slugToURL[wantSlug] {
+                        result[ep.guid] = url
+                    } else if let url = guidToURL[ep.guid] {
+                        result[ep.guid] = url
+                    } else if let url = titleToURL[normalizedTitle(ep.title)] {
+                        result[ep.guid] = url
+                    } else {
+                        stillUnresolved.append(ep)
+                        continue
+                    }
+                    done += 1
+                    onProgress(done, total)
+                }
+                unresolved = stillUnresolved
+            }
+            // Episodes that exhausted every candidate root without a match
+            // still count as "processed" for progress purposes.
+            if !unresolved.isEmpty {
+                done += unresolved.count
+                onProgress(done, total)
+            }
+        }
+
+        return result
+    }
+
     /// Extracts scalar fields from the YAML frontmatter (`---` block) at the top
     /// of the file (only `guid` + `title` are needed). Simple line scan, no YAML
     /// dependency. Returns an empty dict when there's no frontmatter.

@@ -544,7 +544,11 @@ public struct Settings: Codable, Sendable, Equatable {
     public static let defaultSkippedUpdateVersion: String? = nil
 
     // v2-only, Welle YT-Explorer (oracle-excluded)
-    public static let defaultYoutubeExplorerEnabled       = false
+    // Default ON: the YouTube Explorer is the natural surface for a link sent
+    // from the Chrome extension (video + timestamped transcript), so it ships
+    // enabled. A fresh intake also force-enables it (see AppShell's intake
+    // observer) in case a user turned it off.
+    public static let defaultYoutubeExplorerEnabled       = true
     public static let defaultYoutubeCopyFormat            = "txt"
     public static let defaultYoutubeLinkAction           = YouTubeLinkAction.openAndExtract
 

@@ -255,18 +255,126 @@ public enum CreatorAggregator {
     ///   1. Explicit `creator` field (non-empty after trim) — wins over everything.
     ///   2. Non-empty `author` field (normalised case/diacritics).
     ///   3. Title with common source suffixes stripped, then normalised.
+    ///
+    /// Each tier delegates to ``normalisedKey(forName:)`` — the same
+    /// normalisation a raw name string (e.g. a YouTube channel's display
+    /// name) goes through in ``matchingShows(forChannelName:in:)`` — so a
+    /// show's grouping key and an externally-supplied name's match key can
+    /// never silently drift apart.
     static func normalisedKey(for show: CreatorAggregatorShow) -> String {
         if let explicit = show.creator {
             let trimmed = explicit.trimmingCharacters(in: .whitespaces)
             if !trimmed.isEmpty {
-                return normalise(trimmed)
+                return normalisedKey(forName: trimmed)
             }
         }
         let author = show.author.trimmingCharacters(in: .whitespaces)
         if !author.isEmpty {
-            return normalise(author)
+            return normalisedKey(forName: author)
         }
-        return normalise(strippedTitle(show.title))
+        return normalisedKey(forName: show.title)
+    }
+
+    /// Normalises a raw name string (e.g. a YouTube channel's display name,
+    /// or any other externally-supplied creator/brand name) exactly the way
+    /// ``normalisedKey(for:)`` normalises a show's `creator`/`author`/
+    /// `title` field: fold to lowercase, strip diacritics, collapse
+    /// whitespace, and strip the same trailing source suffixes
+    /// ``strippedTitle(_:)`` already strips from a title (a no-op for a
+    /// plain name with no such suffix).
+    ///
+    /// Exposed publicly so match logic OUTSIDE this file (e.g. the YouTube
+    /// Explorer's "same creator as an existing show" detection) can compute
+    /// a key that is guaranteed to agree with how ``aggregate(shows:recentItemsLimit:)``
+    /// would actually group that name.
+    public static func normalisedKey(forName name: String) -> String {
+        normalise(strippedTitle(name))
+    }
+
+    // MARK: - Channel-name match (YouTube Explorer "same creator" detection)
+
+    /// Returns the existing NON-YouTube shows in `shows` that plausibly
+    /// belong to the same creator as a YouTube channel named `name`.
+    ///
+    /// A show matches when its normalised grouping key EQUALS the channel's
+    /// normalised key, OR one key is a WHOLE-WORD prefix of the other. The
+    /// whole-word-prefix rule is what makes the very common real-world shape
+    /// work: a podcast titled "The Diary Of A CEO with Steven Bartlett"
+    /// (key `"the diary of a ceo with steven bartlett"`) matches a channel
+    /// "The Diary Of A CEO" (key `"the diary of a ceo"`), because every word
+    /// of the shorter key equals the leading words of the longer. Exact
+    /// key-equality alone (what ``aggregate(shows:recentItemsLimit:)``'s
+    /// grouping uses) never links those two.
+    ///
+    /// "Unambiguous" (safe to auto-merge) means exactly one match; zero or
+    /// more than one means the caller should fall back to letting the user
+    /// pick manually. A short channel name that is a whole-word prefix of
+    /// several unrelated shows (e.g. "The Daily" vs. "The Daily Show" +
+    /// "The Daily Wire") therefore yields 2 and does NOT auto-link.
+    ///
+    /// YouTube shows are excluded because the caller (the YouTube Explorer)
+    /// is trying to find where an as-yet-unsaved-or-just-saved YouTube video
+    /// belongs — matching it against another YouTube show would be
+    /// meaningless (and could otherwise match the very show being created).
+    ///
+    /// Pure + static, no I/O — operates on the same ``Show`` model the
+    /// watchlist stores, not ``CreatorAggregatorShow`` (the caller doesn't
+    /// need episode counts/recent items just to find a name match).
+    ///
+    /// - Parameter name: a raw creator/channel display name (e.g. a YouTube
+    ///   channel's `%(channel)s`), not yet normalised.
+    /// - Parameter shows: the full list of shows to search (typically the
+    ///   watchlist's current shows).
+    public static func matchingShows(forChannelName name: String, in shows: [Show]) -> [Show] {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return [] }
+        let key = normalisedKey(forName: trimmed)
+        guard !key.isEmpty else { return [] }
+        return shows.filter { show in
+            show.source.lowercased() != "youtube"
+                && keysBelongTogether(key, normalisedKey(forShow: show))
+        }
+    }
+
+    /// True when two normalised keys should be treated as the same creator:
+    /// exact equality, or one is a WHOLE-WORD prefix of the other (split on
+    /// spaces; every word of the shorter sequence equals the leading words
+    /// of the longer). Whole-word so "the daily" matches "the daily show"
+    /// but "the dail" never matches "the daily" (a partial last word is not
+    /// a prefix). Empty keys never match anything.
+    static func keysBelongTogether(_ a: String, _ b: String) -> Bool {
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        if a == b { return true }
+        let wa = a.split(separator: " ")
+        let wb = b.split(separator: " ")
+        let (shorter, longer) = wa.count <= wb.count ? (wa, wb) : (wb, wa)
+        // A single-word key that is a prefix of a multi-word one (e.g.
+        // "diary" ⊂ "diary of a ceo") is too weak a signal to auto-link on,
+        // but the caller's ambiguity guard (count == 1) already blunts false
+        // positives; keep the rule simple and purely whole-word.
+        return Array(longer.prefix(shorter.count)) == Array(shorter)
+    }
+
+    /// Same priority order as ``normalisedKey(for:)`` (creator > author >
+    /// stripped title), operating directly on the ``Show`` model rather than
+    /// the aggregator's own ``CreatorAggregatorShow`` shell — used only by
+    /// ``matchingShows(forChannelName:in:)``, which works with raw watchlist
+    /// shows and has no episode-count/recent-item data to build a full
+    /// ``CreatorAggregatorShow`` from.
+    private static func normalisedKey(forShow show: Show) -> String {
+        if let creator = show.creator {
+            let trimmed = creator.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty {
+                return normalisedKey(forName: trimmed)
+            }
+        }
+        if let author = show.author {
+            let trimmed = author.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty {
+                return normalisedKey(forName: trimmed)
+            }
+        }
+        return normalisedKey(forName: show.title)
     }
 
     // MARK: - Normalisation helpers

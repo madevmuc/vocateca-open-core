@@ -408,11 +408,54 @@ public enum TranscriptFormat: Sendable {
         return out.joined(separator: "\n")
     }
 
+    /// Segment-level analogue of ``dedupeCaptionText``: collapses YouTube's
+    /// rolling auto-caption duplication on timed segments. When a segment's
+    /// (trimmed) text is a verbatim prefix of the next — or an exact duplicate —
+    /// the two merge into one survivor carrying the fuller text and the group's
+    /// widest timing (`start = min`, `end = max`). Order is otherwise preserved.
+    /// Exact-string prefix match, mirroring ``dedupeCaptionText`` (no
+    /// word-boundary logic). Intended for auto-generated captions only.
+    static func dedupeCaptionSegments(_ segs: [TranscriptionSegment]) -> [TranscriptionSegment] {
+        var out: [TranscriptionSegment] = []
+        for seg in segs {
+            let text = seg.text.trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty else { continue }
+            if let last = out.last {
+                let lastText = last.text
+                let merged = { (survivorText: String) in
+                    TranscriptionSegment(
+                        start: Swift.min(last.start, seg.start),
+                        end: Swift.max(last.end, seg.end),
+                        text: survivorText)
+                }
+                if lastText == text {                 // exact duplicate
+                    out[out.count - 1] = merged(lastText); continue
+                }
+                if text.hasPrefix(lastText) {         // build-up → keep fuller (current)
+                    out[out.count - 1] = merged(text); continue
+                }
+                if lastText.hasPrefix(text) {         // shorter build-up after fuller
+                    out[out.count - 1] = merged(lastText); continue
+                }
+            }
+            out.append(TranscriptionSegment(start: seg.start, end: seg.end, text: text))
+        }
+        return out
+    }
+
     /// Builds a `TranscriptionResult` from a YouTube caption VTT, or nil if the
     /// captions are empty. Reuses the oracle-locked vtt→srt→text path, then strips
     /// inline caption tags and collapses rolling-caption duplication.
-    public static func captionResult(fromVTT vtt: String, language: String?) -> TranscriptionResult? {
+    /// When `isAuto` is true, dedup is applied to the timed segments and the text
+    /// is rebuilt from them so the two stay consistent.
+    public static func captionResult(fromVTT vtt: String, language: String?, isAuto: Bool = false) -> TranscriptionResult? {
         let srt = vttToSRT(vtt)
+        if isAuto {
+            let segments = dedupeCaptionSegments(srtToSegments(srt))
+            let text = segments.map(\.text).joined(separator: "\n")
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return TranscriptionResult(text: text, segments: segments, language: language)
+        }
         let text = dedupeCaptionText(stripCaptionTags(srtToPlainText(srt)))
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return TranscriptionResult(text: text, segments: srtToSegments(srt), language: language)

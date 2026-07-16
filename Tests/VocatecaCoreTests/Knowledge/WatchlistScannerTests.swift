@@ -38,6 +38,36 @@ final class WatchlistScannerTests: XCTestCase {
         XCTAssertEqual(try store.fetchWatchlistHits().count, 1)
     }
 
+    /// Regression for the "Energie" undercount: a term whose only occurrences
+    /// in a batch of transcripts are GERMAN COMPOUND words (never the bare
+    /// term standalone) must still yield one hit per matching transcript —
+    /// proving the scanner (via the fixed `KeywordWatch.evaluate` prefix
+    /// match) finds ALL of them, not just a whole-word subset.
+    func testScanFindsHitInEveryTranscriptContainingCompoundOnly() throws {
+        let (store, dir) = try StateStore.makeTemp()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let scanner = WatchlistScanner(store: store)
+        let energieTerm = [WatchTerm(id: "t-energie", term: "Energie")]
+
+        let compoundOnlyTranscripts: [(guid: String, text: String)] = [
+            ("g1", "Die Energiewende kommt schneller als gedacht."),
+            ("g2", "Erneuerbare Energien sind die Zukunft."),
+            ("g3", "Der Energieausweis ist Pflicht beim Verkauf."),
+            ("g4", "Wir brauchen energieeffizientere Gebäude."),
+        ]
+
+        var totalInserted = 0
+        for (guid, text) in compoundOnlyTranscripts {
+            let inserted = try scanner.scan(episodeGuid: guid, showSlug: "s", text: text,
+                                            terms: energieTerm, nowISO: "2026-07-16T00:00:00Z")
+            totalInserted += inserted.count
+        }
+
+        XCTAssertEqual(totalInserted, compoundOnlyTranscripts.count,
+                        "every compound-only transcript must produce exactly one hit")
+        XCTAssertEqual(try store.fetchWatchlistHits().count, compoundOnlyTranscripts.count)
+    }
+
     func testIdempotencyPreservesReadState() throws {
         let (store, dir) = try StateStore.makeTemp()
         defer { try? FileManager.default.removeItem(at: dir) }
