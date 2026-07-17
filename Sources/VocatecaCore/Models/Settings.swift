@@ -230,6 +230,13 @@ public struct Settings: Codable, Sendable, Equatable {
     public var diarizationModelDir: String
     public var diskGuardEnabled: Bool
     public var diskGuardMinFreeGb: Int
+    /// Free-GB threshold below which the app-wide low-disk HUD appears (a
+    /// floating bar that blocks nothing). Stored as `disk_warn_hud_gb`.
+    /// Constrained against the two neighbours by ``DiskThresholds/resolve(hudGb:modalGb:pauseGb:)``.
+    public var diskWarnHudGb: Int
+    /// Free-GB threshold below which the low-disk warning escalates to a modal
+    /// dialog. Stored as `disk_warn_modal_gb`. Always `<= diskWarnHudGb`.
+    public var diskWarnModalGb: Int
     /// Global media-folder size cap: when enabled, the maintenance pass evicts
     /// the oldest downloaded mp3s (by file mtime) until the media dir is back
     /// under this many GB. Decimal GB (×1e9), matching `DiskGuard`. Runs AFTER
@@ -352,15 +359,15 @@ public struct Settings: Codable, Sendable, Equatable {
     /// Oracle-excluded — no Python model counterpart.
     public var showShortcutHints: Bool
 
-    // MARK: - Welle YT-Explorer (experimental tab)
+    // MARK: - YouTube video preview
+    //
+    // (`youtube_explorer_enabled` is gone: it gated a sidebar tab that no longer
+    //  exists — a video with its transcript is a state of the Add tab now, and a
+    //  switch for it could only lie. Old settings.yaml files still carrying the
+    //  key decode fine; every field here is `decodeIfPresent`, so an unknown one
+    //  is simply ignored.)
 
-    /// Master enable switch for the experimental YouTube Explorer sidebar tab
-    /// (embedded player + timestamped transcript). Default OFF — beta feature,
-    /// opt-in via Settings. Stored as `youtube_explorer_enabled`.
-    /// Oracle-excluded — no Python model counterpart.
-    public var youtubeExplorerEnabled: Bool
-
-    /// Default format used by the Explorer tab's "Copy" split-button.
+    /// Default format used by the video preview's "Copy" split-button.
     /// Values: any `TranscriptFormat` id ("md" | "txt" | "srt" | "html" | "okf"
     /// | "vtt" | "csv"). Default `"txt"`. Stored as `youtube_copy_format`.
     /// Oracle-excluded — no Python model counterpart.
@@ -500,6 +507,11 @@ public struct Settings: Codable, Sendable, Equatable {
     public static let defaultDiarizationModelDir          = ""
     public static let defaultDiskGuardEnabled             = true
     public static let defaultDiskGuardMinFreeGb           = 5
+    /// Matches `defaultDiskGuardMinFreeGb`: the HUD is meant to explain the pause
+    /// at the moment work actually stops, not before it.
+    public static let defaultDiskWarnHudGb                = 5
+    /// Well below the HUD, so the escalation has room to be an escalation.
+    public static let defaultDiskWarnModalGb              = 2
     public static let defaultMediaStorageCapGb            = 10
     public static let defaultMediaStorageCapEnabled       = true
     // v2-only
@@ -548,7 +560,6 @@ public struct Settings: Codable, Sendable, Equatable {
     // from the Chrome extension (video + timestamped transcript), so it ships
     // enabled. A fresh intake also force-enables it (see AppShell's intake
     // observer) in case a user turned it off.
-    public static let defaultYoutubeExplorerEnabled       = true
     public static let defaultYoutubeCopyFormat            = "txt"
     public static let defaultYoutubeLinkAction           = YouTubeLinkAction.openAndExtract
 
@@ -643,6 +654,8 @@ public struct Settings: Codable, Sendable, Equatable {
         diarizationModelDir: String           = defaultDiarizationModelDir,
         diskGuardEnabled: Bool                = defaultDiskGuardEnabled,
         diskGuardMinFreeGb: Int               = defaultDiskGuardMinFreeGb,
+        diskWarnHudGb: Int                    = defaultDiskWarnHudGb,
+        diskWarnModalGb: Int                  = defaultDiskWarnModalGb,
         mediaStorageCapGb: Int                = defaultMediaStorageCapGb,
         mediaStorageCapEnabled: Bool          = defaultMediaStorageCapEnabled,
         sourcesInstagram: Bool                = defaultSourcesInstagram,
@@ -675,7 +688,6 @@ public struct Settings: Codable, Sendable, Equatable {
         autoInstallUpdates: Bool               = defaultAutoInstallUpdates,
         updateRemindAfter: Date?               = defaultUpdateRemindAfter,
         skippedUpdateVersion: String?          = defaultSkippedUpdateVersion,
-        youtubeExplorerEnabled: Bool          = defaultYoutubeExplorerEnabled,
         youtubeCopyFormat: String             = defaultYoutubeCopyFormat,
         youtubeLinkAction: YouTubeLinkAction  = defaultYoutubeLinkAction
     ) {
@@ -767,6 +779,8 @@ public struct Settings: Codable, Sendable, Equatable {
         self.diarizationModelDir             = diarizationModelDir
         self.diskGuardEnabled                = diskGuardEnabled
         self.diskGuardMinFreeGb              = diskGuardMinFreeGb
+        self.diskWarnHudGb                   = diskWarnHudGb
+        self.diskWarnModalGb                 = diskWarnModalGb
         self.mediaStorageCapGb               = mediaStorageCapGb
         self.mediaStorageCapEnabled          = mediaStorageCapEnabled
         self.sourcesInstagram                = sourcesInstagram
@@ -799,7 +813,6 @@ public struct Settings: Codable, Sendable, Equatable {
         self.autoInstallUpdates              = autoInstallUpdates
         self.updateRemindAfter               = updateRemindAfter
         self.skippedUpdateVersion            = skippedUpdateVersion
-        self.youtubeExplorerEnabled          = youtubeExplorerEnabled
         self.youtubeCopyFormat               = youtubeCopyFormat
         self.youtubeLinkAction               = youtubeLinkAction
     }
@@ -895,6 +908,8 @@ public struct Settings: Codable, Sendable, Equatable {
         case diarizationModelDir            = "diarization_model_dir"
         case diskGuardEnabled               = "disk_guard_enabled"
         case diskGuardMinFreeGb             = "disk_guard_min_free_gb"
+        case diskWarnHudGb                  = "disk_warn_hud_gb"
+        case diskWarnModalGb                = "disk_warn_modal_gb"
         case mediaStorageCapGb              = "media_storage_cap_gb"
         case mediaStorageCapEnabled         = "media_storage_cap_enabled"
         // v2-only
@@ -936,7 +951,6 @@ public struct Settings: Codable, Sendable, Equatable {
         case autoInstallUpdates             = "auto_install_updates"
         case updateRemindAfter              = "update_remind_after"
         case skippedUpdateVersion           = "skipped_update_version"
-        case youtubeExplorerEnabled         = "youtube_explorer_enabled"
         case youtubeCopyFormat              = "youtube_copy_format"
         case youtubeLinkAction              = "youtube_link_action"
     }
@@ -1069,6 +1083,8 @@ public struct Settings: Codable, Sendable, Equatable {
         diarizationModelDir            = try c.decodeIfPresent(String.self,            forKey: .diarizationModelDir)            ?? Self.defaultDiarizationModelDir
         diskGuardEnabled               = try c.decodeIfPresent(Bool.self,              forKey: .diskGuardEnabled)               ?? Self.defaultDiskGuardEnabled
         diskGuardMinFreeGb             = try c.decodeIfPresent(Int.self,               forKey: .diskGuardMinFreeGb)             ?? Self.defaultDiskGuardMinFreeGb
+        diskWarnHudGb                  = try c.decodeIfPresent(Int.self,               forKey: .diskWarnHudGb)                  ?? Self.defaultDiskWarnHudGb
+        diskWarnModalGb                = try c.decodeIfPresent(Int.self,               forKey: .diskWarnModalGb)                ?? Self.defaultDiskWarnModalGb
         mediaStorageCapGb              = try c.decodeIfPresent(Int.self,               forKey: .mediaStorageCapGb)              ?? Self.defaultMediaStorageCapGb
         mediaStorageCapEnabled         = try c.decodeIfPresent(Bool.self,              forKey: .mediaStorageCapEnabled)         ?? Self.defaultMediaStorageCapEnabled
         // v2-only
@@ -1139,7 +1155,6 @@ public struct Settings: Codable, Sendable, Equatable {
         skippedUpdateVersion          = try c.decodeIfPresent(String.self,             forKey: .skippedUpdateVersion)          ?? Self.defaultSkippedUpdateVersion
 
         // v2-only, Welle YT-Explorer (oracle-excluded)
-        youtubeExplorerEnabled       = try c.decodeIfPresent(Bool.self,   forKey: .youtubeExplorerEnabled)       ?? Self.defaultYoutubeExplorerEnabled
         youtubeCopyFormat            = try c.decodeIfPresent(String.self, forKey: .youtubeCopyFormat)            ?? Self.defaultYoutubeCopyFormat
         youtubeLinkAction            = try c.decodeIfPresent(YouTubeLinkAction.self, forKey: .youtubeLinkAction) ?? Self.defaultYoutubeLinkAction
     }

@@ -60,7 +60,17 @@ public struct LocalIngestService: Sendable {
     public static let localFilesBucketTitle = "Local files"
 
     /// True when `guid` is a one-off/local import (GUID format `local:<hash>`).
-    /// Used to decide whether a finished transcription should auto-open the Library.
+    ///
+    /// Says only where the episode CAME FROM: no feed produced it, so anything
+    /// keyed on a feed (polling, metadata refresh, the download's own URL) has
+    /// to take a different path for it.
+    ///
+    /// Explicitly NOT the signal for auto-opening the Library when a
+    /// transcription finishes. That is driven by the set of guids the user
+    /// personally submitted through One-off / "Import once"
+    /// (`QueueController.oneOffGuids`), which is narrower on purpose: a batch of
+    /// twenty dropped files carries `local:` guids too, and opening the Library
+    /// twenty times is not what the user asked for.
     public static func isOneOffGuid(_ guid: String) -> Bool {
         guid.hasPrefix("local:")
     }

@@ -30,6 +30,15 @@ public enum OneOffLinkClassifier {
         // Spotify is DRM-protected (yt-dlp can't fetch it) — resolve to the show's
         // public feed via the podcast directory instead.
         if SpotifyURL.parse(t) != nil { return .spotify }
+        // A bare `@handle` IS Instagram here, and deliberately so — this looks
+        // like `AddSourceClassifier`'s old Instagram-first branch (which sent
+        // every handle, YouTube's included, to Instagram) but the input differs.
+        // This classifier only ever sees a LINK: it backs `transcribe <url>`, the
+        // one-off sheet's paste field and CSV lines. There is no search to fall
+        // through to, so the two outcomes for a handle are Instagram or
+        // `.generic` — and `.generic` hands `@natgeo` to yt-dlp, which cannot do
+        // anything with it. Instagram is the only place a bare handle is a usable
+        // address; YouTube's own handles arrive here as `/@` channel URLs.
         if t.hasPrefix("@") || t.contains("instagram.com") { return .instagram }
         if t.contains("youtube.com") || t.contains("youtu.be") { return .youtube }
         if t.hasPrefix("http"), t.contains("rss") || t.contains(".xml") || t.contains("feed") {

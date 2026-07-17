@@ -32,18 +32,36 @@ public enum AutomationSchedule {
         return last < slot                                    // last run predates today's slot
     }
 
-    /// The single reason the heavy drain will (`.ok`) or won't run, in priority order.
+    /// The single, highest-priority reason the heavy drain will (`.ok`) or won't
+    /// run — the value persisted in `AutomationStatus.lastSkipReason`.
     public static func skipReason(
         isPro: Bool, dailyCheckEnabled: Bool, withinWindow: Bool,
         onBattery: Bool, lowPowerMode: Bool, hasAutoShows: Bool
     ) -> AutomationSkipReason {
-        if !isPro { return .notPro }
-        if !dailyCheckEnabled { return .dailyCheckDisabled }
-        if lowPowerMode { return .lowPowerMode }
-        if onBattery { return .onBattery }
-        if !withinWindow { return .outsideProcessingWindow }
-        if !hasAutoShows { return .noAutoDownloadShows }
-        return .ok
+        skipReasons(isPro: isPro, dailyCheckEnabled: dailyCheckEnabled, withinWindow: withinWindow,
+                    onBattery: onBattery, lowPowerMode: lowPowerMode, hasAutoShows: hasAutoShows)
+            .first ?? .ok
+    }
+
+    /// EVERY reason the drain won't run, in priority order — empty means it will.
+    ///
+    /// Blockers stack, and reporting only the first one strands the user in a
+    /// guessing game: clear Low Power Mode and the daemon still sits idle because
+    /// it was also on battery, with nothing on screen admitting it. Anything that
+    /// tells the user why nothing is happening must use this, not
+    /// ``skipReason(isPro:dailyCheckEnabled:withinWindow:onBattery:lowPowerMode:hasAutoShows:)``.
+    public static func skipReasons(
+        isPro: Bool, dailyCheckEnabled: Bool, withinWindow: Bool,
+        onBattery: Bool, lowPowerMode: Bool, hasAutoShows: Bool
+    ) -> [AutomationSkipReason] {
+        var reasons: [AutomationSkipReason] = []
+        if !isPro { reasons.append(.notPro) }
+        if !dailyCheckEnabled { reasons.append(.dailyCheckDisabled) }
+        if lowPowerMode { reasons.append(.lowPowerMode) }
+        if onBattery { reasons.append(.onBattery) }
+        if !withinWindow { reasons.append(.outsideProcessingWindow) }
+        if !hasAutoShows { reasons.append(.noAutoDownloadShows) }
+        return reasons
     }
 
     /// Dock icon visibility: hidden only when background mode is on, the user opted

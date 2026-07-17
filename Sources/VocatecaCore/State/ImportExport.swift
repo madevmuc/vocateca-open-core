@@ -459,6 +459,8 @@ public enum ImportExportService {
         check("Download concurrency","downloadConcurrency",          \.downloadConcurrency)
         check("Disk guard",          "diskGuardEnabled",             \.diskGuardEnabled)
         check("Disk guard min free (GB)", "diskGuardMinFreeGb",      \.diskGuardMinFreeGb)
+        check("Low-disk HUD threshold (GB)",   "diskWarnHudGb",      \.diskWarnHudGb)
+        check("Low-disk modal threshold (GB)", "diskWarnModalGb",    \.diskWarnModalGb)
 
         // Deduplicate by id (keywordWatch appears twice due to both being notif and general)
         var seen = Set<String>()

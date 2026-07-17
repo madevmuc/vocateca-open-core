@@ -118,6 +118,114 @@ public enum DiskGuard {
     }
 }
 
+// MARK: - DiskThresholds
+
+/// Pure plausibility rule for the two low-disk warning thresholds
+/// (`Settings.diskWarnHudGb` / `diskWarnModalGb`) against the pause floor
+/// (`Settings.diskGuardMinFreeGb`). No I/O — the Settings view applies the
+/// resolution and renders the violations; the escalation itself lives in
+/// ``DiskWarningLevel``.
+///
+/// The three numbers form an escalation ladder measured in free GB, and free
+/// space only ever falls through it: the queue pauses first (`pause`), then the
+/// HUD appears (`hud`), then the modal (`modal`). That ordering is the whole
+/// reason for the rule — a HUD above the pause floor would fire while the queue
+/// is still happily working, and a modal above the HUD would skip the gentle
+/// step entirely.
+public enum DiskThresholds {
+
+    /// Every way the trio can be implausible. Reported per offending field so the
+    /// UI can say which number it rejected; the strings themselves live in the UI
+    /// layer (Core carries no localisation).
+    public enum Violation: String, Sendable, Equatable, CaseIterable {
+        /// HUD threshold is zero or negative — a threshold that can never fire.
+        case hudNotPositive
+        /// HUD threshold sits above the pause floor, so it would warn while the
+        /// queue is still running.
+        case hudAbovePause
+        /// Modal threshold is zero or negative.
+        case modalNotPositive
+        /// Modal threshold sits above the HUD threshold, so the modal would
+        /// arrive before (or instead of) the non-blocking HUD.
+        case modalAboveHud
+    }
+
+    /// The outcome: the values that MUST be stored (already corrected) plus the
+    /// violations to report. `violations.isEmpty` means the input was accepted
+    /// unchanged.
+    public struct Resolution: Sendable, Equatable {
+        public let hudGb: Int
+        public let modalGb: Int
+        public let violations: [Violation]
+
+        public var isValid: Bool { violations.isEmpty }
+
+        public init(hudGb: Int, modalGb: Int, violations: [Violation]) {
+            self.hudGb = hudGb
+            self.modalGb = modalGb
+            self.violations = violations
+        }
+    }
+
+    /// The lowest threshold that can ever be valid: every threshold must be > 0,
+    /// and thresholds are whole GB. An implausible value is reset to THIS rather
+    /// than merely clamped to the neighbouring bound — the combination is
+    /// refused, not quietly reinterpreted, and 1 GB is the one value that
+    /// satisfies the ladder no matter what the other two say.
+    public static let lowestValidGb = 1
+
+    /// Resolves `hudGb`/`modalGb` against the pause floor.
+    ///
+    /// Valid means `0 < modal <= hud <= pause`. Each field that breaks its
+    /// constraint is reported and reset to ``lowestValidGb``.
+    ///
+    /// Violations are judged against the values as GIVEN, never against a value
+    /// this function already corrected. Otherwise resetting an out-of-range `hud`
+    /// down to 1 would retroactively make a perfectly reasonable `modal` look
+    /// like a second mistake, and the user would be told off for something they
+    /// did not do. `modal` still follows a corrected `hud` down — that clamp is a
+    /// consequence of the first correction, so it is applied silently and the
+    /// returned pair is always itself valid.
+    ///
+    /// `pauseGb <= 0` means the disk guard imposes no floor (the queue never
+    /// pauses for disk), which would make `hud <= pause` unsatisfiable for any
+    /// positive `hud`. In that case the ceiling is dropped rather than failing
+    /// every input: only `0 < modal <= hud` is enforced.
+    public static func resolve(hudGb: Int, modalGb: Int, pauseGb: Int) -> Resolution {
+        var violations: [Violation] = []
+        var hud = hudGb
+        var modal = modalGb
+
+        if hud < lowestValidGb {
+            violations.append(.hudNotPositive)
+            hud = lowestValidGb
+        } else if pauseGb >= lowestValidGb, hud > pauseGb {
+            violations.append(.hudAbovePause)
+            hud = lowestValidGb
+        }
+
+        // `modal > hud` is only the user's mistake when the `hud` they typed was a
+        // real threshold to be measured against. A `hud` that merely sits above
+        // the pause floor still is one (9 vs 12 is a genuine contradiction); a
+        // zero or negative `hud` is not, so nothing can meaningfully exceed it.
+        let hudAsGivenIsComparable = hudGb >= lowestValidGb
+
+        if modal < lowestValidGb {
+            violations.append(.modalNotPositive)
+            modal = lowestValidGb
+        } else if hudAsGivenIsComparable, modal > hudGb {
+            violations.append(.modalAboveHud)
+            modal = lowestValidGb
+        } else if modal > hud {
+            // Only reachable once `hud` was corrected: silent cascade, not a
+            // mistake of the user's.
+            modal = lowestValidGb
+        }
+
+        return Resolution(hudGb: hud, modalGb: modal, violations: violations)
+    }
+}
+
 // MARK: - MediaCapPolicy
 
 /// Pure global storage-cap eviction policy: given the current on-disk media
