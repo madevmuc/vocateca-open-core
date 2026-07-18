@@ -28,9 +28,27 @@ public struct OrphanedShow: Sendable, Equatable, Identifiable {
 public enum OrphanedShows {
 
     /// Returns every `dbShowSlugs` entry that has NO matching `watchlistShows`
-    /// entry and is not the local-ingest pseudo-show bucket
-    /// (``LocalIngestService/localFilesBucketSlug``), sorted alphabetically for a
-    /// stable, deterministic order.
+    /// entry, is not the local-ingest pseudo-show bucket
+    /// (``LocalIngestService/localFilesBucketSlug``), and is not a **one-off**
+    /// (see `oneOffSlugs`), sorted alphabetically for a stable, deterministic
+    /// order.
+    ///
+    /// ## Why one-offs are excluded
+    /// A DB-only slug can be one of two very different things:
+    ///   • a **genuinely-orphaned subscription** — a real RSS/YouTube feed whose
+    ///     watchlist entry was lost; it should still offer "Reconnect", and
+    ///   • a **one-off** — a single manually-transcribed item (drag-drop file,
+    ///     folder, or "Import once" URL) that never had a pollable feed. A one-off
+    ///     is complete as-is; there is no feed to "lose", so surfacing the "This
+    ///     show lost its feed" banner + Reconnect flow for it is wrong (it would
+    ///     offer to bind an unrelated podcast as "the lost feed").
+    ///
+    /// The caller distinguishes the two by the episode-GUID origin marker: a
+    /// one-off's episodes all carry `local:<hash>` GUIDs (``LocalIngestService/isOneOffGuid``)
+    /// — no feed produced them — whereas a feed-polled episode carries the feed's
+    /// own `<guid>`. `oneOffSlugs` is the set of DB slugs whose episodes are ALL
+    /// `local:`-origin (see ``StateReader/localOnlyShowSlugs()``). This is an
+    /// explicit provenance signal, not an episode-count heuristic.
     ///
     /// - Parameters:
     ///   - dbShowSlugs:    Every distinct `show_slug` present in `episodes`
@@ -38,15 +56,22 @@ public enum OrphanedShows {
     ///   - watchlistShows: The current subscription list (from watchlist.yaml).
     ///   - countsBySlug:   Done/total episode counts keyed by slug (covers at
     ///                     least the DB-only slugs).
+    ///   - oneOffSlugs:    DB slugs whose episodes are entirely `local:`-origin —
+    ///                     one-offs with no feed to reconnect. Excluded from the
+    ///                     result. Defaults to empty (every DB-only slug treated
+    ///                     as a genuine orphan, the pre-fix behaviour).
     public static func enumerate(
         dbShowSlugs: [String],
         watchlistShows: [Show],
-        countsBySlug: [String: (done: Int, total: Int)]
+        countsBySlug: [String: (done: Int, total: Int)],
+        oneOffSlugs: Set<String> = []
     ) -> [OrphanedShow] {
         let watchlistSlugs = Set(watchlistShows.map(\.slug))
         return dbShowSlugs
             .filter { slug in
-                !watchlistSlugs.contains(slug) && slug != LocalIngestService.localFilesBucketSlug
+                !watchlistSlugs.contains(slug)
+                    && slug != LocalIngestService.localFilesBucketSlug
+                    && !oneOffSlugs.contains(slug)
             }
             .sorted()
             .map { slug in

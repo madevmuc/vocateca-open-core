@@ -320,6 +320,24 @@ public struct Pipeline: Sendable {
                              ("route", isImageRoute ? "ocr" : "transcribe"),
                              ("attempts", "\(episode.attempts)")])
 
+        // ── Deleted-show guard ──────────────────────────────────────────────
+        // The claim loop reads from the DB, so a deleted show's episodes can't
+        // be claimed — but a show can be deleted (`ShowDeletion.deleteShow`
+        // DELETEs its episode rows) in the tiny window AFTER this episode was
+        // claimed and BEFORE processing starts. Re-check the row still exists so
+        // a running queue doesn't download + transcribe an episode the user just
+        // deleted, then write a transcript file for a show that no longer exists.
+        // Only skip on a definitive "row is gone"; a DB read error is
+        // inconclusive and must NOT drop a valid episode (fail-open).
+        let episodeStillExists: Bool
+        do { episodeStillExists = try store.episode(guid: guid) != nil }
+        catch { episodeStillExists = true }
+        if !episodeStillExists {
+            Log.info("Pipeline: episode row missing (show deleted after claim) — skipping",
+                     component: "Pipeline", context: [("guid", guid), ("show", showSlug)])
+            return PipelineResult(guid: guid, finalStatus: .skipped)
+        }
+
         // ── H7: open a job-ownership row (heartbeat) ─────────────────────────
         // Assert THIS process owns `guid` for the duration of processing, so a
         // concurrent launch-reclaim (app ↔ CLI) leaves it alone instead of

@@ -373,6 +373,43 @@ public struct StateStore: Sendable {
         }
     }
 
+    // MARK: - Transcript "known-absent" negative cache
+
+    /// Meta key holding the JSON array of episode GUIDs known to have NO
+    /// resolvable transcript on disk (scanned once, no match by filename,
+    /// frontmatter guid, or title). See ``transcriptAbsentGuids``.
+    public static let transcriptAbsentMetaKey = "transcript_absent_guids"
+
+    /// The set of episode GUIDs a prior library scan proved have no transcript
+    /// file. Consulted so the (cold, per-file) frontmatter directory scan is
+    /// NEVER repeated for a `status='done'` episode whose transcript genuinely
+    /// can't be resolved (stale/mismatched imports) — the confirmed cause of the
+    /// recurring multi-minute "Loading your library" stall. Only ever consulted
+    /// for episodes with an EMPTY `transcript_path`; an episode that later gains
+    /// a real path resolves via the DB short-circuit regardless of membership.
+    public func transcriptAbsentGuids() throws -> Set<String> {
+        guard let raw = try metaValue(Self.transcriptAbsentMetaKey), !raw.isEmpty,
+              let data = raw.data(using: .utf8),
+              let arr = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return Set(arr)
+    }
+
+    /// Merge `guids` into the known-absent set (idempotent union). No-op for an
+    /// empty input.
+    public func addTranscriptAbsentGuids(_ guids: Set<String>) throws {
+        guard !guids.isEmpty else { return }
+        let merged = try transcriptAbsentGuids().union(guids)
+        let data = try JSONEncoder().encode(Array(merged).sorted())
+        try setMeta(key: Self.transcriptAbsentMetaKey, value: String(decoding: data, as: UTF8.self))
+    }
+
+    /// Clear the whole known-absent set — an explicit "rescan transcripts"
+    /// escape hatch (e.g. after the user drops transcript files in manually).
+    public func clearTranscriptAbsentGuids() throws {
+        try setMeta(key: Self.transcriptAbsentMetaKey, value: "")
+    }
+
     // MARK: - Write: events
 
     /// Appends a lifecycle event row to `events`.

@@ -323,30 +323,59 @@ public struct LibraryIndex: Sendable {
     public static func resolveTranscriptURLs(
         for episodes: [Episode],
         candidateRoots: [URL],
-        onProgress: @Sendable (_ done: Int, _ total: Int) -> Void = { _, _ in }
+        onProgress: @Sendable (_ done: Int, _ total: Int) -> Void = { _, _ in },
+        readFrontmatter: (_ url: URL) -> [String: String] = { extractFrontmatter(from: $0) },
+        scanFallback: Bool = true
     ) -> [String: URL] {
         var result: [String: URL] = [:]
         let total = episodes.count
         guard total > 0 else { return result }
         var done = 0
 
-        // 1. DB-recorded path first — cheapest check, no directory scan.
+        // 1. DB-recorded path first — NO directory scan AND NO `fileExists`
+        //    stat. Trust the column: `transcript_path` is written ONLY when a
+        //    transcript is actually created (pipeline `setStatus(.done,…)`, a
+        //    save path) or backfilled from a confirmed on-disk hit (part 2 of
+        //    this perf fix, `bulkPersistTranscriptPaths`), and is cleared to
+        //    NULL when the transcript is deleted/skipped. A non-empty value
+        //    therefore means "present" without touching the filesystem.
+        //
+        //    Why no `fileExists`: on a freshly-installed binary macOS re-scans
+        //    every file on FIRST access (~80ms/file, security agent), so a
+        //    per-episode cold stat across thousands of episodes was itself a
+        //    multi-MINUTE cost (measured: `elapsed=297.747s` for 3561 episodes;
+        //    the warm second load was 0.229s). Dropping the stat turns the hot
+        //    path into pure in-memory work.
+        //
+        //    Trade-off: if a transcript file is deleted OUTSIDE the app while
+        //    its column stays set, it still counts as present here (the "Only
+        //    with transcript" filter would still list it) and opening it
+        //    degrades gracefully — `TranscriptFileLoader.load` falls through to
+        //    a not-found result, no crash. A lazy/background reconcile could
+        //    re-verify off the hot path (out of scope here).
         var remaining: [Episode] = []
         remaining.reserveCapacity(episodes.count)
         let fm = FileManager.default
         for ep in episodes {
-            if let tp = ep.transcriptPath {
-                let u = URL(fileURLWithPath: tp)
-                if fm.fileExists(atPath: u.path) {
-                    result[ep.guid] = u
-                    done += 1
-                    onProgress(done, total)
-                    continue
-                }
+            // `!tp.isEmpty` matters: the column can be an empty STRING (not
+            // just NULL) — that must fall through to the scan, not resolve.
+            if let tp = ep.transcriptPath, !tp.isEmpty {
+                result[ep.guid] = URL(fileURLWithPath: tp)
+                done += 1
+                onProgress(done, total)
+                continue
             }
             remaining.append(ep)
         }
         guard !remaining.isEmpty else { return result }
+
+        // DB-only mode (`scanFallback == false`): resolve strictly from persisted
+        // `transcript_path` — NO directory listing, NO cold frontmatter reads.
+        // Used for the instant first paint of the library while the (potentially
+        // multi-minute cold) scan for empty-`transcript_path` episodes runs off
+        // the blocking load. Episodes still unresolved here are simply treated as
+        // "no transcript" until the background scan fills/negatively-caches them.
+        guard scanFallback else { return result }
 
         // 2. Group the rest by show slug so each show directory is scanned
         //    (and its files' frontmatter read) ONCE per candidate root, no
@@ -367,37 +396,56 @@ public struct LibraryIndex: Sendable {
                 ).filter({ $0.pathExtension == "md" && $0.lastPathComponent != "index.md" }),
                 !files.isEmpty else { continue }
 
-                // Filename-stem → URL, built once for this directory.
+                // Filename-stem → URL, built once for this directory. NO file
+                // reads — just directory entries.
                 var slugToURL: [String: URL] = [:]
                 slugToURL.reserveCapacity(files.count)
                 for f in files { slugToURL[f.deletingPathExtension().lastPathComponent] = f }
 
-                // guid → URL / normalizedTitle → URL from frontmatter — ALSO
-                // built once (one open + 2 KB read per FILE, not per episode).
-                var guidToURL: [String: URL] = [:]
-                var titleToURL: [String: URL] = [:]
-                guidToURL.reserveCapacity(files.count)
-                for f in files {
-                    let meta = extractFrontmatter(from: f)
-                    if let g = meta["guid"], !g.isEmpty { guidToURL[g] = f }
-                    if let t = meta["title"], !t.isEmpty { titleToURL[normalizedTitle(t)] = f }
+                // Pass 1 — resolve by FILENAME only. Transcripts are written as
+                // `makeSlug(guid).md` (``MarkdownLibraryWriter``), so this matches
+                // the overwhelming majority WITHOUT opening a single file.
+                var needFrontmatter: [Episode] = []
+                for ep in unresolved {
+                    if let url = slugToURL[MarkdownLibraryWriter.makeSlug(ep)] {
+                        result[ep.guid] = url
+                        done += 1
+                        onProgress(done, total)
+                    } else {
+                        needFrontmatter.append(ep)
+                    }
                 }
 
+                // Pass 2 — ONLY if something didn't match by filename do we pay the
+                // per-file frontmatter cost (guid / title fallback maps). This is
+                // the expensive path: on a cold FS each 2 KB read can block for
+                // seconds (security-agent endpoint scan), so reading the frontmatter
+                // of every file in a directory when pass 1 already resolved
+                // everything was the confirmed multi-minute "Loading your library"
+                // stall (2026-07-18). Preserves the exact old match priority
+                // (slug → guid → title) and "last file wins" map semantics.
                 var stillUnresolved: [Episode] = []
-                for ep in unresolved {
-                    let wantSlug = MarkdownLibraryWriter.makeSlug(ep)
-                    if let url = slugToURL[wantSlug] {
-                        result[ep.guid] = url
-                    } else if let url = guidToURL[ep.guid] {
-                        result[ep.guid] = url
-                    } else if let url = titleToURL[normalizedTitle(ep.title)] {
-                        result[ep.guid] = url
-                    } else {
-                        stillUnresolved.append(ep)
-                        continue
+                if !needFrontmatter.isEmpty {
+                    var guidToURL: [String: URL] = [:]
+                    var titleToURL: [String: URL] = [:]
+                    guidToURL.reserveCapacity(files.count)
+                    for f in files {
+                        let meta = readFrontmatter(f)
+                        if let g = meta["guid"], !g.isEmpty { guidToURL[g] = f }
+                        if let t = meta["title"], !t.isEmpty { titleToURL[normalizedTitle(t)] = f }
                     }
-                    done += 1
-                    onProgress(done, total)
+                    for ep in needFrontmatter {
+                        if let url = guidToURL[ep.guid] {
+                            result[ep.guid] = url
+                        } else if let url = titleToURL[normalizedTitle(ep.title)] {
+                            result[ep.guid] = url
+                        } else {
+                            stillUnresolved.append(ep)
+                            continue
+                        }
+                        done += 1
+                        onProgress(done, total)
+                    }
                 }
                 unresolved = stillUnresolved
             }

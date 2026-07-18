@@ -703,13 +703,23 @@ public final class WatchlistStore {
     /// place rather than appending a duplicate (mirrors ``add(_:)``).
     ///
     /// - Parameters:
-    ///   - slug:       The EXACT existing DB show slug to bind to (verbatim).
-    ///   - rss:        The feed URL the user supplied.
-    ///   - title:      The channel title parsed from the feed (fallback: `slug`
-    ///                 when empty, so the show never displays a blank name).
-    ///   - author:     Optional author/publisher parsed from the feed.
-    ///   - artworkURL: Optional artwork URL parsed from the feed.
-    ///   - url:        The watchlist YAML file to persist to.
+    ///   - slug:             The EXACT existing DB show slug to bind to (verbatim).
+    ///   - rss:              The feed URL the user supplied.
+    ///   - title:            The channel title parsed from the feed (fallback:
+    ///                       `slug` when empty, so the show never displays a
+    ///                       blank name).
+    ///   - author:           Optional author/publisher parsed from the feed.
+    ///   - artworkURL:       Optional artwork URL parsed from the feed.
+    ///   - platform:         The show's real source platform (defaults to
+    ///                       `.podcast` for backward compatibility with
+    ///                       existing callers). Written verbatim to
+    ///                       `Show.source`.
+    ///   - provenanceStore:  When supplied, durable provenance is written
+    ///                       (best-effort — failures are swallowed, matching
+    ///                       ``ProvenanceStore/resolve(slug:)``'s
+    ///                       reconstruct-on-miss fallback so a write failure
+    ///                       here is never fatal to the reconnect itself).
+    ///   - url:              The watchlist YAML file to persist to.
     /// - Throws: When ``save(to:)`` fails.
     public func reconnectShow(
         slug: String,
@@ -717,6 +727,8 @@ public final class WatchlistStore {
         title: String,
         author: String? = nil,
         artworkURL: String? = nil,
+        platform: SourcePlatform = .podcast,
+        provenanceStore: ProvenanceStore? = nil,
         to url: URL
     ) throws {
         let trimmedTitle = title.trimmingCharacters(in: .whitespaces)
@@ -726,16 +738,20 @@ public final class WatchlistStore {
             title: trimmedTitle.isEmpty ? slug : trimmedTitle,
             rss: rss,
             artworkUrl: artworkURL ?? Show.defaultArtworkUrl,
-            source: "podcast",
+            source: platform.rawValue,
             author: trimmedAuthor.isEmpty ? nil : trimmedAuthor
         )
         add(show)
         try save(to: url)
 
+        try? provenanceStore?.write(slug: slug, provenance: ShowProvenance(
+            platform: platform, sourceURL: rss,
+            capturedAt: ISO8601DateFormatter().string(from: Date())))
+
         Log.info("WatchlistStore.reconnectShow: orphaned show reconnected",
                   component: "WatchlistStore",
                   context: [("slug", slug), ("rss", rss),
-                             ("title", show.title)])
+                             ("title", show.title), ("platform", platform.rawValue)])
     }
 
     // MARK: - Internal helpers

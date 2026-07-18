@@ -73,6 +73,15 @@ public struct YouTubeResolver: Sendable {
     /// - Throws ``YouTubeResolverError/ytdlpFailed(_:)`` when yt-dlp exits
     ///   non-zero.
     public func resolveChannelID(from input: String) async throws -> String {
+        // 0. A channel-feed URL (`.../feeds/videos.xml?channel_id=UC…`) — the form
+        //    the app itself stores as a YouTube show's `rss` (see
+        //    `WatchlistStore.addYouTube` / reconnect) — already carries the id.
+        //    Take it directly: `YouTubeURL.parse` does NOT recognise the feeds URL,
+        //    so without this every YouTube poll throws `notResolved`, the feed is
+        //    marked failed, and the show reads "feed unreachable".
+        let feedChannelID = YouTubeURL.channelID(fromFeedURL: input)
+        if !feedChannelID.isEmpty { return feedChannelID }
+
         // 1. Parse the input
         let parsed: YouTubeURL
         do {

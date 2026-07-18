@@ -382,6 +382,36 @@ public struct StateReader: Sendable {
         }
     }
 
+    /// Distinct `show_slug` values whose episodes are **entirely** one-off /
+    /// local-origin — every episode GUID is `local:`-prefixed
+    /// (``LocalIngestService/isOneOffGuid``), i.e. no feed ever produced any of
+    /// them.
+    ///
+    /// Used by ``LiveDataLoader`` to tell a genuinely-orphaned subscription (a
+    /// real feed whose watchlist entry was lost — its episodes carry the feed's
+    /// own `<guid>`) apart from a one-off (a single dragged file / folder /
+    /// "Import once" URL that never had a pollable feed). A one-off is complete
+    /// as-is, so it must NOT be surfaced as "lost its feed" / offered a Reconnect
+    /// — see ``OrphanedShows/enumerate(dbShowSlugs:watchlistShows:countsBySlug:oneOffSlugs:)``.
+    ///
+    /// A slug qualifies iff it has episodes AND none of them has a non-`local:`
+    /// GUID. Implemented as "all slugs minus any slug that has at least one
+    /// feed-origin (non-`local:`) episode".
+    public func localOnlyShowSlugs() throws -> Set<String> {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                SQLRequest(sql: """
+                    SELECT DISTINCT show_slug FROM episodes
+                    WHERE show_slug NOT IN (
+                        SELECT show_slug FROM episodes WHERE guid NOT LIKE 'local:%'
+                    )
+                """)
+            )
+            return Set(rows.map { $0["show_slug"] as String })
+        }
+    }
+
     /// COUNT(*) over the events table with optional type/since filters.
     public func countEvents(typeExact: String?, since: String?) throws -> Int {
         try dbQueue.read { db in
