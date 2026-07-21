@@ -119,6 +119,23 @@ enum QueueDrive {
     /// Result summary of a drain.
     struct DrainSummary { var processed: Int; var done: Int; var failed: Int }
 
+    /// Startup reclaim: runs one `MaintenanceRunner` pass before the queue
+    /// drains, so leftover MP3s from a prior run (whose transcript already
+    /// exists, or whose retention window has since lapsed) are reclaimed at CLI
+    /// start rather than sitting on disk until the next scheduled maintenance
+    /// tick. Best-effort — a maintenance failure must never block the queue run.
+    static func runStartupMaintenance(store: StateStore) {
+        let settings = (try? SettingsStore.load(
+            from: Paths.settingsURL, persistDefaultOnMissing: false)) ?? Settings()
+        let mediaDir = Paths.userDataDir().appendingPathComponent("media", isDirectory: true)
+        let runner = MaintenanceRunner(store: store, settings: settings, mediaDirOverride: mediaDir)
+        let report = runner.run()
+        Log.info("Startup maintenance pass complete",
+                 component: "CLI",
+                 context: [("mp3sDeleted", "\(report.mp3sDeleted)"),
+                            ("bytesReclaimed", "\(report.bytesReclaimed)")])
+    }
+
     /// Drive a headless drain to completion.
     ///
     /// - Parameters:
@@ -136,6 +153,8 @@ enum QueueDrive {
         enginePref: TranscriptionEngine? = nil,
         streamProgress: Bool
     ) async -> DrainSummary {
+        runStartupMaintenance(store: store)
+
         let runner = QueueRunner()
         let engines = buildEngines(enginePref: enginePref)
         runner.load(from: store)

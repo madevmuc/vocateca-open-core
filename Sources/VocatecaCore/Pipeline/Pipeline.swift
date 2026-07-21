@@ -885,6 +885,29 @@ public struct Pipeline: Sendable {
                      context: [("guid", guid), ("show", showSlug),
                                 ("origin", transcriptResult.origin?.storageString ?? "unknown")])
 
+            // ── Audio reclaim (delete-after-transcribe) ──────────────────
+            // `.done` is durably persisted above — safe to reclaim the source
+            // audio now. Best-effort: never fail an otherwise-good episode over
+            // a cleanup error. Imported/local files are never ours to delete
+            // (see the "Imported media" note at the download phase above).
+            let deleteAudio = (try? SettingsStore.load(
+                from: Paths.settingsURL, persistDefaultOnMissing: false))?
+                .deleteMp3AfterTranscribe ?? Settings.defaultDeleteMp3AfterTranscribe
+            if deleteAudio, !LocalIngestService.isOneOffGuid(guid),
+               FileManager.default.fileExists(atPath: mediaURL.path) {
+                do {
+                    try FileManager.default.removeItem(at: mediaURL)
+                    try? store.clearMp3Path(guid: guid)
+                    Log.info("Audio deleted after transcription",
+                             component: "Pipeline",
+                             context: [("guid", guid), ("show", showSlug), ("path", mediaURL.path)])
+                } catch {
+                    Log.error("Pipeline: audio delete-after-transcribe failed (file kept)",
+                              component: "Pipeline",
+                              context: [("guid", guid), ("show", showSlug), ("error", "\(error)")])
+                }
+            }
+
             // ── Full-text search index (write hook) ──────────────────────
             // Index the finished transcript so it's searchable in the Library.
             // Uses the in-memory plain text we already have (no re-read of the

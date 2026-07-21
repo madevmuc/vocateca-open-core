@@ -61,6 +61,12 @@ final class Mp3PathBackfillTests: XCTestCase {
 
         var settings = Settings()
         settings.diskGuardEnabled = false
+        // This test is about the one-time backfill sweep (step 0), not the
+        // age-based reclaim pass (step 1) that runs in the same `run()` call —
+        // with `deleteMp3AfterTranscribe` defaulting to `true` (2026-07-21) that
+        // pass would immediately reclaim the file the backfill just recorded,
+        // before the assertions below can see it. Isolate explicitly.
+        settings.deleteMp3AfterTranscribe = false
         let runner = MaintenanceRunner(
             store: store, settings: settings, guardPath: dir.path, mediaDirOverride: mediaDir)
         _ = runner.run(nowISO: Event.nowISO())
@@ -83,7 +89,27 @@ final class Mp3PathBackfillTests: XCTestCase {
 
     /// End-to-end: drive the real Pipeline to `done` and assert it persisted
     /// `mp3_path` (previously never written), making the row retention-eligible.
+    ///
+    /// Isolated from `deleteMp3AfterTranscribe` (default flipped to `true`
+    /// 2026-07-21): this test's purpose is the `.downloaded`-transition write +
+    /// retention-candidate visibility, not the post-`.done` audio reclaim
+    /// (covered by `PipelineAudioDeletionTests`) — so the file must survive to
+    /// be asserted on. Pins the setting off via a real `settings.yaml`,
+    /// restoring whatever was there before.
     func testPipelineWritesMp3PathMakingRowRetentionEligible() async throws {
+        let settingsURL = Paths.settingsURL
+        let savedSettingsData = try? Data(contentsOf: settingsURL)
+        defer {
+            if let savedSettingsData {
+                try? savedSettingsData.write(to: settingsURL)
+            } else {
+                try? FileManager.default.removeItem(at: settingsURL)
+            }
+        }
+        var settings = Settings()
+        settings.deleteMp3AfterTranscribe = false
+        try SettingsStore.save(settings, to: settingsURL)
+
         let ep = Episode.makePodcast(guid: "pipe-mp3", showSlug: "test-show")
         try store.upsert(ep)
 
