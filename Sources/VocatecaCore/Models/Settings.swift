@@ -420,12 +420,17 @@ public struct Settings: Codable, Sendable, Equatable {
     public static let defaultNotifyOnSuccess              = true
     public static let defaultSetupCompleted               = false
     public static let defaultMp3RetentionDays             = 7
-    /// Changed from `true` → `false` so the 7-day age-out above actually takes
-    /// effect for fresh installs (a `true` default deleted media immediately on
-    /// transcribe, before `mp3RetentionDays` ever mattered). Existing users'
-    /// persisted settings are unaffected — this only changes the default for
-    /// missing/fresh installs.
-    public static let defaultDeleteMp3AfterTranscribe     = false
+    /// Default ON as of 2026-07-21: audio is deleted immediately after a
+    /// successful transcription (`Pipeline`'s done block reclaims it; the
+    /// startup `MaintenanceRunner` pass in the CLI reclaims any leftovers from a
+    /// prior run). Flipped back from the earlier `false` default after a
+    /// 37.6 GB MP3 buildup was found and manually deleted — with `false` as the
+    /// fresh-install default, `mp3RetentionDays` alone never kicked in for users
+    /// who never touched the setting, so media accumulated unbounded. Set
+    /// `deleteMp3AfterTranscribe = false` (and use `mp3RetentionDays` instead) to
+    /// keep audio around after transcription. Existing users' persisted settings
+    /// are unaffected — this only changes the default for missing/fresh installs.
+    public static let defaultDeleteMp3AfterTranscribe     = true
     public static let defaultTranscriptRetentionDays      = 0
     public static let defaultBandwidthLimitMbps           = 0
     public static let defaultLoadLevel                    = "balanced"
