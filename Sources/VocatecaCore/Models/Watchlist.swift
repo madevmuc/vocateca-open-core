@@ -40,8 +40,13 @@ public struct Watchlist: Codable, Sendable, Equatable {
     /// Write to `url`, creating parent directories as needed.
     /// Does NOT use atomic write — callers that need crash-safety should
     /// use `saveAtomic(to:)`.
-    public func save(to url: URL) throws {
-        backupIfDrasticShrink(at: url)
+    ///
+    /// - Parameter allowDrasticShrink: opt-in for the ONE legitimate
+    ///   whole-replace path (an `.overwrite` import). Everywhere else the default
+    ///   `false` makes a destructive write throw rather than clobber — see
+    ///   ``guardDestructiveWrite(at:allow:)``.
+    public func save(to url: URL, allowDrasticShrink: Bool = false) throws {
+        try guardDestructiveWrite(at: url, allow: allowDrasticShrink)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -52,8 +57,8 @@ public struct Watchlist: Codable, Sendable, Equatable {
 
     /// Crash-safe write: serialize to a sibling `.tmp` file, then
     /// `FileManager.replaceItem` (equivalent to POSIX `rename`).
-    public func saveAtomic(to url: URL) throws {
-        backupIfDrasticShrink(at: url)
+    public func saveAtomic(to url: URL, allowDrasticShrink: Bool = false) throws {
+        try guardDestructiveWrite(at: url, allow: allowDrasticShrink)
         let dir = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let tmp = dir.appendingPathComponent(UUID().uuidString + ".tmp")
@@ -62,7 +67,14 @@ public struct Watchlist: Codable, Sendable, Equatable {
         _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
     }
 
-    // MARK: - Drastic-shrink guard (2026-07-16 data-loss prevention)
+    // MARK: - Destructive-write guard (2026-07-16 / hardened 2026-07-21)
+
+    /// Raised when a whole-value save would destroy data on disk and the caller
+    /// did not explicitly opt in (`allowDrasticShrink`). The fuller file has been
+    /// backed up to `backup` before the write was refused.
+    public enum WriteError: Error, Equatable {
+        case refusedDestructiveWrite(reason: String, backup: String?)
+    }
 
     /// `true` when writing `new` shows over an on-disk file of `onDisk` shows is a
     /// DRASTIC, suspicious shrink — the signature of a partial in-memory watchlist
@@ -74,22 +86,66 @@ public struct Watchlist: Codable, Sendable, Equatable {
         onDisk >= 4 && new < onDisk && (onDisk - new) >= 3 && new * 2 < onDisk
     }
 
-    /// Before overwriting `url`, snapshot the existing file to a
-    /// `.pre-shrink-<epoch>.bak` sibling and log loudly when the write would be a
-    /// drastic shrink (``isDrasticShrink``) — so the loss is recoverable and
-    /// visible instead of silent. Best-effort: never blocks or fails the save
-    /// (the guard must not itself break a legitimate write).
-    private func backupIfDrasticShrink(at url: URL) {
+    /// Slugs whose on-disk entry has a populated `artworkUrl` but whose
+    /// same-slug entry in `self` would blank it. A show that SURVIVES a save must
+    /// never lose its artwork — that is the exact loss the count-only guard
+    /// missed (a 25→17 write blanked every surviving show's artwork, dropping all
+    /// thumbnails, without tripping the drastic-shrink threshold). Pure +
+    /// testable.
+    public static func artworkBlankedSlugs(onDisk: [Show], new: [Show]) -> [String] {
+        func filled(_ s: String) -> Bool { !s.trimmingCharacters(in: .whitespaces).isEmpty }
+        let newBySlug = Dictionary(new.map { ($0.slug, $0) }, uniquingKeysWith: { a, _ in a })
+        return onDisk.compactMap { old in
+            guard filled(old.artworkUrl),
+                  let incoming = newBySlug[old.slug],
+                  !filled(incoming.artworkUrl) else { return nil }
+            return old.slug
+        }
+    }
+
+    /// Why this whole-value write over `existing` is destructive — `nil` when it
+    /// is safe. Two independent signatures: a drastic show-count shrink, and
+    /// blanking a surviving show's artwork.
+    private func destructiveWriteReason(againstOnDisk existing: Watchlist) -> String? {
+        if Self.isDrasticShrink(onDisk: existing.shows.count, new: shows.count) {
+            return "drastic shrink \(existing.shows.count)→\(shows.count) shows"
+        }
+        let blanked = Self.artworkBlankedSlugs(onDisk: existing.shows, new: shows)
+        if !blanked.isEmpty {
+            return "would blank artwork on \(blanked.count) surviving show(s): \(blanked.prefix(5).joined(separator: ","))"
+        }
+        return nil
+    }
+
+    /// Before overwriting `url`, detect a destructive write. In ALL cases the
+    /// existing (fuller) file is snapshotted to a `.pre-shrink-<epoch>.bak`
+    /// sibling so the loss is recoverable. Then:
+    ///   - `allow == false` (the default): THROW ``WriteError`` so the fuller
+    ///     file survives — the write never lands. This is the prevention the old
+    ///     backup-only guard lacked: it snapshotted but let the clobber through
+    ///     (a non-isolated test writing a 1-show fixture wiped the real
+    ///     watchlist; see `swift-tests-must-isolate-via-paths-override`).
+    ///   - `allow == true`: log loudly and proceed — the ONE legitimate
+    ///     whole-replace (an `.overwrite` import) opts in.
+    private func guardDestructiveWrite(at url: URL, allow: Bool) throws {
         guard let existing = try? Watchlist.load(from: url) else { return }
-        guard Self.isDrasticShrink(onDisk: existing.shows.count, new: shows.count) else { return }
+        guard let reason = destructiveWriteReason(againstOnDisk: existing) else { return }
         let backup = url.deletingPathExtension()
             .appendingPathExtension("pre-shrink-\(Int(Date().timeIntervalSince1970)).bak")
         try? FileManager.default.copyItem(at: url, to: backup)
-        Log.error("Watchlist: refusing to SILENTLY drop shows — backed up the fuller file before save",
+        if allow {
+            Log.warn("Watchlist: destructive write allowed by caller — backed the fuller file up first",
+                     component: "Watchlist",
+                     context: [("reason", reason), ("backup", backup.lastPathComponent)])
+            return
+        }
+        Log.error("Watchlist: REFUSING destructive write — backed the fuller file up, not overwriting",
                   component: "Watchlist",
-                  context: [("onDiskShows", "\(existing.shows.count)"),
+                  context: [("reason", reason),
+                            ("onDiskShows", "\(existing.shows.count)"),
                             ("newShows", "\(shows.count)"),
                             ("backup", backup.lastPathComponent)])
+        throw WriteError.refusedDestructiveWrite(reason: reason, backup: backup.lastPathComponent)
     }
 }
 

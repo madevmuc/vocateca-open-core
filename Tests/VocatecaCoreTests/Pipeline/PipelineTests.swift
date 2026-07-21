@@ -10,7 +10,36 @@ import GRDB
 /// All tests use a temp `StateStore` (v2 schema, in-memory temp file)
 /// seeded with episodes, and `Fake*` engines — no real network, Whisper,
 /// or disk I/O occurs.
+///
+/// Data-safety isolation (2026-07-21): `setUp` points
+/// `Paths.testOverrideUserDataDir` at a per-test temp dir so any
+/// `Paths.watchlistURL` / `Paths.settingsURL` this suite touches resolves
+/// INSIDE that temp dir, never the live `~/Library/Application Support/Vocateca`.
+/// `testNoSpeechSkip` used to write a 1-show fixture straight to the real
+/// `Paths.watchlistURL` and "restore" it in a `defer` — an anti-pattern that
+/// clobbered the user's real watchlist (a crash, or a parallel test, left the
+/// fixture in place; the drastic-shrink guard backed up but did not prevent it).
+/// See memory `swift-tests-must-isolate-via-paths-override`.
 final class PipelineTests: XCTestCase {
+
+    nonisolated(unsafe) private var tempDir: URL!
+    nonisolated(unsafe) private var previousPathsOverride: URL?
+
+    override func setUpWithError() throws {
+        previousPathsOverride = Paths.testOverrideUserDataDir
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PipelineTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        tempDir = dir
+        Paths.testOverrideUserDataDir = dir
+    }
+
+    override func tearDownWithError() throws {
+        Paths.testOverrideUserDataDir = previousPathsOverride
+        if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
+        tempDir = nil
+        previousPathsOverride = nil
+    }
 
     // MARK: - Helpers
 
@@ -279,15 +308,13 @@ final class PipelineTests: XCTestCase {
         // The no-speech SKIP is opt-in per show: a show defaults to "Always
         // spoken word" (assumeSpeech == true), which BYPASSES the skip. To
         // exercise the skip path this episode's show must be set to auto-detect
-        // (assumeSpeech == false). Install such a watchlist, saving + restoring
-        // the real one so the test stays isolated. Episode.makePodcast defaults
-        // showSlug to "test-show", so the installed show must match that slug.
+        // (assumeSpeech == false). Install such a watchlist. `Paths.watchlistURL`
+        // resolves INSIDE this suite's temp dir (see the class-level
+        // `testOverrideUserDataDir` isolation), so this write never touches the
+        // real user watchlist and needs no save/restore dance — `tearDown`
+        // removes the whole temp dir. Episode.makePodcast defaults showSlug to
+        // "test-show", so the installed show must match that slug.
         let watchlistURL = Paths.watchlistURL
-        let savedWatchlist = try? Data(contentsOf: watchlistURL)
-        defer {
-            if let savedWatchlist { try? savedWatchlist.write(to: watchlistURL) }
-            else { try? FileManager.default.removeItem(at: watchlistURL) }
-        }
         try WatchlistStore(watchlist: Watchlist(shows: [
             Show(slug: "test-show", title: "Test Show",
                  rss: "https://example.com/rss", assumeSpeech: false)

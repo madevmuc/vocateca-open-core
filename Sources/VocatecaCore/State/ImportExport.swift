@@ -588,13 +588,20 @@ public enum ImportExportService {
         )
 
         let resultWatchlist: Watchlist
+        let overwriting: Bool
         switch mode {
         case .overwrite:
             resultWatchlist = sanitizedWatchlist
+            overwriting = true
         case .merge:
             resultWatchlist = mergeSubscriptions(imported: sanitizedWatchlist, current: current)
+            overwriting = false
         }
-        try resultWatchlist.saveAtomic(to: url)
+        // `.overwrite` is the ONE legitimate whole-replace that may drastically
+        // shrink the watchlist (or drop artwork), so it opts into the destructive
+        // guard; `.merge` only grows and must NOT (a merge that somehow shrank is
+        // a bug worth refusing).
+        try resultWatchlist.saveAtomic(to: url, allowDrasticShrink: overwriting)
     }
 }
 
