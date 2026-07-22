@@ -7,8 +7,8 @@
 # docs/homebrew-cask.md for the bump process and the PR checklist.
 
 cask "vocateca" do
-  version "2.2.1"
-  sha256 "0ac9d74ae90f06a973fe4646578bffc164dc9ec8b38552877f40bc23b8da1646"
+  version "2.2.3"
+  sha256 "b7aff1f3253c7c54f2e71a11ddc37e382c15c764d5879d5f522750c93b582319"
 
   url "https://vocateca.com/releases/Vocateca-#{version}.dmg"
   name "Vocateca"
