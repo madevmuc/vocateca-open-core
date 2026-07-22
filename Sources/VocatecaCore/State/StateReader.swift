@@ -261,6 +261,16 @@ public struct StateReader: Sendable {
         }
     }
 
+    /// The episodes for the given `guids` (any order; missing guids are omitted).
+    /// One query for a whole set — used to resolve Library-collection episode
+    /// links without a per-guid round-trip.
+    public func episodes(guids: [String]) throws -> [Episode] {
+        guard !guids.isEmpty else { return [] }
+        return try dbQueue.read { db in
+            try Episode.filter(guids.contains(Column("guid"))).fetchAll(db)
+        }
+    }
+
     /// Returns the `value` stored in `meta` for the given `key`, or `nil`.
     public func metaValue(forKey key: String) throws -> String? {
         try dbQueue.read { db in
@@ -305,6 +315,25 @@ public struct StateReader: Sendable {
                 sql += " LIMIT \(limit)"
             }
             return try Episode.fetchAll(db, SQLRequest(sql: sql, arguments: StatementArguments(args)))
+        }
+    }
+
+    /// Most recently transcribed episodes across ALL shows, newest first.
+    ///
+    /// Ordered by `completed_at DESC` — the transcription completion timestamp
+    /// (date & time) — so this drives the Library's "Recently imported" view.
+    /// Only `done` rows with a non-null `completed_at` qualify (a transcript that
+    /// actually finished). `completed_at` is stored as an ISO-8601 string, so a
+    /// lexical `DESC` sort matches chronological order.
+    public func fetchRecentlyTranscribed(limit: Int) throws -> [Episode] {
+        try dbQueue.read { db in
+            var sql = """
+                SELECT * FROM episodes
+                WHERE status = 'done' AND completed_at IS NOT NULL AND completed_at != ''
+                ORDER BY completed_at DESC
+            """
+            if limit > 0 { sql += " LIMIT \(limit)" }
+            return try Episode.fetchAll(db, SQLRequest(sql: sql))
         }
     }
 

@@ -13,11 +13,14 @@ public enum Paths {
     /// can point the whole `Paths` surface at an isolated empty temp dir
     /// without touching the user's real (potentially huge) library. `nil` in
     /// production and by default in tests. A test that sets this MUST save the
-    /// previous value and restore it in `tearDown`/`tearDownWithError`.
+    /// previous value and restore it in `tearDown`/`tearDownWithError` — see
+    /// `LiveDataReloadCoalescingTests` for the pattern.
     ///
     /// `nonisolated(unsafe)`: mutated only from a single test's
     /// `setUp`/`tearDown` (which happen-before/-after that test's actual
-    /// work), never concurrently with another test.
+    /// work), never concurrently with another test — same reasoning as
+    /// `EntitlementCache`/`UpsellThrottle`'s existing `nonisolated(unsafe)`
+    /// formatters in this module.
     nonisolated(unsafe) public static var testOverrideUserDataDir: URL?
 
     /// Canonical user-data directory. Created on demand.
@@ -50,9 +53,15 @@ public enum Paths {
     public static var notificationsDatabaseURL: URL { userDataDir().appendingPathComponent("notifications.sqlite") }
     public static var settingsURL: URL { userDataDir().appendingPathComponent("settings.yaml") }
     public static var watchlistURL: URL { userDataDir().appendingPathComponent("watchlist.yaml") }
-    /// YouTube Explorer's tab-local "recently opened" history — UI-only (not
-    /// the Library, not a DB show), a plain JSON blob.
+    /// Task B.9: YouTube Explorer's tab-local "recently opened" history —
+    /// UI-only (not the Library, not a DB show), a plain JSON blob.
     public static var youtubeExplorerHistoryURL: URL {
         userDataDir().appendingPathComponent("youtube_explorer_history.json")
+    }
+    /// User-created Library collections ("folders") + their membership links —
+    /// UI-only organisational overlay (never owns shows/episodes/transcripts;
+    /// deleting a link removes only the membership). Plain JSON blob.
+    public static var libraryCollectionsURL: URL {
+        userDataDir().appendingPathComponent("library_collections.json")
     }
 }
