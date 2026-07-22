@@ -104,6 +104,53 @@ swift run vocateca-cli mcp
 
 Speaks newline-delimited JSON-RPC 2.0 over stdin/stdout (protocol version `2024-11-05`), exposing the CLI's commands as MCP tools to any compatible client — Claude Desktop, an IDE, or your own agent framework. Tool definitions are generated from the same command catalog as `--help` and `vocateca-cli docs`, so the MCP surface, the CLI help, and the generated docs never drift apart. stdout is reserved strictly for protocol messages; diagnostics go to stderr.
 
+## Use Vocateca as a data source for your AI assistant
+
+`vocateca-cli mcp` turns your local transcript library and subscriptions into ~46 MCP tools — one per CLI command — so an assistant can search your library, check the queue, or kick off a transcription without you leaving the chat.
+
+First, build (or locate) the binary:
+
+```sh
+swift build -c release --product vocateca-cli
+# binary at .build/release/vocateca-cli
+```
+
+**Claude Desktop** — add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "vocateca": {
+      "command": "/absolute/path/to/vocateca-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+**Claude Code**:
+
+```sh
+claude mcp add vocateca -- /absolute/path/to/vocateca-cli mcp
+```
+
+**Cursor** — add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "vocateca": {
+      "command": "/absolute/path/to/vocateca-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Use an absolute path to the built binary in all three — a relative path or bare `vocateca-cli` will only resolve if it's on the launching process's `PATH`. As noted above, stdout is reserved strictly for JSON-RPC protocol messages, so nothing else in the pipeline may write to it.
+
+A few representative tools out of the full catalog (run `vocateca-cli docs` for all of them): `stats`, `library_search`, `library_export`, `sources_add-podcast`, `transcribe`, `queue_run`, `retry_all`, `notifications_list`.
+
 ## Tests
 
 ```sh
