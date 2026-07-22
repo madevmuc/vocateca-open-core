@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.madevmuc/vocateca",
+  "title": "Vocateca",
+  "description": "Local-first, on-device podcast/YouTube/Instagram transcription — ~46 MCP tools over stdio.",
+  "version": "1.5.0",
+  "websiteUrl": "https://github.com/madevmuc/vocateca-open-core#use-vocateca-as-a-data-source-for-your-ai-assistant",
+  "repository": {
+    "url": "https://github.com/madevmuc/vocateca-open-core",
+    "source": "github",
+    "id": "1216653301"
+  }
+}
