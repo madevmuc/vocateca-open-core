@@ -27,7 +27,8 @@ public enum QwenProvisioning {
     /// partial header a black-holed download might leave behind. (M11)
     static let minWeightsBytes: Int64 = 64 * 1024 * 1024   // 64 MB
 
-    /// Whether the model's weights are already on disk **and look intact** (M11).
+    /// Whether the model's weights are already on disk **and look intact**
+    /// (M11, extended P.5 with an optional checksum check).
     ///
     /// The previous check was pure `fileExists(model.safetensors)`, so an aborted
     /// first download that left a 0-byte or truncated `model.safetensors` read as
@@ -35,13 +36,31 @@ public enum QwenProvisioning {
     /// self-healed (the file "exists", so nothing re-downloads). Now we also
     /// require the weights file to be at least ``minWeightsBytes`` so a partial
     /// download is treated as *not cached* (and gets purged + re-fetched).
+    ///
+    /// P.5: when ``ModelPins/qwen`` has a checksum recorded for `modelId`, the
+    /// file must also match it — a size-correct-but-wrong-hash file (upstream
+    /// changed the model contents, or a tampered/corrupt file) is treated the
+    /// same as "not cached", which routes back through the existing
+    /// ``purgeIfCorrupt(modelId:)`` self-healing path on the next
+    /// ``download(modelId:onProgress:)`` call. The manifest starts empty (every
+    /// `sha256` is `nil`), so this is a no-op today — identical behavior to
+    /// before this check existed.
     public static func isCached(modelId: String) -> Bool {
         let weights = cacheDir(modelId: modelId).appendingPathComponent("model.safetensors")
         guard let size = try? FileManager.default
             .attributesOfItem(atPath: weights.path)[.size] as? Int64 else {
             return false   // missing
         }
-        return size >= minWeightsBytes
+        guard size >= minWeightsBytes else { return false }
+        if let pin = ModelPins.qwen[modelId], pin.sha256 != nil {
+            let ok = pin.verify(fileURL: weights)
+            if !ok {
+                Log.error("Qwen: cached model failed checksum verification",
+                          component: "QwenProvisioning", context: [("modelId", modelId)])
+            }
+            return ok
+        }
+        return true
     }
 
     /// Deletes a partial/corrupt cache directory for `modelId` so the next load
@@ -109,12 +128,23 @@ public enum QwenProvisioning {
     }
 
     /// A Core ``ModelProvisioner`` configured for the given Qwen model id.
+    ///
+    /// P.5: `verify` reuses ``isCached(modelId:)`` — which already folds in the
+    /// checksum check (empty manifest today, so always `true`) — so a failed
+    /// post-download verification and a "the on-disk file doesn't look right"
+    /// check are the same logic. A verify failure surfaces as `.failed` from
+    /// `ModelProvisioner.provision()`; the bad file is left in place until the
+    /// *next* provisioning attempt, whose `download(modelId:onProgress:)` call
+    /// purges it via the existing ``purgeIfCorrupt(modelId:)`` self-healing path
+    /// before re-fetching — i.e. re-download is already possible, no extra
+    /// wiring needed.
     public static func provisioner(modelId: String) -> ModelProvisioner {
         ModelProvisioner(
             engineLabel: "Qwen3-ASR \(QwenTranscriber.shortTag(for: modelId))",
             sizeGB: approxSizeGB(modelId: modelId),
             isCached: { isCached(modelId: modelId) },
-            download: { onProgress in try await download(modelId: modelId, onProgress: onProgress) }
+            download: { onProgress in try await download(modelId: modelId, onProgress: onProgress) },
+            verify: { isCached(modelId: modelId) }
         )
     }
 }

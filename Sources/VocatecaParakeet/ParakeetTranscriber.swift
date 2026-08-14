@@ -90,6 +90,7 @@ public actor ParakeetTranscriber: Transcriber {
         _ = try await AsrModels.downloadAndLoad(version: .v3) { downloadProgress in
             progress(downloadProgress.fractionCompleted)
         }
+        Self.logChecksumGateIfPinned()
         Log.info("ParakeetTranscriber: model pre-download complete",
                  component: "ParakeetTranscriber",
                  context: [("version", "v3"),
@@ -207,6 +208,23 @@ public actor ParakeetTranscriber: Transcriber {
                  component: "ParakeetTranscriber")
     }
 
+    // MARK: - Checksum gate (P.5)
+
+    /// Only does anything when ``ModelPins/parakeet`` has a checksum recorded
+    /// (it never does today — see `ModelPins.swift`'s checksum-manifest
+    /// note, so this never fires). `AsrModels.downloadAndLoad` hands back
+    /// already-loaded `MLModel` objects rather than on-disk file URLs, so
+    /// FluidAudio exposes no single path to hash a whole-model checksum
+    /// against; a pinned-but-unverifiable checksum is reported honestly here
+    /// rather than silently skipped or hashed against the wrong thing — same
+    /// shape of upstream-seam gap as the revision-pin TODO in `ModelPins.swift`.
+    private static func logChecksumGateIfPinned() {
+        guard let sha256 = ModelPins.parakeet.sha256 else { return }
+        Log.warn("ParakeetTranscriber: checksum pinned but not verifiable (FluidAudio exposes no on-disk model path)",
+                 component: "ParakeetTranscriber",
+                 context: [("sha256Prefix", String(sha256.prefix(8)))])
+    }
+
     // MARK: - Model loading
 
     /// Lazily loads (and coalesces concurrent first-use loads of) the FluidAudio
@@ -246,6 +264,7 @@ public actor ParakeetTranscriber: Transcriber {
                 try await manager.loadModels(models)
                 return manager
             }
+            Self.logChecksumGateIfPinned()
             self.asr = manager
             isLoading = false
             let waiters = loadWaiters; loadWaiters.removeAll()

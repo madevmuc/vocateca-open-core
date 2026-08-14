@@ -17,10 +17,16 @@ public struct BackfillCampaignAdvancer: Sendable {
 
     /// Advances every active, non-paused campaign whose show is in `shows`.
     /// Returns the slugs whose campaigns COMPLETED this pass (for the caller to
-    /// retire the blob + seed a completion notification).
+    /// retire the blob + seed a completion notification) AND whether this pass
+    /// un-deferred any new work (`didEnqueue`). `didEnqueue` is the signal a
+    /// caller needs to know whether to restart the queue: without it, a
+    /// windowed campaign (batchSize < remaining) advances exactly one batch on
+    /// `runFinished` and then stalls forever, because nothing else restarts a
+    /// stopped queue after a batch is un-deferred to `pending`.
     @discardableResult
-    public func advanceAll(shows: [Show]) -> [String] {
+    public func advanceAll(shows: [Show]) -> (completed: [String], didEnqueue: Bool) {
         var completed: [String] = []
+        var didEnqueue = false
         for show in shows {
             guard var campaign = (try? campaignStore.read(slug: show.slug)) ?? nil,
                   campaign.active, !campaign.paused else { continue }
@@ -39,6 +45,7 @@ public struct BackfillCampaignAdvancer: Sendable {
                 let base = (try? store.nextBackfillSeqBase()) ?? 1
                 let seqMap = BackfillSeqAssigner.assign(episodes: episodesForSeq, order: backfillOrder, base: base)
                 try? store.undeferToComingUp(guids: guids, backfillSeq: seqMap)
+                didEnqueue = true
             }
 
             campaign.done = counts.transcribedInScope
@@ -59,7 +66,7 @@ public struct BackfillCampaignAdvancer: Sendable {
                 try? campaignStore.write(slug: show.slug, campaign)
             }
         }
-        return completed
+        return (completed: completed, didEnqueue: didEnqueue)
     }
 
     /// Reconstructs the scope policy from the stored campaign fields.

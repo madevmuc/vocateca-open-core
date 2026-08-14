@@ -313,6 +313,20 @@ public actor WhisperKitTranscriber: Transcriber {
             // `modelName`'s HF repo (`ModelPins.whisperRepo`) with no revision
             // override exposed by WhisperKitConfig — see the upstream-blocked
             // TODO in `ModelPins.swift`.
+            //
+            // P.5: checksum gate — only does anything when this specific
+            // model name has a manifest entry (none do today, so this never
+            // fires; see `ModelPins.whisper`/`ModelPins.swift`'s checksum-
+            // manifest note). WhisperKit's `modelFolder` is a multi-file
+            // directory (several `.mlmodelc` bundles) with no single
+            // canonical file exposed to hash a whole-model checksum against,
+            // so a pinned-but-unverifiable entry is reported honestly rather
+            // than silently skipped or hashed against the wrong thing.
+            if let sha256 = ModelPins.whisper[modelName]?.sha256 {
+                Log.warn("WhisperKit: checksum pinned but not verifiable (multi-file model, no single hashable path)",
+                         component: "WhisperKit",
+                         context: [("model", modelName), ("sha256Prefix", String(sha256.prefix(8)))])
+            }
             Log.info("WhisperKit: model loaded",
                      component: "WhisperKit",
                      context: [("model", modelName), ("repo", ModelPins.whisperRepo),

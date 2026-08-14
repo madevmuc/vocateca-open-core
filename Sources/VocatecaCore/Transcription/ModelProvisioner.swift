@@ -37,17 +37,20 @@ public struct ModelProvisioner: Sendable {
 
     private let isCached: @Sendable () -> Bool
     private let download: DownloadOperation
+    private let verify: (@Sendable () -> Bool)?
 
     public init(
         engineLabel: String,
         sizeGB: Double,
         isCached: @escaping @Sendable () -> Bool,
-        download: @escaping DownloadOperation
+        download: @escaping DownloadOperation,
+        verify: (@Sendable () -> Bool)? = nil
     ) {
         self.engineLabel = engineLabel
         self.sizeGB = sizeGB
         self.isCached = isCached
         self.download = download
+        self.verify = verify
     }
 
     /// Whether the model is already on disk (no download needed).
@@ -79,6 +82,25 @@ public struct ModelProvisioner: Sendable {
                               context: [("engine", label), ("pct", "\(Int(clamped * 100))")])
                 }
                 onProgress(clamped)
+            }
+            // P.5: optional checksum verification (empty manifest by default —
+            // see `ModelPins.swift`). `verify` is `nil` unless the caller wired
+            // one up, and even then it self-reports `true` when its
+            // `ModelPins.Pin` has no `sha256` recorded, so this is a no-op for
+            // every engine today.
+            if let verify {
+                Log.debug("Model checksum verification started", component: "Provisioning",
+                          context: [("engine", engineLabel)])
+                guard verify() else {
+                    Log.error("Model checksum verification failed", component: "Provisioning",
+                              context: [("engine", engineLabel)])
+                    return .failed(
+                        "Downloaded model failed checksum verification — the file may be corrupt " +
+                        "or have changed upstream. Please try downloading again."
+                    )
+                }
+                Log.debug("Model checksum verification passed", component: "Provisioning",
+                          context: [("engine", engineLabel)])
             }
             Log.info("Model ready", component: "Provisioning",
                      context: [("engine", engineLabel)])
